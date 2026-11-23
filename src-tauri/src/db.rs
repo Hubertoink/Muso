@@ -51,6 +51,11 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
         c.execute("ALTER TABLE albums ADD COLUMN cover_file TEXT", [])?;
     }
     let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    if get_setting(&tx, "scanner.artist_repair_v1")?.is_none() {
+        tx.execute("UPDATE tracks SET mtime=-1 WHERE album_id IN
+            (SELECT id FROM albums WHERE artist='Unknown Artist')", [])?;
+        set_setting(&tx, "scanner.artist_repair_v1", "1")?;
+    }
     tx.execute_batch("CREATE TABLE IF NOT EXISTS release_tracks(
         path TEXT PRIMARY KEY, release_id TEXT NOT NULL, disc_no INTEGER);
         CREATE INDEX IF NOT EXISTS tracks_release ON release_tracks(release_id);")?;

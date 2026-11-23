@@ -9,7 +9,6 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
-use tauri::{AppHandle, Emitter};
 use walkdir::WalkDir;
 
 const AUDIO_EXTS: &[&str] = &[
@@ -78,11 +77,15 @@ fn read_track(p: &Path) -> TrackInfo {
         .unwrap_or(0.0);
     let tag = tf.as_ref().and_then(|t| t.primary_tag().or_else(|| t.first_tag()));
 
-    let artist = tag.and_then(|t| clean(t.artist()));
+    let artist = tag.and_then(|t| clean(t.artist())).or_else(|| {
+        tf.as_ref()?.tags().iter().find_map(|t| clean(t.artist()))
+    });
     let album_artist = tag
         .and_then(|t| t.get_string(&ItemKey::AlbumArtist))
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
+        .or_else(|| tf.as_ref()?.tags().iter().find_map(|t|
+            t.get_string(&ItemKey::AlbumArtist).map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned)))
         .or_else(|| artist.clone())
         .unwrap_or_else(|| "Unknown Artist".into());
 
@@ -94,7 +97,7 @@ fn read_track(p: &Path) -> TrackInfo {
             .map(|p| p.data().to_vec())
     });
 
-    TrackInfo {
+    let mut info = TrackInfo {
         title: tag.and_then(|t| clean(t.title())).unwrap_or(stem),
         artist,
         album_artist,
@@ -105,7 +108,41 @@ fn read_track(p: &Path) -> TrackInfo {
         disc_no: tag.and_then(|t| t.disk()),
         duration,
         picture,
+    };
+    if info.album_artist == "Unknown Artist" && ext_of(p).as_deref() == Some("mp3") {
+        recover_mp3_tags(p, &mut info);
     }
+    info
+}
+
+// Some ID3 tags contain a malformed frame alongside usable artist and album fields.
+fn recover_mp3_tags(path: &Path, info: &mut TrackInfo) -> Option<()> {
+    use symphonia::core::{io::MediaSourceStream, meta::StandardTagKey as Key, probe::Hint};
+    let file = std::fs::File::open(path).ok()?;
+    let stream = MediaSourceStream::new(Box::new(file), Default::default());
+    let mut probe = symphonia::default::get_probe().format(Hint::new().with_extension("mp3"),
+        stream, &Default::default(), &Default::default()).ok()?;
+    let metadata = probe.metadata.get()?;
+    let revision = metadata.current()?;
+    let text = |key| revision.tags().iter().filter(|tag| tag.std_key == Some(key))
+        .map(|tag| tag.value.to_string().trim_matches(['\0', ' ']).to_owned()).find(|s| !s.is_empty());
+    info.artist = text(Key::Artist).or_else(|| info.artist.take());
+    if let Some(artist) = text(Key::AlbumArtist).or_else(|| info.artist.clone()) { info.album_artist = artist; }
+    if let Some(album) = text(Key::Album) { info.album = album; }
+    if let Some(title) = text(Key::TrackTitle) { info.title = title; }
+    let number = |key| text(key)?.split('/').next()?.trim().parse::<u32>().ok();
+    info.track_no = info.track_no.or_else(|| number(Key::TrackNumber));
+    info.disc_no = info.disc_no.or_else(|| number(Key::DiscNumber));
+    info.genre = info.genre.take().or_else(|| text(Key::Genre));
+    info.year = info.year.or_else(|| text(Key::Date)?.get(..4)?.parse().ok());
+    if info.picture.is_none() { info.picture = revision.visuals().first().map(|v| v.data.to_vec()); }
+    if let Some(params) = probe.format.default_track().map(|t| &t.codec_params) {
+        if let (Some(frames), Some(base)) = (params.n_frames, params.time_base) {
+            let time = base.calc_time(frames);
+            if info.duration == 0.0 { info.duration = time.seconds as f64 + time.frac; }
+        }
+    }
+    Some(())
 }
 
 fn folder_cover(dir: &Path) -> Option<Vec<u8>> {
@@ -155,7 +192,59 @@ fn sort_key(artist: &str, year: Option<u32>, title: &str) -> String {
     format!("{a}\u{1}{:04}\u{1}{}", year.unwrap_or(0), title.to_lowercase())
 }
 
-pub fn scan(app: &AppHandle, db_path: &Path, data_dir: &Path) -> Result<usize, String> {
+fn repair_unknown_albums(tx: &rusqlite::Transaction<'_>, roots: &[String]) -> rusqlite::Result<()> {
+    // An untagged bonus recording can sit beside the tagged tracks of one release.
+    let mut folders: HashMap<PathBuf, Option<String>> = HashMap::new();
+    let mut untagged = Vec::new();
+    let mut query = tx.prepare("SELECT t.path,t.album_id,t.title,a.title,a.artist FROM tracks t
+        JOIN albums a ON t.album_id=a.id")?;
+    let mut rows = query.query([])?;
+    while let Some(row) = rows.next()? {
+        let path = PathBuf::from(row.get::<_, String>(0)?);
+        let Some(folder) = path.parent() else { continue };
+        let id: String = row.get(1)?;
+        if row.get::<_, String>(4)? == "Unknown Artist" {
+            if folder.file_name().and_then(|s| s.to_str()) == Some(row.get::<_, String>(3)?.as_str())
+                && path.file_stem().and_then(|s| s.to_str()) == Some(row.get::<_, String>(2)?.as_str())
+                && !roots.iter().any(|r| Path::new(r) == folder) {
+                untagged.push(path);
+            }
+        } else {
+            folders.entry(folder.to_owned()).and_modify(|candidate| {
+                if candidate.as_ref() != Some(&id) { *candidate = None; }
+            }).or_insert(Some(id));
+        }
+    }
+    for path in untagged {
+        if let Some(Some(album)) = path.parent().and_then(|p| folders.get(p)) {
+            tx.execute("UPDATE tracks SET album_id=?1 WHERE path=?2", params![album,path.to_string_lossy()])?;
+        }
+    }
+
+    // Transfer saved work only where all former tracks identify a single corrected album.
+    let mut moves = tx.prepare("SELECT p.album_id,min(t.album_id) FROM previous_unknown p
+        LEFT JOIN tracks t ON t.path=p.path GROUP BY p.album_id HAVING count(*)=count(t.album_id)
+        AND count(DISTINCT t.album_id)=1 AND NOT EXISTS(SELECT 1 FROM tracks WHERE album_id=p.album_id)")?;
+    let pairs = moves.query_map([], |r| Ok((r.get::<_,String>(0)?, r.get::<_,String>(1)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for (old, new) in pairs {
+        tx.execute("UPDATE OR IGNORE album_notes SET album_id=?2 WHERE album_id=?1", [&old,&new])?;
+        tx.execute("UPDATE atmospheres SET album_id=?2 WHERE album_id=?1 AND NOT EXISTS
+            (SELECT 1 FROM atmospheres WHERE album_id=?2) AND NOT EXISTS
+            (SELECT 1 FROM atmosphere_variants WHERE album_id=?2 AND style='cinematic')", [&old,&new])?;
+        tx.execute("UPDATE atmosphere_variants SET album_id=?2 WHERE album_id=?1 AND style NOT IN
+            (SELECT style FROM atmosphere_variants WHERE album_id=?2 UNION SELECT 'cinematic' FROM atmospheres WHERE album_id=?2)",
+            [&old,&new])?;
+        tx.execute("UPDATE OR IGNORE settings SET key='atmos_auto_style.'||?2 WHERE key='atmos_auto_style.'||?1",
+            [&old,&new])?;
+        tx.execute("UPDATE albums AS dest SET has_art=1,cover_file=coalesce(src.cover_file,src.id||'.jpg')
+            FROM albums AS src WHERE dest.id=?2 AND src.id=?1 AND src.has_art=1 AND dest.cover_file IS NULL
+            AND (src.cover_file IS NOT NULL OR dest.has_art=0)", [&old,&new])?;
+    }
+    Ok(())
+}
+
+pub fn scan(db_path: &Path, data_dir: &Path, progress: impl Fn(Progress)) -> Result<usize, String> {
     let e2s = |e: rusqlite::Error| e.to_string();
     let mut conn = db::open(db_path).map_err(e2s)?;
     std::fs::create_dir_all(data_dir.join("art")).map_err(|e| e.to_string())?;
@@ -184,6 +273,8 @@ pub fn scan(app: &AppHandle, db_path: &Path, data_dir: &Path) -> Result<usize, S
     let mut seen: HashSet<String> = HashSet::new();
 
     let tx = conn.transaction().map_err(e2s)?;
+    tx.execute_batch("CREATE TEMP TABLE previous_unknown AS SELECT t.path,t.album_id FROM tracks t
+        JOIN albums a ON a.id=t.album_id WHERE a.artist='Unknown Artist'").map_err(e2s)?;
     let mut changed = false;
     let mut files = 0usize;
     for folder in folders.iter().filter(|f| !offline.contains(f)) {
@@ -201,7 +292,7 @@ pub fn scan(app: &AppHandle, db_path: &Path, data_dir: &Path) -> Result<usize, S
             }
             files += 1;
             if files % 50 == 0 {
-                let _ = app.emit("scan-progress", Progress { files });
+                progress(Progress { files });
             }
 
             let mtime = entry
@@ -281,6 +372,7 @@ pub fn scan(app: &AppHandle, db_path: &Path, data_dir: &Path) -> Result<usize, S
         tx.execute("DELETE FROM tracks WHERE path=?1", [path]).map_err(e2s)?;
         changed = true;
     }
+    if changed { repair_unknown_albums(&tx, &folders).map_err(e2s)?; }
     tx.execute(
         "DELETE FROM albums WHERE art_source IS NULL AND id NOT IN (SELECT DISTINCT album_id FROM tracks)",
         [],
@@ -289,9 +381,41 @@ pub fn scan(app: &AppHandle, db_path: &Path, data_dir: &Path) -> Result<usize, S
     if changed { crate::releases::rebuild(&tx).map_err(e2s)?; }
     tx.commit().map_err(e2s)?;
 
-    let _ = app.emit("scan-progress", Progress { files });
+    progress(Progress { files });
     let albums: i64 = conn
         .query_row("SELECT COUNT(*) FROM albums WHERE art_source IS NULL", [], |r| r.get(0))
         .map_err(e2s)?;
     Ok(albums as usize)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bonus_recordings_join_only_one_identifiable_release_and_keep_the_article() {
+        let mut db = db::open(Path::new(":memory:")).unwrap();
+        let tx = db.transaction().unwrap();
+        for (id, artist, title) in [
+            ("tagged", "Artist", "Alone (solo)"), ("other", "Another Artist", "Other"),
+            ("old", "Unknown Artist", "Alone"), ("mixed", "Unknown Artist", "Mixtape"),
+        ] {
+            tx.execute("INSERT INTO albums(id,artist,title,sort_key) VALUES(?1,?2,?3,?2)",
+                params![id,artist,title]).unwrap();
+        }
+        for (path, id) in [
+            ("Music/Alone/song.mp3", "tagged"), ("Music/Alone/concert.mp4", "old"),
+            ("Music/Mixtape/a.mp3", "tagged"), ("Music/Mixtape/b.mp3", "other"),
+            ("Music/Mixtape/bonus.mp4", "mixed"),
+        ] {
+            tx.execute("INSERT INTO tracks(path,album_id,title,mtime) VALUES(?1,?2,?3,0)",
+                params![path,id,Path::new(path).file_stem().unwrap().to_str()]).unwrap();
+        }
+        tx.execute_batch("CREATE TEMP TABLE previous_unknown AS SELECT path,album_id FROM tracks
+            WHERE album_id IN ('old','mixed'); INSERT INTO album_notes VALUES('old','Saved article')").unwrap();
+        repair_unknown_albums(&tx, &["Music".into()]).unwrap();
+        assert_eq!(db::note(&tx,"tagged").unwrap().as_deref(), Some("Saved article"));
+        assert!(db::tracks(&tx,"old").unwrap().is_empty());
+        assert_eq!(db::tracks(&tx,"mixed").unwrap().len(), 1);
+    }
 }

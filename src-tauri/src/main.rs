@@ -66,7 +66,7 @@ fn scan_library(app: AppHandle, state: State<'_, AppState>) -> bool {
     let db_path = state.db_path.clone();
     let data_dir = state.data_dir.clone();
     std::thread::spawn(move || {
-        let done = match scanner::scan(&app, &db_path, &data_dir) {
+        let done = match scanner::scan(&db_path, &data_dir, |p| { let _ = app.emit("scan-progress", p); }) {
             Ok(albums) => scanner::Done { albums, error: None },
             Err(e) => scanner::Done { albums: 0, error: Some(e) },
         };
@@ -221,8 +221,9 @@ fn open_image_folder(state: State<'_, AppState>, album_id: String) -> R<()> {
             let mut query = conn.prepare("SELECT file FROM atmosphere_variants WHERE album_id=?1
                 UNION ALL SELECT file FROM atmospheres WHERE album_id=?1").map_err(err)?;
             let files = query.query_map([album_id], |r| r.get::<_, String>(0)).map_err(err)?;
-            files.filter_map(Result::ok).map(|f| state.data_dir.join(f))
-                .find(|p| p.parent() == Some(dir.as_path()) && p.is_file())
+            let image = files.filter_map(Result::ok).map(|f| state.data_dir.join(f))
+                .find(|p| p.parent() == Some(dir.as_path()) && p.is_file());
+            image
         };
         if let Some(image) = selected {
             if tauri_plugin_opener::reveal_item_in_dir(image).is_ok() {
