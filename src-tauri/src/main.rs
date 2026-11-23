@@ -177,11 +177,7 @@ async fn generate_atmospheres(app: AppHandle, state: State<'_, AppState>, album_
             .or_else(environment_key)
             .ok_or("No OpenAI API key set")?;
         let album = db::album(&conn, &album_id).map_err(err)?.ok_or("Album not found")?;
-        let tracks: Vec<String> = db::tracks(&conn, &album_id)
-            .map_err(err)?
-            .into_iter()
-            .map(|t| t.title)
-            .collect();
+        let tracks = db::tracks(&conn, &album_id).map_err(err)?;
         (key, album, tracks)
     };
     let files = ai::generate(&app, &key, &album, &tracks, &state.data_dir, research.unwrap_or(false), direction).await?;

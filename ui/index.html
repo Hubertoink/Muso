@@ -83,15 +83,14 @@
   <div id="ai" class="modal hidden">
     <div class="modal-card">
       <h2>Visual Atmospheres</h2>
-      <p class="muted">An optional ambient companion. Muso sends album title, artist, genre and track names to OpenAI and
-        paints up to three wordless images per album. They are stored locally and slowly drift behind the music.</p>
+      <p class="muted">Muso creates up to three images from the album metadata, track titles and loudness measurements from short local excerpts. Only text and measurements go to OpenAI. The images are saved on this computer.</p>
       <h3>OpenAI API key</h3>
       <button class="link setting-action openai-keys">Open my OpenAI API keys ↗</button>
       <input id="keyInput2" type="password" aria-label="OpenAI API key" placeholder="Paste API key" spellcheck="false" autocomplete="off" />
       <label class="check"><input id="atmosToggle" type="checkbox" /> Show atmospheres during playback</label>
       <label class="style-field">Atmosphere style <select id="aiStyle"></select></label>
       <label class="check"><input id="researchToggle" type="checkbox" /> Research the artist and album before generating</label>
-      <p class="muted">Uses one OpenAI web search per generation. API charges apply.</p>
+      <p class="muted">One web search looks for listening notes on the recording and individual tracks. API charges apply.</p>
       <div class="modal-actions">
         <button id="aiGenerateBtn" class="link">Generate for the focused album</button>
         <button class="pill close">Done</button>
