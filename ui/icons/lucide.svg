@@ -1,5 +1,6 @@
 <!-- Lucide 1.78.0. See LICENSE-Lucide.txt. -->
 <svg xmlns="http://www.w3.org/2000/svg">
+  <symbol id="audio-lines" viewBox="0 0 24 24"><path d="M2 10v4m4-7v10m4-14v18m4-13v8m4-11v14m4-9v4"/></symbol>
   <symbol id="maximize" viewBox="0 0 24 24">
 <path d="M8 3H5a2 2 0 0 0-2 2v3" />
   <path d="M21 8V5a2 2 0 0 0-2-2h-3" />

@@ -241,7 +241,7 @@ pub fn install(
         let _ = std::fs::remove_file(thumb);
         return Err(e);
     }
-    if old != file && old != format!("{id}.jpg") {
+    if old != file && old.starts_with(&format!("{id}_")) {
         let _ = std::fs::remove_file(dir.join("art").join(&old));
         let _ = std::fs::remove_file(dir.join("thumb").join(&old));
     }

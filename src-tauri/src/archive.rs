@@ -1,0 +1,379 @@
+use crate::{db, err, paintings, R};
+use rusqlite::{Connection, TransactionBehavior};
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, HashMap};
+use std::fs::{self, File};
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+use tempfile::NamedTempFile;
+use zip::{write::SimpleFileOptions, CompressionMethod, ZipArchive, ZipWriter};
+
+#[derive(Default, Serialize)]
+pub struct Summary {
+    albums: usize,
+    notes: usize,
+    images: usize,
+    skipped: usize,
+}
+
+#[derive(Serialize, Deserialize)]
+struct Manifest {
+    version: u32,
+    albums: Vec<Entry>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct Entry {
+    id: String,
+    artist: String,
+    title: String,
+    members: Vec<String>,
+    note: Option<String>,
+    cover: Option<usize>,
+    paintings: BTreeMap<String, Vec<usize>>,
+    auto_style: Option<String>,
+}
+
+fn media_name(index: usize) -> String {
+    format!("images/{index}.jpg")
+}
+
+fn add_image(
+    zip: &mut ZipWriter<&mut File>,
+    dir: &Path,
+    rel: &str,
+    summary: &mut Summary,
+) -> R<usize> {
+    let (folder, name) = rel.split_once('/').ok_or("Invalid cached image path")?;
+    if !matches!(folder, "art" | "atmos")
+        || !name.ends_with(".jpg")
+        || name.contains(['/', '\\', ':'])
+    {
+        return Err("Invalid cached image path".into());
+    }
+    let mut image =
+        File::open(dir.join(rel)).map_err(|e| format!("Could not export {rel}: {e}"))?;
+    let index = summary.images;
+    zip.start_file(
+        media_name(index),
+        SimpleFileOptions::default().compression_method(CompressionMethod::Stored),
+    )
+    .map_err(err)?;
+    std::io::copy(&mut image, zip).map_err(err)?;
+    summary.images += 1;
+    Ok(index)
+}
+
+pub fn export(c: &mut Connection, dir: &Path, dest: &Path) -> R<Summary> {
+    if !dest
+        .extension()
+        .is_some_and(|s| s.eq_ignore_ascii_case("zip"))
+    {
+        return Err("Choose a .zip filename.".into());
+    }
+    let mut temp =
+        NamedTempFile::new_in(dest.parent().ok_or("Missing export folder")?).map_err(err)?;
+    let mut zip = ZipWriter::new(temp.as_file_mut());
+    let tx = c.transaction().map_err(err)?;
+    let mut summary = Summary::default();
+    let mut manifest = Manifest {
+        version: 1,
+        albums: Vec::new(),
+    };
+    for record in db::albums(&tx).map_err(err)? {
+        let a = record.album;
+        let note = db::note(&tx, &a.id).map_err(err)?;
+        let mut paintings = BTreeMap::new();
+        for style in [
+            "cinematic",
+            "dreamscape",
+            "ambient",
+            "tape",
+            "photogram",
+            "auto",
+        ] {
+            let files = db::atmospheres(&tx, &a.id, style).map_err(err)?;
+            if files.is_empty() {
+                continue;
+            }
+            let indices = files
+                .iter()
+                .map(|f| add_image(&mut zip, dir, f, &mut summary))
+                .collect::<R<_>>()?;
+            paintings.insert(style.to_owned(), indices);
+        }
+        // Release sleeves can inherit their artwork from an artist entry already in this archive.
+        let own_art: bool = tx
+            .query_row("SELECT has_art=1 FROM albums WHERE id=?1", [&a.id], |r| {
+                r.get(0)
+            })
+            .map_err(err)?;
+        let cover = if own_art {
+            let file = a.cover_file.unwrap_or_else(|| format!("{}.jpg", a.id));
+            Some(add_image(
+                &mut zip,
+                dir,
+                &format!("art/{file}"),
+                &mut summary,
+            )?)
+        } else {
+            None
+        };
+        if note.is_none() && cover.is_none() && paintings.is_empty() {
+            continue;
+        }
+        summary.notes += usize::from(note.is_some());
+        let auto_style =
+            db::get_setting(&tx, &format!("atmos_auto_style.{}", a.id)).map_err(err)?;
+        manifest.albums.push(Entry {
+            id: a.id,
+            artist: a.artist,
+            title: a.title,
+            members: record.members,
+            note,
+            cover,
+            paintings,
+            auto_style,
+        });
+    }
+    summary.albums = manifest.albums.len();
+    zip.start_file(
+        "muso.json",
+        SimpleFileOptions::default().compression_method(CompressionMethod::Stored),
+    )
+    .map_err(err)?;
+    serde_json::to_writer(&mut zip, &manifest).map_err(err)?;
+    zip.finish().map_err(err)?.sync_all().map_err(err)?;
+    temp.persist(dest).map_err(err)?;
+    Ok(summary)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn transfers_articles_and_images_between_different_music_roots() {
+        let folder = tempfile::tempdir().unwrap();
+        let source = folder.path().join("source");
+        let destination = folder.path().join("destination");
+        let catalog = |root: &str| {
+            let mut c = db::open(Path::new(":memory:")).unwrap();
+            for (id, n) in [("artist1", 1), ("artist2", 2)] {
+                c.execute(
+                    "INSERT INTO albums(id,artist,title,sort_key) VALUES(?1,?1,'Sampler',?1)",
+                    [id],
+                )
+                .unwrap();
+                c.execute(
+                    "INSERT INTO tracks(path,album_id,title,mtime) VALUES(?1,?2,'Song',0)",
+                    rusqlite::params![format!("{root}/{n}.mp3"), id],
+                )
+                .unwrap();
+            }
+            let tx = c.transaction().unwrap();
+            crate::releases::rebuild(&tx).unwrap();
+            tx.commit().unwrap();
+            let id = db::albums(&c)
+                .unwrap()
+                .into_iter()
+                .find(|a| !a.members.is_empty())
+                .unwrap()
+                .album
+                .id;
+            (c, id)
+        };
+        let (mut c, id) = catalog("Music/A");
+        fs::create_dir_all(source.join("atmos")).unwrap();
+        fs::create_dir_all(source.join("art")).unwrap();
+        let jpg = image::DynamicImage::new_rgb8(60, 40);
+        jpg.save(source.join("atmos/painting.jpg")).unwrap();
+        jpg.save(source.join("art/artist1.jpg")).unwrap();
+        c.execute("UPDATE albums SET has_art=1 WHERE id='artist1'", [])
+            .unwrap();
+        db::replace_atmospheres(&c, &id, "auto", &["atmos/painting.jpg".into()]).unwrap();
+        db::set_setting(&c, &format!("atmos_auto_style.{id}"), "Ink").unwrap();
+        db::set_setting(&c, "openai_key", "secret-test-marker").unwrap();
+        c.execute("INSERT INTO album_notes VALUES(?1,'An article')", [&id])
+            .unwrap();
+        let path = folder.path().join("collection.zip");
+        assert_eq!(export(&mut c, &source, &path).unwrap().images, 2);
+        assert!(!fs::read(&path)
+            .unwrap()
+            .windows(18)
+            .any(|b| b == b"secret-test-marker"));
+        let (mut other, new_id) = catalog("Other/Drive");
+        assert_ne!(id, new_id);
+        let s = import(&mut other, &destination, &path).unwrap();
+        assert_eq!((s.notes, s.images, s.skipped), (1, 2, 0));
+        assert_eq!(
+            db::note(&other, &new_id).unwrap().as_deref(),
+            Some("An article")
+        );
+        let file = db::atmospheres(&other, &new_id, "auto")
+            .unwrap()
+            .pop()
+            .unwrap();
+        assert_eq!(
+            fs::read(destination.join(file)).unwrap(),
+            fs::read(source.join("atmos/painting.jpg")).unwrap()
+        );
+        assert_eq!(
+            db::get_setting(&other, &format!("atmos_auto_style.{new_id}"))
+                .unwrap()
+                .as_deref(),
+            Some("Ink")
+        );
+        let s = import(&mut other, &destination, &path).unwrap();
+        assert_eq!((s.notes, s.images), (0, 0));
+    }
+}
+
+fn read_entry(zip: &mut ZipArchive<File>, name: &str, limit: u64) -> R<Vec<u8>> {
+    let entry = zip.by_name(name).map_err(err)?;
+    if entry.size() > limit {
+        return Err(format!("{name} exceeds the import size limit"));
+    }
+    let mut bytes = Vec::new();
+    entry.take(limit + 1).read_to_end(&mut bytes).map_err(err)?;
+    if bytes.len() as u64 > limit {
+        return Err(format!("{name} exceeds the import size limit"));
+    }
+    Ok(bytes)
+}
+
+#[derive(Default)]
+struct NewFiles(Vec<PathBuf>);
+
+impl NewFiles {
+    fn write(&mut self, dir: &Path, name: &str, data: &[u8]) -> R<()> {
+        fs::create_dir_all(dir).map_err(err)?;
+        let path = dir.join(name);
+        let mut out = File::create_new(&path).map_err(err)?;
+        self.0.push(path);
+        out.write_all(data).map_err(err)
+    }
+}
+impl Drop for NewFiles {
+    fn drop(&mut self) {
+        for path in &self.0 {
+            let _ = fs::remove_file(path);
+        }
+    }
+}
+
+fn jpeg(zip: &mut ZipArchive<File>, index: usize) -> R<Vec<u8>> {
+    let bytes = read_entry(zip, &media_name(index), 64 * 1024 * 1024)?;
+    if image::guess_format(&bytes).ok() != Some(image::ImageFormat::Jpeg) {
+        return Err("Invalid JPEG in archive".into());
+    }
+    Ok(bytes)
+}
+
+pub fn import(c: &mut Connection, dir: &Path, src: &Path) -> R<Summary> {
+    let mut zip = ZipArchive::new(File::open(src).map_err(err)?).map_err(err)?;
+    let manifest: Manifest =
+        serde_json::from_slice(&read_entry(&mut zip, "muso.json", 128 * 1024 * 1024)?)
+            .map_err(err)?;
+    if manifest.version != 1 {
+        return Err("Unsupported Muso archive version".into());
+    }
+    let tx = c
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(err)?;
+    let library = db::albums(&tx).map_err(err)?;
+    let local: HashMap<_, _> = library.iter().map(|a| (a.album.id.as_str(), a)).collect();
+    let mut summary = Summary::default();
+    let mut new_files = NewFiles::default();
+    let mut serial = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(err)?
+        .as_nanos();
+    for e in manifest.albums {
+        let record = local.get(e.id.as_str()).copied().or_else(|| {
+            if e.members.is_empty() {
+                return None;
+            }
+            let mut matches = library.iter().filter(|a| {
+                a.members == e.members
+                    && a.album.title.eq_ignore_ascii_case(&e.title)
+                    && a.album.artist.eq_ignore_ascii_case(&e.artist)
+            });
+            let first = matches.next()?;
+            matches.next().is_none().then_some(first)
+        });
+        let Some(record) = record else {
+            summary.skipped += 1;
+            continue;
+        };
+        let a = &record.album;
+        let id = &a.id;
+        if let Some(note) = e.note.filter(|n| !n.trim().is_empty()) {
+            summary.notes += tx
+                .execute(
+                    "INSERT OR IGNORE INTO album_notes(album_id,body) VALUES(?1,?2)",
+                    [id, &note],
+                )
+                .map_err(err)?;
+        }
+        for (style, indices) in e.paintings {
+            if indices.is_empty() {
+                continue;
+            }
+            if paintings::style_label(&style).is_none() && style != "auto" {
+                return Err("Unknown painting style".into());
+            }
+            if !db::atmospheres(&tx, id, &style).map_err(err)?.is_empty() {
+                continue;
+            }
+            let label = paintings::style_label(&style)
+                .or(e.auto_style.as_deref())
+                .unwrap_or("AI choice");
+            let mut files = Vec::new();
+            for (n, index) in indices.into_iter().enumerate() {
+                let bytes = jpeg(&mut zip, index)?;
+                crate::covers::decode(&bytes)?;
+                serial += 1;
+                let name = paintings::filename(&a.title, label, n + 1, serial);
+                new_files.write(&dir.join("atmos"), &name, &bytes)?;
+                files.push(format!("atmos/{name}"));
+            }
+            db::replace_atmospheres(&tx, id, &style, &files).map_err(err)?;
+            if style == "auto" {
+                db::set_setting(&tx, &format!("atmos_auto_style.{id}"), label).map_err(err)?;
+            }
+            summary.images += files.len();
+        }
+        if let Some(index) = e.cover {
+            let bytes = jpeg(&mut zip, index)?;
+            let img = crate::covers::decode(&bytes)?;
+            let old = a.cover_file.clone().unwrap_or_else(|| format!("{id}.jpg"));
+            let existing = image::image_dimensions(dir.join("art").join(old)).ok();
+            let better = existing.is_none_or(|(w, h)| {
+                img.width() >= w && img.height() >= h && (img.width() > w || img.height() > h)
+            });
+            if better {
+                serial += 1;
+                let name = format!("{id}_import{serial:x}.jpg");
+                let mut thumb = Vec::new();
+                img.thumbnail(560, 560)
+                    .write_to(
+                        &mut std::io::Cursor::new(&mut thumb),
+                        image::ImageFormat::Jpeg,
+                    )
+                    .map_err(err)?;
+                new_files.write(&dir.join("art"), &name, &bytes)?;
+                new_files.write(&dir.join("thumb"), &name, &thumb)?;
+                tx.execute(
+                    "UPDATE albums SET has_art=1,cover_file=?2 WHERE id=?1",
+                    [id, &name],
+                )
+                .map_err(err)?;
+                summary.images += 1;
+            }
+        }
+        summary.albums += 1;
+    }
+    tx.commit().map_err(err)?;
+    new_files.0.clear();
+    Ok(summary)
+}

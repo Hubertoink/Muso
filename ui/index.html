@@ -20,9 +20,17 @@
   <!-- Library / crate -->
   <section id="library" class="screen hidden">
     <div id="crate"></div>
+    <nav id="libraryIndex" aria-label="Browse the library by initial">
+      <button id="indexMode" type="button"><span id="indexModeLabel">Artist</span><span aria-hidden="true">⇄</span></button>
+      <div id="indexLetters" role="group" aria-label="Artist initials"></div>
+    </nav>
     <div id="caption">
       <div id="capArtist"></div>
       <div id="capTitle"></div>
+      <div id="notePreview" class="hidden">
+        <p id="noteTeaser"></p><button class="link" id="noteAction"></button>
+        <div id="noteProgress" class="hidden" role="status"><span id="noteStage"></span><span class="progress-dots" aria-hidden="true">...</span></div>
+      </div>
     </div>
     <div id="counter"></div>
     <button id="nowPlaying" class="hidden" title="Now playing">
@@ -38,8 +46,14 @@
     <nav class="menu-panel">
       <button data-action="search">Search</button>
       <button data-action="settings">Settings</button>
+      <button data-action="eq">EQ</button>
+      <button data-action="fullscreen" class="fullscreen-label">Enter fullscreen</button>
       <button data-action="refresh">Refresh Library</button>
       <button data-action="ai">AI Features</button>
+      <div class="menu-update">
+        <small id="updateStatus" role="status"></small>
+        <button type="button" id="menuVersion" title="Check for updates"></button>
+      </div>
     </nav>
   </div>
 
@@ -60,6 +74,11 @@
       <p class="muted">Look up artist and album names on MusicBrainz. Higher-resolution front covers from the Cover Art Archive are saved only in Muso.</p>
       <button id="findCovers" class="link setting-action">Find better covers</button>
       <p id="coverProgress" class="muted" role="status"></p>
+      <h3>Collection archive</h3>
+      <p class="muted">Transfer album articles, covers and atmosphere images. On the other computer, scan your music folders before importing.</p>
+      <button class="link setting-action" id="exportArchive">Export archive…</button>
+      <button class="link setting-action" id="importArchive">Import archive…</button>
+      <p id="archiveStatus" role="status" class="muted"></p>
       <h3>Atmosphere effects</h3>
       <label class="style-field">Animated filter
         <select id="imageFilter">
@@ -72,7 +91,7 @@
       <label class="check"><input type="checkbox" id="pointerRipples" /> Ripples under the pointer or fingertip</label>
       <label class="style-field effect-strength">Effect strength <input type="range" id="effectStrength" min="0" max="100" step="5" /></label>
       <h3>OpenAI account <span class="muted">optional</span></h3>
-      <p class="muted">Use an API key from your existing OpenAI account for Visual Atmospheres. Image generation uses API billing.</p>
+      <p class="muted">Album articles and Visual Atmospheres use your OpenAI API key. Generating new content uses API billing.</p>
       <button class="link setting-action openai-keys">Open my OpenAI API keys ↗</button>
       <input id="keyInput" type="password" aria-label="OpenAI API key" placeholder="Paste API key" spellcheck="false" autocomplete="off" />
       <div class="modal-actions"><button class="pill close">Done</button></div>
@@ -80,6 +99,37 @@
   </div>
 
   <!-- AI features -->
+  <div id="article" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="articleTitle"><div class="modal-card">
+    <header class="article-header">
+      <div id="articleArtist" class="al-artist"></div><h2 id="articleTitle"></h2>
+    </header>
+    <div class="article-content">
+      <div id="articleBody"></div>
+    </div>
+    <footer class="article-footer">
+      <div class="article-tools">
+        <button id="articleMore" class="pill" aria-label="Article options" aria-expanded="false" aria-controls="articleMenu">•••</button>
+        <div class="popover hidden" id="articleMenu">
+          <button id="rewriteArticle">Regenerate article with AI</button>
+          <button id="deleteArticle">Delete article</button>
+        </div>
+      </div>
+      <button class="pill close">Done</button>
+    </footer>
+  </div></div>
+  <div id="eq" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="eqTitle">
+    <div class="modal-card">
+      <h2 id="eqTitle">EQ Settings</h2>
+      <label class="check"><input type="checkbox" id="spectrumToggle" /> Show visualizer on atmosphere images</label>
+      <label class="style-field">Wave style <select id="eqStyle"><option value="ripple">Ripple line</option><option value="pigment">Rising pigment</option><option value="echo">Echo lines</option></select></label>
+      <label id="eqColourRow" class="style-field">Pigment colour <input id="eqColour" type="color" value="#ee905f" /></label>
+      <label class="eq-slider">Sensitivity <input id="eqSensitivity" type="range" min="25" max="200" step="5" value="115"/><output for="eqSensitivity"></output></label>
+      <label class="eq-slider">Wave height <input id="eqHeight" type="range" min="10" max="100" step="5" value="70"/><output for="eqHeight"></output></label>
+      <label class="eq-slider">Intensity <input id="eqIntensity" type="range" min="0" max="100" step="5" value="80"/><output for="eqIntensity"></output></label>
+      <div class="modal-actions"><button class="pill close">Done</button></div>
+    </div>
+  </div>
+
   <div id="ai" class="modal hidden">
     <div class="modal-card">
       <h2>Visual Atmospheres</h2>
@@ -88,6 +138,7 @@
       <button class="link setting-action openai-keys">Open my OpenAI API keys ↗</button>
       <input id="keyInput2" type="password" aria-label="OpenAI API key" placeholder="Paste API key" spellcheck="false" autocomplete="off" />
       <label class="check"><input id="atmosToggle" type="checkbox" /> Show atmospheres during playback</label>
+      <label class="check"><input id="autoStyle" type="checkbox" /> Let AI choose a visual style for each album</label>
       <label class="style-field">Atmosphere style <select id="aiStyle"></select></label>
       <label class="check"><input id="researchToggle" type="checkbox" /> Research the artist and album before generating</label>
       <p class="muted">One web search looks for album descriptions, genre influences and listening notes. These guide the scenes and palette. API charges apply.</p>
@@ -105,13 +156,22 @@
       <defs>
         <filter id="waterRefraction" x="0" y="0" width="100%" height="100%" primitiveUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
           <feFlood flood-color="#808080" result="rest"/>
-          <feImage id="waveField" href="wave-field.png" width="1" height="1" result="wave"/>
+          <feImage id="waveField" href="wave-field.png" width="1" height="1" preserveAspectRatio="none" result="wave"/>
           <feMerge result="offsets"><feMergeNode in="rest"/><feMergeNode in="wave"/></feMerge>
           <feDisplacementMap id="waveDepth" in="SourceGraphic" in2="offsets" scale="0" xChannelSelector="R" yChannelSelector="G"/>
         </filter>
+        <filter id="spectrumRefraction" x="0" y="0" width="100%" height="100%" color-interpolation-filters="sRGB">
+          <feFlood flood-color="#808080" result="rest"/>
+          <feImage id="spectrumField" x="0" y="0" width="100%" height="100%" preserveAspectRatio="none" result="wave"/>
+          <feMerge result="offsets"><feMergeNode in="rest"/><feMergeNode in="wave"/></feMerge>
+          <feDisplacementMap id="spectrumDepth" in="SourceGraphic" in2="offsets" scale="0" xChannelSelector="R" yChannelSelector="G"/>
+        </filter>
       </defs>
     </svg>
-    <div class="atmos"><div id="atmosPictures"><img id="atmosA" alt="" /><img id="atmosB" alt="" /></div><div id="lightFilter" aria-hidden="true"></div></div>
+    <div class="atmos"><div id="spectrumSurface"><div id="atmosPictures"><img id="atmosA" alt="" /><img id="atmosB" alt="" /></div></div><div id="lightFilter" aria-hidden="true"></div>
+      <canvas id="spectrumPigment" width="192" height="280" aria-hidden="true"></canvas>
+      <svg id="spectrumLine" viewBox="0 0 1000 100" preserveAspectRatio="none" aria-hidden="true"><path id="eqTrace" vector-effect="non-scaling-stroke"/><g id="eqEchoes" opacity=".55"><use href="#eqTrace" transform="translate(0 1.1)"/><use href="#eqTrace" transform="translate(0 2.5)" opacity=".52"/></g></svg>
+    </div>
     <div class="veil"></div>
 
     <button id="backBtn" class="chrome corner-left" aria-label="Back">
@@ -121,7 +181,8 @@
       <svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.4" /><circle cx="12" cy="12" r="1.4" /><circle cx="19" cy="12" r="1.4" /></svg>
     </button>
     <div id="albumMenu" class="popover hidden">
-      <button id="fullscreenBtn"><svg aria-hidden="true"><use id="fullscreenIcon" href="icons/lucide.svg#maximize"/></svg><span id="fullscreenLabel">Enter fullscreen</span></button>
+      <button id="fullscreenBtn"><svg aria-hidden="true"><use class="fullscreen-icon" href="icons/lucide.svg#maximize"/></svg><span class="fullscreen-label">Enter fullscreen</span></button>
+      <button id="albumEQ"><svg aria-hidden="true"><use href="icons/lucide.svg#audio-lines"/></svg>EQ Settings</button>
       <button id="showAtmosBtn" aria-pressed="false"><svg aria-hidden="true"><use href="icons/lucide.svg#gallery-vertical-end"/></svg>Show Visual Atmospheres<svg class="check-icon" aria-hidden="true"><use href="icons/lucide.svg#check"/></svg></button>
       <button id="findAlbumCover"><svg aria-hidden="true"><use href="icons/lucide.svg#scan-search"/></svg>Find a higher-resolution cover</button>
       <label class="style-field"><svg aria-hidden="true"><use href="icons/lucide.svg#swatch-book"/></svg>Atmosphere style <select id="albumStyle"></select></label>
@@ -154,6 +215,7 @@
 
   <div id="toast"></div>
 
+  <script src="spectrum.js"></script>
   <script src="main.js"></script>
 </body>
 </html>

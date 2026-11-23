@@ -4,7 +4,7 @@ const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
 const ASSET = navigator.userAgent.includes('Windows') ? 'http://muso.localhost/' : 'muso://localhost/';
-const asset = (rel) => ASSET + rel;
+const asset = (rel) => ASSET + rel.split('/').map(encodeURIComponent).join('/');
 const coverUrl = (album, folder) => asset(folder + '/' + (album.cover_file || album.id + '.jpg'));
 const $ = (id) => document.getElementById(id);
 
@@ -44,6 +44,86 @@ const show = (el, on = true) => el.classList.toggle('hidden', !on);
 
 const crate = $('crate');
 const pool = new Map();
+const libraryIndex = $('libraryIndex');
+const indexLetters = $('indexLetters');
+const letters = '#ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+const letterButtons = new Map();
+const titleOrder = new Intl.Collator(undefined, { sensitivity: 'base', numeric: true });
+let indexMode = localStorage.getItem('muso.indexMode') === 'album' ? 'album' : 'artist';
+let artistAlbums = [], titleAlbums = [];
+let preferredMember;
+let currentLetter;
+
+function albumInitial(album) {
+  const name = indexMode === 'album' ? album.title.trim() : album.artist.trim().replace(/^the /i, '').trimStart();
+  const first = name.normalize('NFKD').toUpperCase().charAt(0);
+  return /^[A-Z]$/.test(first) ? first : '#';
+}
+
+for (const letter of letters) {
+  const button = document.createElement('button');
+  const glyph = document.createElement('span');
+  glyph.textContent = letter;
+  button.append(glyph);
+  button.tabIndex = -1;
+  button.disabled = true;
+  button.addEventListener('click', e => {
+    go(Number(button.dataset.index));
+    if (e.detail) button.blur();
+  });
+  indexLetters.append(button);
+  letterButtons.set(letter, button);
+}
+indexLetters.addEventListener('keydown', e => {
+  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const enabled = [...indexLetters.querySelectorAll('button:enabled')];
+  let i = enabled.indexOf(e.target);
+  if (e.key === 'Home') i = 0;
+  else if (e.key === 'End') i = enabled.length - 1;
+  else i = clamp(i + (e.key === 'ArrowLeft' ? -1 : 1), 0, enabled.length - 1);
+  enabled[i].focus();
+  enabled[i].click();
+});
+
+function indexAlbums(albums) {
+  const byTitle = indexMode === 'album';
+  const label = byTitle ? 'Album' : 'Artist';
+  $('indexModeLabel').textContent = label;
+  $('indexMode').title = byTitle ? 'Switch to artist order' : 'Switch to album title order';
+  $('indexMode').setAttribute('aria-label', label + ' order. ' + $('indexMode').title);
+  indexLetters.setAttribute('aria-label', label + ' initials');
+  const groups = new Map([...letters].map(letter => [letter, []]));
+  for (const a of albums) {
+    a.initial = albumInitial(a);
+    groups.get(a.initial).push(a);
+  }
+  let offset = 0;
+  for (const [letter, group] of groups) {
+    // Stable sorting keeps the scanner's artist order for albums with the same title.
+    if (byTitle) group.sort((a, b) => titleOrder.compare(a.title, b.title));
+    const button = letterButtons.get(letter);
+    button.setAttribute('aria-label', letter === '#' ? 'Numbers and other initials' : label + 's beginning with ' + letter);
+    button.disabled = !group.length;
+    button.dataset.index = offset;
+    offset += group.length;
+  }
+  return [...groups.values()].flat();
+}
+
+const positionKey = 'muso.libraryPosition';
+let savedPosition;
+try { savedPosition = JSON.parse(localStorage.getItem(positionKey)); } catch { /* No readable bookmark. */ }
+function rememberPosition() {
+  const index = Math.round(state.target);
+  const id = state.albums[index]?.id;
+  if (!id || (savedPosition?.id === id && savedPosition.index === index)) return;
+  savedPosition = { id, index };
+  localStorage.setItem(positionKey, JSON.stringify(savedPosition));
+}
+window.addEventListener('pagehide', rememberPosition);
+document.addEventListener('visibilitychange', () => { if (document.hidden) rememberPosition(); });
 
 function layout() {
   state.size = Math.round(clamp(Math.min(window.innerHeight * 0.52, window.innerWidth * 0.36), 220, 640));
@@ -116,6 +196,119 @@ function render() {
 }
 
 let lastCaption = -1;
+let noteTimer, noteRequest = 0, visibleNote = null;
+const pendingArticles = new Map();
+let articleAlbum;
+function renderNote() {
+  const { album, body } = visibleNote;
+  const stage = pendingArticles.get(album.id);
+  $('noteTeaser').textContent = body?.split(/\n\s*\n/)[0] || '';
+  $('noteAction').textContent = body ? 'Read album article' : 'Write album article with AI';
+  show($('noteAction'), !stage);
+  show($('noteProgress'), Boolean(stage));
+  $('noteStage').textContent = stage || '';
+  show($('notePreview'));
+}
+listen('article-progress', ({ payload: [id, stage] }) => {
+  if (!pendingArticles.has(id)) return;
+  pendingArticles.set(id, stage);
+  if (visibleNote?.album.id === id) renderNote();
+});
+function prepareNote(album) {
+  const request = ++noteRequest;
+  clearTimeout(noteTimer);
+  visibleNote = null;
+  show($('notePreview'), false);
+  noteTimer = setTimeout(async () => {
+    try {
+      const body = await invoke('get_album_note', { albumId: album.id });
+      if (request !== noteRequest || focused()?.id !== album.id) return;
+      visibleNote = { album, body };
+      renderNote();
+    } catch (e) { if (request === noteRequest) toast(String(e)); }
+  }, 850);
+}
+$('noteAction').addEventListener('click', async () => {
+  if (!visibleNote) return;
+  const { album, body } = visibleNote;
+  if (body) {
+    articleAlbum = album;
+    toggleArticleMenu(false);
+    $('articleTitle').textContent = album.title;
+    $('articleArtist').textContent = album.artist;
+    $('articleBody').replaceChildren(...body.split(/\n\s*\n/).map(text => {
+      const p = document.createElement('p'); p.textContent = text;
+      if (text.startsWith('Quelle')) p.className = 'source';
+      return p;
+    }));
+    show($('article'));
+    $('article').querySelector('.modal-card').scrollTop = 0;
+    $('article').querySelector('.close').focus({ preventScroll:true });
+    return;
+  }
+  await changeArticle(album, 'write');
+});
+
+function toggleArticleMenu(open) {
+  show($('articleMenu'), open);
+  $('articleMore').setAttribute('aria-expanded', String(open));
+  $('deleteArticle').textContent = 'Delete article';
+}
+$('articleMore').addEventListener('click', () => {
+  const open = $('articleMenu').classList.contains('hidden');
+  toggleArticleMenu(open);
+  if (open) $('rewriteArticle').focus();
+});
+document.addEventListener('click', e => {
+  if (!$('articleMenu').classList.contains('hidden') && !e.target.closest('.article-tools')) toggleArticleMenu(false);
+});
+$('article').addEventListener('keydown', e => {
+  if (e.key === 'Escape' && !$('articleMenu').classList.contains('hidden')) {
+    e.stopPropagation();
+    toggleArticleMenu(false);
+    $('articleMore').focus();
+  }
+});
+$('rewriteArticle').addEventListener('click', () => changeArticle(articleAlbum, 'rewrite'));
+$('deleteArticle').addEventListener('click', () => {
+  if ($('deleteArticle').textContent === 'Delete article') {
+    $('deleteArticle').textContent = 'Confirm deletion';
+    return;
+  }
+  changeArticle(articleAlbum, 'delete');
+});
+
+async function changeArticle(album, action) {
+  if (!album || pendingArticles.has(album.id)) return;
+  show($('article'), false);
+  const deleting = action === 'delete';
+  pendingArticles.set(album.id, deleting ? 'Deleting' : 'Queued');
+  if (visibleNote?.album.id === album.id) renderNote();
+  try {
+    let result = null;
+    if (deleting) await invoke('delete_album_note', {albumId:album.id});
+    else result = await invoke('generate_album_note', {albumId:album.id, research:researchEnabled(), replace:action === 'rewrite'});
+    if (visibleNote?.album.id === album.id) visibleNote.body = result;
+  }
+  catch (e) { toast(String(e),6000); }
+  finally {
+    pendingArticles.delete(album.id);
+    if (visibleNote?.album.id === album.id) renderNote();
+    else if (focused()?.id === album.id) prepareNote(album);
+  }
+}
+for (const [button, importing] of [['exportArchive',false],['importArchive',true]]) {
+  $(button).addEventListener('click', async () => {
+    $('exportArchive').disabled = $('importArchive').disabled = true;
+    $('archiveStatus').textContent = importing ? 'Importing…' : 'Exporting…';
+    try {
+      const result = await invoke('transfer_library_art', {importing});
+      $('archiveStatus').textContent = result ? (importing ? 'Imported' : 'Exported') + ' · ' + result.notes + ' articles · ' + result.images + ' images' + (result.skipped ? ' · ' + result.skipped + ' unmatched albums' : '') : '';
+      if (result && importing) await loadAlbums();
+    } catch(e) { $('archiveStatus').textContent = String(e); }
+    finally { $('exportArchive').disabled = $('importArchive').disabled = false; }
+  });
+}
 function updateCaption(force) {
   const n = state.albums.length;
   if (!n) return;
@@ -123,14 +316,27 @@ function updateCaption(force) {
   if (i === lastCaption && !force) return;
   lastCaption = i;
   const a = state.albums[i];
+  prepareNote(a);
+  if (currentLetter !== a.initial) {
+    const previous = letterButtons.get(currentLetter);
+    if (previous) {
+      previous.removeAttribute('aria-current');
+      previous.tabIndex = -1;
+    }
+    const button = letterButtons.get(a.initial);
+    button.setAttribute('aria-current', 'true');
+    button.tabIndex = 0;
+    currentLetter = a.initial;
+  }
   $('capArtist').textContent = a.artist;
   const title = $('capTitle');
   title.textContent = a.title;
-  if (a.year) {
-    const y = document.createElement('span');
-    y.className = 'year';
-    y.textContent = a.year;
-    title.appendChild(y);
+  const details = [a.year, a.genre?.trim()].filter(Boolean);
+  if (details.length) {
+    const meta = document.createElement('span');
+    meta.className = 'album-meta';
+    meta.textContent = details.join(' · ');
+    title.append(' ', meta);
   }
   $('counter').textContent = `${String(i + 1).padStart(4, '0')} / ${String(n).padStart(4, '0')}`;
 }
@@ -158,6 +364,7 @@ function go(index) {
   // Long jumps (search) start just before the destination so we don't stream thousands of sleeves.
   if (Math.abs(t - state.pos) > 24) state.pos = t - Math.sign(t - state.pos) * 6;
   state.target = t;
+  rememberPosition();
   kick();
 }
 const focused = () => state.albums[clamp(Math.round(state.target), 0, state.albums.length - 1)];
@@ -176,6 +383,7 @@ crate.addEventListener('wheel', (e) => {
     state.target = clamp(state.target + dir, 0, state.albums.length - 1);
     wheelAcc -= dir * step;
   }
+  rememberPosition();
   kick();
 }, { passive: false });
 
@@ -218,18 +426,50 @@ crate.addEventListener('pointercancel', endDrag);
 
 /* ---------------- library loading ---------------- */
 
+let libraryRequest = 0;
 async function loadAlbums() {
-  const keepId = state.albums.length ? focused()?.id : null;
-  state.albums = await invoke('get_albums');
-  for (const a of state.albums) a.search = `${a.artist} ${a.title} ${a.year ?? ''}`.toLowerCase();
+  const request = ++libraryRequest;
+  const albums = await invoke('get_albums');
+  if (request !== libraryRequest) return;
+  const byId = new Map(albums.map(a => [a.id, a]));
+  const represented = new Set();
+  for (const a of albums) {
+    const artists = (a.members || []).map(id => {
+      represented.add(id);
+      return byId.get(id)?.artist || '';
+    });
+    a.search = [a.artist, a.title, a.year, ...artists].join(' ').toLowerCase();
+  }
+  artistAlbums = albums.filter(a => !a.members?.length);
+  titleAlbums = albums.filter(a => !represented.has(a.id));
+  applyLibraryOrder();
+}
+function applyLibraryOrder() {
+  const previous = focused();
+  const keepId = previous?.id ?? savedPosition?.id;
+  const fallback = state.albums.length ? Math.round(state.target) : savedPosition?.index;
+  state.albums = indexAlbums(indexMode === 'album' ? titleAlbums : artistAlbums);
   clearCrate();
   lastCaption = -1;
   let idx = keepId ? state.albums.findIndex((a) => a.id === keepId) : -1;
-  if (idx < 0) idx = Math.min(Math.round(state.target), Math.max(0, state.albums.length - 1));
+  if (idx < 0 && keepId) idx = state.albums.findIndex(a => a.members?.includes(keepId));
+  if (idx < 0 && previous?.members) {
+    if (previous.members.includes(preferredMember)) idx = state.albums.findIndex(a => a.id === preferredMember);
+    if (idx < 0) idx = state.albums.findIndex(a => previous.members.includes(a.id));
+  }
+  if (idx < 0) idx = clamp(Number.isSafeInteger(fallback) ? fallback : 0, 0, Math.max(0, state.albums.length - 1));
   state.pos = state.target = idx;
+  rememberPosition();
   render();
   updateCaption(true);
 }
+$('indexMode').addEventListener('click', () => {
+  closeSearch();
+  if (indexMode === 'artist') preferredMember = focused()?.id;
+  indexMode = indexMode === 'artist' ? 'album' : 'artist';
+  localStorage.setItem('muso.indexMode', indexMode);
+  applyLibraryOrder();
+});
 
 async function boot() {
   layout();
@@ -287,7 +527,52 @@ listen('scan-done', async ({ payload }) => {
 
 /* ---------------- menu overlay ---------------- */
 
-function openMenu() { show($('menu')); }
+window.__TAURI__.app.getVersion()
+  .then(version => { $('menuVersion').textContent = `Muso v${version}`; })
+  .catch(error => console.warn('Could not read Muso version', error));
+
+let availableUpdate;
+$('menuVersion').addEventListener('click', async () => {
+  const button = $('menuVersion');
+  const status = $('updateStatus');
+  button.disabled = true;
+  try {
+    if (!availableUpdate) {
+      status.textContent = 'Checking for updates…';
+      availableUpdate = await window.__TAURI__.updater.check({timeout: 20000});
+      status.textContent = availableUpdate ? 'Update available' : 'Muso is up to date.';
+      if (availableUpdate) {
+        button.textContent = `Install v${availableUpdate.version}`;
+        button.title = 'Download and install update';
+      }
+    } else {
+      let received = 0, total = 0;
+      status.textContent = 'Downloading update…';
+      await availableUpdate.downloadAndInstall(({event, data}) => {
+        if (event === 'Started') total = data.contentLength || 0;
+        if (event === 'Progress') {
+          received += data.chunkLength;
+          if (total) status.textContent = `Downloading… ${Math.floor(100 * received / total)}%`;
+        }
+        if (event === 'Finished') status.textContent = 'Installing update…';
+      });
+      await availableUpdate.close();
+      availableUpdate = null;
+      status.textContent = 'Restart Muso to use the update.';
+      button.textContent = 'Update installed';
+      return;
+    }
+  } catch (e) {
+    status.textContent = availableUpdate ? 'Installation failed. Click to retry.' : 'Update check failed. Click to retry.';
+    console.warn('Muso update', e);
+  }
+  button.disabled = false;
+});
+
+function openMenu() {
+  show($('menu'));
+  playerWindow.isFullscreen().then(showFullscreenAction).catch(e => toast(String(e)));
+}
 function closeMenu() { show($('menu'), false); }
 $('menuBtn').addEventListener('click', openMenu);
 $('menu').querySelector('.menu-scrim').addEventListener('click', closeMenu);
@@ -297,6 +582,8 @@ $('menu').querySelectorAll('[data-action]').forEach((b) =>
     const act = b.dataset.action;
     if (act === 'search') openSearch();
     if (act === 'settings') openSettings();
+    if (act === 'eq') openEQ(false);
+    if (act === 'fullscreen') toggleFullscreen();
     if (act === 'ai') openAi();
     if (act === 'refresh') {
       invoke('scan_library').then((started) => toast(started ? 'Refreshing library…' : 'Already digging…'));
@@ -408,6 +695,7 @@ async function openSettings() {
 const filterSelect = $('imageFilter');
 const rippleToggle = $('pointerRipples');
 const strengthInput = $('effectStrength');
+const spectrum = createSpectrumView(invoke, listen);
 const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
 let waveFrame = 0;
 let wave;
@@ -448,13 +736,17 @@ function drawWave(now) {
   wave.x += (wave.targetX - wave.x) * follow;
   wave.y += (wave.targetY - wave.y) * follow;
   wave.lastFrame = now;
-  const diameter = 155 + 220 * age + 9 * Math.sin((now - wave.start) / 105);
+  const t = (now - wave.start) / 185 + wave.phase;
+  const unrest = (1 - age) * (.35 + .65 * wave.motion);
+  const diameter = 155 + 220 * age;
+  const width = diameter * (1 + unrest * (.14 * Math.sin(t) + .09 * Math.sin(2.73 * t)));
+  const height = diameter * (1 + unrest * (.12 * Math.cos(1.47 * t) - .07 * Math.sin(2.21 * t)));
   const field = $('waveField');
-  field.setAttribute('x', wave.x - diameter / 2);
-  field.setAttribute('y', wave.y - diameter / 2);
-  field.setAttribute('width', diameter);
-  field.setAttribute('height', diameter);
-  $('waveDepth').setAttribute('scale', 42 * (Number(strengthInput.value) / 100) * (1 - age) ** 2);
+  field.setAttribute('x', wave.x - width / 2 + unrest * 9 * Math.sin(1.83 * t));
+  field.setAttribute('y', wave.y - height / 2 + unrest * 7 * Math.cos(2.37 * t));
+  field.setAttribute('width', width);
+  field.setAttribute('height', height);
+  $('waveDepth').setAttribute('scale', (50 + 9 * unrest) * (Number(strengthInput.value) / 100) * (1 - age) ** 2);
   $('atmosPictures').classList.add('refracting');
   waveFrame = requestAnimationFrame(drawWave);
 }
@@ -467,7 +759,14 @@ function pointerRipple(e) {
   const bounds = $('atmosPictures').getBoundingClientRect();
   const x = e.clientX - bounds.left, y = e.clientY - bounds.top;
   const now = performance.now();
-  if (!wave) wave = { x, y, start: now, lastFrame: now };
+  if (!wave) wave = { x, y, start: now, lastFrame: now, phase: Math.random() * Math.PI * 2, motion: 0, vx: 0, vy: 0 };
+  else {
+    const dt = Math.max(8, now - wave.lastContact);
+    const vx = (x - wave.targetX) / dt, vy = (y - wave.targetY) / dt;
+    const impulse = .5 * Math.hypot(vx, vy) + .8 * Math.hypot(vx - wave.vx, vy - wave.vy);
+    wave.motion = .6 * wave.motion + .4 * Math.min(1, impulse);
+    wave.vx = vx; wave.vy = vy;
+  }
   Object.assign(wave, { targetX: x, targetY: y, lastContact: now });
   if (!waveFrame) waveFrame = requestAnimationFrame(drawWave);
 }
@@ -482,18 +781,19 @@ let coverSearchRunning = false;
 let stopCoverSearch = false;
 
 function applyCover(id, file) {
-  const album = state.albums.find((a) => a.id === id);
-  for (const a of [album, state.viewAlbum, state.playing?.album]) {
-    if (a?.id === id) Object.assign(a, { art: true, cover_file: file });
+  const updated = new Set();
+  for (const a of [...artistAlbums, ...titleAlbums, state.viewAlbum, state.playing?.album]) {
+    const inherited = a?.members?.includes(id) && (a.cover_file === id + '.jpg' || a.cover_file?.startsWith(id + '_'));
+    if (a && (a.id === id || inherited)) {
+      Object.assign(a, { art: true, cover_file: file });
+      updated.add(a.id);
+    }
   }
-  const index = state.albums.indexOf(album);
-  const sleeve = pool.get(index);
-  if (sleeve) {
-    sleeve.remove();
-    pool.delete(index);
-    render();
+  for (const [i, sleeve] of pool) {
+    if (updated.has(state.albums[i]?.id)) { sleeve.remove(); pool.delete(i); }
   }
-  if (state.viewAlbum?.id === id) {
+  render();
+  if (updated.has(state.viewAlbum?.id)) {
     for (const el of [$('coverImg'), $('bgArt')]) {
       el.src = coverUrl(state.viewAlbum, 'art');
       show(el);
@@ -564,15 +864,32 @@ const styleNames = {
   photogram: 'Silver Photogram',
 };
 function albumStyle(id) {
+  if ($('autoStyle').checked) return 'auto';
   const saved = localStorage.getItem('muso.style.' + id);
   return Object.hasOwn(styleNames, saved) ? saved : 'cinematic';
 }
-function showStyle(id) {
+let styleAlbum;
+async function showStyle(id) {
+  styleAlbum = id;
   const style = albumStyle(id);
-  $('albumStyle').value = $('aiStyle').value = style;
-  $('genLabel').textContent = 'Generate ' + styleNames[style] + ' images';
+  const auto = style === 'auto';
+  for (const select of [$('albumStyle'), $('aiStyle')]) {
+    select.disabled = auto;
+    select.options[0].textContent = 'AI choice';
+    select.value = style;
+  }
+  $('genLabel').textContent = auto ? 'Generate with AI style' : 'Generate ' + styleNames[style] + ' images';
+  if (auto && id) {
+    const name = await invoke('get_setting', { key: 'atmos_auto_style.' + id });
+    if (name && styleAlbum === id && $('autoStyle').checked) {
+      for (const select of [$('albumStyle'), $('aiStyle')]) select.options[0].textContent = name;
+    }
+  }
 }
 for (const select of [$('albumStyle'), $('aiStyle')]) {
+  const automatic = new Option('AI choice', 'auto');
+  automatic.hidden = true;
+  select.add(automatic);
   for (const [id, label] of Object.entries(styleNames)) select.add(new Option(label, id));
   select.addEventListener('change', () => {
     const a = state.viewAlbum || focused();
@@ -582,6 +899,12 @@ for (const select of [$('albumStyle'), $('aiStyle')]) {
     if (state.viewAlbum) startAtmospheres(a.id);
   });
 }
+$('autoStyle').checked = localStorage.getItem('muso.autoStyle') === '1';
+$('autoStyle').addEventListener('change', () => {
+  localStorage.setItem('muso.autoStyle', $('autoStyle').checked ? '1' : '0');
+  showStyle((state.viewAlbum || focused())?.id);
+  if (state.viewAlbum) startAtmospheres(state.viewAlbum.id);
+});
 async function openAi() {
   await loadKey();
   $('atmosToggle').checked = atmosEnabled();
@@ -676,8 +999,9 @@ function updateTrackRail(p) {
       const number = document.createElement('span');
       number.className = 'n';
       number.textContent = String(track.trackNo ?? index + 1).padStart(2, '0');
-      button.append(number, document.createTextNode(track.title));
-      button.title = track.title;
+      const label = p.album.members?.length > 1 && track.artist ? track.artist + ' — ' + track.title : track.title;
+      button.append(number, document.createTextNode(label));
+      button.title = label;
       button.addEventListener('click', () => playIndex(index));
       return button;
     });
@@ -806,8 +1130,8 @@ $('album').addEventListener('click', (e) => {
 });
 const playerWindow = window.__TAURI__.window.getCurrentWindow();
 function showFullscreenAction(fullscreen) {
-  $('fullscreenLabel').textContent = fullscreen ? 'Exit fullscreen' : 'Enter fullscreen';
-  $('fullscreenIcon').setAttribute('href', 'icons/lucide.svg#' + (fullscreen ? 'minimize' : 'maximize'));
+  document.querySelectorAll('.fullscreen-label').forEach(el => { el.textContent = fullscreen ? 'Exit fullscreen' : 'Enter fullscreen'; });
+  document.querySelectorAll('.fullscreen-icon').forEach(el => el.setAttribute('href', 'icons/lucide.svg#' + (fullscreen ? 'minimize' : 'maximize')));
 }
 async function toggleFullscreen() {
   try {
@@ -821,6 +1145,17 @@ $('albumMenuBtn').addEventListener('click', async () => {
   showFullscreenAction(await playerWindow.isFullscreen());
 });
 $('fullscreenBtn').addEventListener('click', () => { show($('albumMenu'), false); toggleFullscreen(); });
+function openEQ(fromPlayer) {
+  if (fromPlayer) show($('albumMenu'), false);
+  $('eq').classList.toggle('from-player', fromPlayer);
+  show($('eq'));
+  $('spectrumToggle').focus();
+}
+$('albumEQ').addEventListener('click', () => openEQ(true));
+$('eq').querySelector('.close').addEventListener('click', () => {
+  if (!$('eq').classList.contains('from-player')) { openMenu(); $('menu').querySelector('[data-action="eq"]').focus(); }
+  else { poke(); $('albumMenuBtn').focus(); }
+});
 $('openImageFolder').addEventListener('click', async () => {
   show($('albumMenu'), false);
   if (!state.viewAlbum) return;
@@ -841,10 +1176,12 @@ $('genBtn').addEventListener('click', () => {
 let atmosTimer = null;
 let atmosToken = 0;
 let readyAlbum = null;
+let playlist = null;
 function updateAtmosView() {
   const p = state.playing;
   const reveal = p?.introDone && readyAlbum === p.album.id && state.viewAlbum?.id === readyAlbum;
   $('album').classList.toggle('showing-atmos', !!reveal);
+  spectrum.setPlayback(!!reveal && !p.paused, p?.playbackId);
   if (!reveal) stopWave();
 }
 async function startAtmospheres(albumId, announce = false) {
@@ -852,54 +1189,76 @@ async function startAtmospheres(albumId, announce = false) {
   const token = ++atmosToken;
   if (!atmosEnabled()) return;
   const style = albumStyle(albumId);
-  let files = [];
   try {
     // Preview the chosen look on a saved set until this album has images in that style.
-    for (const candidate of new Set([style, ...Object.keys(styleNames)])) {
-      files = await invoke('get_atmospheres', { albumId, style: candidate });
+    for (const candidate of new Set([style, ...Object.keys(styleNames), 'auto'])) {
+      const files = await invoke('get_atmospheres', { albumId, style: candidate });
       if (token !== atmosToken) return;
       if (files.length) {
-        $('album').dataset.preview = candidate === style ? '' : style;
-        break;
+        setPaintings(albumId, candidate, files);
+        return;
       }
     }
   }
   catch (e) { if (token === atmosToken) toast(String(e), 6000); return; }
-  if (token !== atmosToken) return;
-  if (!files.length) {
-    if (announce) toast('No saved images for this album. Choose Generate Visual Atmospheres.', 5500);
+  if (announce) toast('No saved images for this album. Choose Generate Visual Atmospheres.', 5500);
+}
+
+function schedulePainting() {
+  clearTimeout(atmosTimer);
+  if (!playlist || !playlist.shown || playlist.pending || playlist.files.length < 2) return;
+  const delay = Math.max(0, playlist.since + ATMOS_INTERVAL - performance.now());
+  atmosTimer = setTimeout(() => {
+    const next = (playlist.files.indexOf(playlist.shown) + 1) % playlist.files.length;
+    loadPainting(playlist, playlist.files[next]);
+  }, delay);
+}
+
+function setPaintings(albumId, style, files) {
+  if (!files.length) return;
+  ++atmosToken; // Discard any library lookup that began before this set arrived.
+  if (playlist?.albumId === albumId && playlist.style === style && playlist.first === files[0]) {
+    playlist.files = files.filter(file => !playlist.failed.has(file));
+    schedulePainting();
     return;
   }
-  const layers = [$('atmosA'), $('atmosB')];
-  let k = 0, cur = 0;
-  const showNext = () => {
-    const img = layers[cur];
-    const other = layers[1 - cur];
-    const file = files[k % files.length];
-    img.onload = () => {
-      if (token !== atmosToken) return;
-      readyAlbum = albumId;
-      updateAtmosView();
-      $('showAtmosBtn').setAttribute('aria-pressed', 'true');
-      img.classList.add('on');
-      other.classList.remove('on');
-      cur = 1 - cur;
-      if (files.length > 1) atmosTimer = setTimeout(showNext, ATMOS_INTERVAL);
-    };
-    img.onerror = () => {
-      if (token !== atmosToken) return;
-      files = files.filter((f) => f !== file);
-      if (files.length) { showNext(); return; }
-      stopAtmospheres();
-      toast('Saved atmosphere images could not be opened.', 5000);
-    };
-    img.src = asset(file);
-    k++;
+  clearTimeout(atmosTimer);
+  playlist = { albumId, style, first: files[0], files, failed: new Set() };
+  loadPainting(playlist, files[0]);
+}
+
+function loadPainting(set, file) {
+  set.pending = true;
+  const other = $('atmosA').classList.contains('on') ? $('atmosA') : $('atmosB');
+  const img = other === $('atmosA') ? $('atmosB') : $('atmosA');
+  img.onload = () => {
+    if (set !== playlist) return;
+    set.pending = false;
+    set.shown = file;
+    set.since = performance.now();
+    readyAlbum = set.albumId;
+    $('album').dataset.preview = set.style === albumStyle(set.albumId) ? '' : albumStyle(set.albumId);
+    img.classList.add('on');
+    other.classList.remove('on');
+    updateAtmosView();
+    $('showAtmosBtn').setAttribute('aria-pressed', 'true');
+    schedulePainting();
   };
-  showNext();
+  img.onerror = () => {
+    if (set !== playlist) return;
+    set.pending = false;
+    set.failed.add(file);
+    set.files = set.files.filter(f => f !== file);
+    if (set.shown) { schedulePainting(); return; }
+    if (set.files.length) { loadPainting(set, set.files[0]); return; }
+    stopAtmospheres();
+    toast('Saved atmosphere images could not be opened.', 5000);
+  };
+  img.src = asset(file);
 }
 function stopAtmospheres() {
   atmosToken++;
+  playlist = null;
   clearTimeout(atmosTimer);
   atmosTimer = null;
   readyAlbum = null;
@@ -914,6 +1273,15 @@ function stopAtmospheres() {
 }
 
 const generating = new Set();
+function paintingReady({ albumId, style, files }) {
+  if (state.viewAlbum?.id === albumId && atmosEnabled() && albumStyle(albumId) === style) {
+    setPaintings(albumId, style, files);
+  }
+}
+listen('atmos-image-ready', ({ payload }) => {
+  paintingReady(payload);
+  if (payload.files.length === 1 && styleAlbum === payload.albumId) showStyle(payload.albumId);
+});
 async function generate(a) {
   const key = await invoke('get_setting', { key: 'openai_key' });
   if (!key && !(await invoke('has_environment_key'))) { openAi(); toast('Add an OpenAI API key first'); return; }
@@ -921,9 +1289,10 @@ async function generate(a) {
   generating.add(a.id);
   toast(`Composing atmospheres for ${a.title}…`);
   try {
-    const files = await invoke('generate_atmospheres', { albumId: a.id, research: researchEnabled(), style: albumStyle(a.id) });
+    const style = albumStyle(a.id);
+    const files = await invoke('generate_atmospheres', { albumId: a.id, research: researchEnabled(), style });
+    paintingReady({ albumId: a.id, style, files });
     toast(`${files.length} atmosphere image(s) saved · ${a.title}`);
-    if (state.viewAlbum && state.viewAlbum.id === a.id) startAtmospheres(a.id);
   } catch (e) {
     toast(String(e), 6000);
   } finally {
@@ -941,6 +1310,15 @@ listen('atmos-progress', ({ payload }) => {
 
 window.addEventListener('keydown', (e) => {
   const modalOpen = [...document.querySelectorAll('.modal')].some((m) => !m.classList.contains('hidden'));
+  if (e.key === 'F11') {
+    e.preventDefault();
+    if (!e.repeat) toggleFullscreen();
+    return;
+  }
+  if (e.key === 'Escape' && !$('eq').classList.contains('hidden')) {
+    $('eq').querySelector('.close').click();
+    return;
+  }
   if (e.target.matches('input, select')) return;
   if (e.key === 'Escape') {
     if (modalOpen) document.querySelectorAll('.modal').forEach((m) => show(m, false));
@@ -949,8 +1327,10 @@ window.addEventListener('keydown', (e) => {
     else if (state.view === 'album') closeAlbum();
     return;
   }
-  if (modalOpen) return;
-  if (e.key === 'F11' || (e.key === 'f' && state.view === 'album')) {
+  if (modalOpen || !$('menu').classList.contains('hidden')) return;
+  if (e.target === $('noteAction') && (e.key === ' ' || e.key === 'Enter')) return;
+  if (libraryIndex.contains(e.target) && (e.key === 'Enter' || e.key === ' ')) return;
+  if (e.key === 'f' && state.view === 'album') {
     toggleFullscreen();
     e.preventDefault();
     return;

@@ -11,19 +11,20 @@ const API: &str = "https://api.openai.com/v1";
 const TEXT_MODEL: &str = "gpt-4o-mini";
 const IMAGE_MODEL: &str = "gpt-image-2.5-flare";
 
-const TEXTURE: &str = "Visible irregular silver-halide film grain, especially in midtones, with tactile shadow detail. \
+const TEXTURE: &str = "Keep a tactile, visibly grainy surface appropriate to the selected medium, with detail in the midtones and shadows. \
 Absolutely no text, no letters, no numbers, no typography, no logos, no signatures, \
 no album covers, no musical instruments, no recognizable people.";
 
-pub fn style_direction(style: &str) -> Option<&'static str> {
-    Some(match style {
+pub fn style_direction(style: &str) -> Option<(&'static str, &'static str)> {
+    let direction = match style {
         "cinematic" => "Grainy 35 mm cinema. Use framing, depth of field and exposure to interpret the music's particular character.",
         "dreamscape" => "Analog double exposure with impossible scale and luminous halation. Let the relationship between layers follow the arrangement of the song.",
         "ambient" => "Matte pigment, diffuse boundaries and powdery grain. Use the recording's actual density, silences and contrasts to decide where shapes emerge.",
         "tape" => "A worn analog video still. Translate rhythm into displaced scan lines, chroma bleed and bands of magnetic dropout. Let fragments of an unfamiliar space emerge through dense low-light noise.",
         "photogram" => "An experimental darkroom photogram. Arrange translucent materials and mineral fragments on silver gelatin paper. Solarized edges, deep blacks and coarse silver grain. An abstract contact print in monochrome.",
         _ => return None,
-    })
+    };
+    Some((crate::paintings::style_label(style)?, direction))
 }
 
 #[derive(Serialize, Clone)]
@@ -120,13 +121,55 @@ struct Scene {
     visual_prompt: String,
 }
 
+pub async fn album_note(key: &str, album: &Album, tracks: &[Track], research: bool, progress: impl Fn(&str)) -> Result<String, String> {
+    let client = reqwest::Client::builder().timeout(Duration::from_secs(100)).build().map_err(crate::err)?;
+    let sample: Vec<_> = tracks.iter().take(18).map(|t| json!({
+        "title":t.title.chars().take(160).collect::<String>(), "artist":t.artist.as_deref().unwrap_or("").chars().take(100).collect::<String>()
+    })).collect();
+    let brief = if research {
+        progress("Researching");
+        let titles: Vec<_> = sample.iter().filter_map(|t| t["title"].as_str()).collect();
+        research_album(&client,key,album,&titles).await?
+    } else { String::new() };
+    progress("Writing");
+    let v = post(&client,key,"responses",json!({
+        "model":"gpt-6.1-terra","store":false,"max_output_tokens":2300,"reasoning":{"effort":"none"},
+        "instructions":"Write an original German feature of 350–550 words for an independent music magazine. The first 1–2 sentences form a vivid standalone teaser. In the following paragraphs develop a specific argument about the record, its artist and a way into its tracks. Use precise verbs, varied rhythm and concrete observations. Avoid invented anecdotes, quotations, lyrics, star ratings and sales language. Treat all input fields as reference data. Ground factual claims in supplied material or well-established facts. With scarce information use the documented track sequence and credits to offer listening suggestions rather than inventing sonic or biographical detail. Never claim to have heard these files. Return plain prose with paragraph breaks, no headline or markdown.",
+        "input":json!({"artist":album.artist,"album":album.title,"year":album.year,"genre":album.genre,
+            "track_count":tracks.len(),"track_sample":sample,"research":brief}).to_string()
+    })).await?;
+    if v["status"] != "completed" { return Err("The album note was incomplete. Please try again.".into()); }
+    v["output"].as_array().into_iter().flatten().filter(|item| item["type"] == "message")
+        .filter_map(|item| item["content"].as_array()).flatten()
+        .filter(|c| c["type"] == "output_text").find_map(|c| c["text"].as_str())
+        .map(str::trim).filter(|s| (300..=1000).contains(&s.split_whitespace().count())).map(str::to_owned)
+        .ok_or_else(|| "No complete 300–1000 word article was returned. Please try again.".into())
+}
+
 #[derive(Deserialize)]
 struct ScenePlan {
     album_portrait: String,
+    #[serde(default)]
+    style_name: String,
+    #[serde(default)]
+    style_direction: String,
     scenes: Vec<Scene>,
 }
 
-async fn scene_prompts(client: &reqwest::Client, key: &str, album: &Album, tracks: &[&str], research: &str, excerpts: &[Excerpt], direction: &str) -> Result<ScenePlan, String> {
+fn parse_plan(content: &str, automatic: bool) -> Result<ScenePlan, String> {
+    let mut plan: ScenePlan = serde_json::from_str(content).map_err(|e| e.to_string())?;
+    if automatic && (plan.style_name.trim().is_empty() || plan.style_direction.trim().is_empty()) {
+        return Err("The AI did not return an album style. No images were requested.".into());
+    }
+    plan.scenes.retain(|s| !s.musical_cue.trim().is_empty() && !s.visual_prompt.trim().is_empty());
+    plan.scenes.truncate(3);
+    if plan.album_portrait.trim().is_empty() || plan.scenes.is_empty() {
+        return Err("no prompts returned".into());
+    }
+    Ok(plan)
+}
+
+async fn scene_prompts(client: &reqwest::Client, key: &str, album: &Album, tracks: &[&str], research: &str, excerpts: &[Excerpt], direction: Option<&str>) -> Result<ScenePlan, String> {
     let system = "You are an art director who translates music into wordless visual atmospheres. \
 Establish a shared visual identity for the three images from the album description and its specific genre context first. \
 Write one short album portrait translating these into a palette, a sense of place and a material vocabulary that fits this particular recording. \
@@ -139,6 +182,9 @@ For each cue translate two audible properties into visible choices: e.g. spacing
 The chosen style determines the medium. The music determines subject, pacing, composition, light and density. Avoid literal song-title illustrations and generic scenic backdrops. \
 Never ask for text, typography, logos or the album cover. \
 Reply as JSON: {\"album_portrait\":\"shared visual identity grounded in this album's description and genre\",\"scenes\":[{\"musical_cue\":\"specific musical observation and track if known\",\"visual_prompt\":\"scene and its visual translation\"}]}";
+    let system = if direction.is_none() {
+        format!("{system}\nChoose the visual medium yourself for this album, before composing the scenes. Compare a few plausible media internally, then choose one whose physical marks, grain and treatment of space express specific qualities of this recording. Draw on the album portrait, genre context, track cues and any research supplied. Explore printmaking, photography, collage, painting and other media as appropriate. Avoid a recurring default film look. Apply the choice consistently across the scenes. Include two additional top-level JSON strings: style_name (a short English medium name) and style_direction (concrete rendering instructions connecting the medium to this music).")
+    } else { system.to_owned() };
     let user = json!({"album": album.title, "artist": album.artist, "genre": album.genre, "year": album.year,
         "tracks": tracks, "research": research, "local_excerpts": excerpts, "medium": direction}).to_string();
     let v = post(
@@ -156,13 +202,7 @@ Reply as JSON: {\"album_portrait\":\"shared visual identity grounded in this alb
     )
     .await?;
     let content = v["choices"][0]["message"]["content"].as_str().ok_or("empty response")?;
-    let mut plan: ScenePlan = serde_json::from_str(content).map_err(|e| e.to_string())?;
-    plan.scenes.retain(|s| !s.musical_cue.trim().is_empty() && !s.visual_prompt.trim().is_empty());
-    plan.scenes.truncate(3);
-    if plan.album_portrait.trim().is_empty() || plan.scenes.is_empty() {
-        return Err("no prompts returned".into());
-    }
-    Ok(plan)
+    parse_plan(content, direction.is_none())
 }
 
 async fn image(client: &reqwest::Client, key: &str, portrait: &str, scene: &Scene, direction: &str) -> Result<Vec<u8>, String> {
@@ -188,7 +228,8 @@ pub async fn generate(
     tracks: &[Track],
     data_dir: &Path,
     use_web: bool,
-    direction: &str,
+    preset: Option<(&str, &str)>,
+    mut publish: impl FnMut(&[String], &str) -> Result<(), String>,
 ) -> Result<Vec<String>, String> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(240))
@@ -217,7 +258,8 @@ pub async fn generate(
         research_album(&client, key, album, &titles).await?
     } else { String::new() };
     progress(0, 4, "Composing scenes");
-    let plan = scene_prompts(&client, key, album, &titles, &research, &excerpts, direction).await?;
+    let plan = scene_prompts(&client, key, album, &titles, &research, &excerpts, preset.map(|(_, direction)| direction)).await?;
+    let (style_name, medium) = preset.unwrap_or((plan.style_name.trim(), &plan.style_direction));
     let total = plan.scenes.len() + 1;
     let dir = data_dir.join("atmos");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -229,16 +271,19 @@ pub async fn generate(
     let mut files = Vec::new();
     for (i, scene) in plan.scenes.iter().enumerate() {
         progress(i + 1, total, "Painting");
-        let bytes = match image(&client, key, &plan.album_portrait, scene, direction).await {
-            Ok(b) => b,
-            Err(e) if files.is_empty() => return Err(e),
-            Err(_) => break,
-        };
+        let bytes = image(&client, key, &plan.album_portrait, scene, medium).await?;
         let img = image::load_from_memory(&bytes).map_err(|e| format!("Could not decode the generated image: {e}"))?;
-        let name = format!("{}_{stamp}_{i}.jpg", album.id);
-        crate::scanner::save_jpeg(&img, img.width().max(img.height()), &dir.join(&name))
+        let name = crate::paintings::filename(&album.title, style_name, i + 1, stamp);
+        let tmp = tempfile::NamedTempFile::new_in(&dir).map_err(|e| e.to_string())?;
+        crate::scanner::save_jpeg(&img, img.width().max(img.height()), tmp.path())
             .map_err(|e| format!("Could not save the generated image: {e}"))?;
+        let path = dir.join(&name);
+        tmp.persist_noclobber(&path).map_err(|e| e.to_string())?;
         files.push(format!("atmos/{name}"));
+        if let Err(e) = publish(&files, style_name) {
+            let _ = std::fs::remove_file(path);
+            return Err(e);
+        }
     }
     if files.is_empty() {
         return Err("no images could be generated".into());
@@ -249,6 +294,16 @@ pub async fn generate(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn automatic_generation_requires_a_named_medium_before_requesting_images() {
+        let mut response = json!({"album_portrait":"Paper strata", "scenes":[{"musical_cue":"Overlapping timbres","visual_prompt":"Layers of torn paper"}]});
+        assert!(parse_plan(&response.to_string(), false).is_ok());
+        assert!(parse_plan(&response.to_string(), true).is_err());
+        response["style_name"] = json!("Torn-paper collage");
+        response["style_direction"] = json!("Layer translucent paper to interpret overlapping timbres.");
+        assert_eq!(parse_plan(&response.to_string(), true).unwrap().style_name, "Torn-paper collage");
+    }
 
     #[test]
     fn reads_the_loudness_contour_of_a_local_wav() {

@@ -1,6 +1,6 @@
 [package]
 name = "muso"
-version = "0.1.4"
+version = "0.1.13"
 description = "Muso – a minimalist digital record crate"
 edition = "2021"
 license = "MIT"
@@ -22,8 +22,12 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 walkdir = "2"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 base64 = "0.22"
+percent-encoding = "2"
+tempfile = "3"
+zip = { version = "9.7", default-features = false }
 open = "5"
 tokio = { version = "1", features = ["time", "sync"] }
+tauri-plugin-updater = "2"
 
 # Image decoding / audio decoding are painfully slow unoptimized.
 [profile.dev.package."*"]

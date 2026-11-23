@@ -4,7 +4,7 @@ use std::path::Path;
 use std::time::Duration;
 
 pub fn open(path: &Path) -> rusqlite::Result<Connection> {
-    let c = Connection::open(path)?;
+    let mut c = Connection::open(path)?;
     c.busy_timeout(Duration::from_secs(15))?;
     c.query_row("PRAGMA journal_mode=WAL", [], |_| Ok(()))?;
     c.execute_batch(
@@ -39,6 +39,7 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
             idx INTEGER NOT NULL,
             file TEXT NOT NULL,
             PRIMARY KEY(album_id, style, idx));
+         CREATE TABLE IF NOT EXISTS album_notes(album_id TEXT PRIMARY KEY, body TEXT NOT NULL);
          CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);",
     )?;
     // Libraries created before online cover search have only the original art cache.
@@ -49,6 +50,21 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
     if !has_cover_file {
         c.execute("ALTER TABLE albums ADD COLUMN cover_file TEXT", [])?;
     }
+    let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    tx.execute_batch("CREATE TABLE IF NOT EXISTS release_tracks(
+        path TEXT PRIMARY KEY, release_id TEXT NOT NULL, disc_no INTEGER);
+        CREATE INDEX IF NOT EXISTS tracks_release ON release_tracks(release_id);")?;
+    let has_source: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('albums')
+        WHERE name='art_source')", [], |r| r.get(0))?;
+    if !has_source {
+        tx.execute("ALTER TABLE albums ADD COLUMN art_source TEXT", [])?;
+        crate::releases::rebuild(&tx)?;
+    }
+    tx.commit()?;
+    c.execute_batch("CREATE TEMP VIEW resolved_albums AS SELECT a.id,a.artist,a.title,a.year,a.genre,
+        (a.has_art=1 OR COALESCE(s.has_art,0)=1) AS has_art,
+        COALESCE(a.cover_file,s.cover_file,CASE WHEN s.has_art=1 THEN s.id || '.jpg' END) AS cover_file,
+        a.sort_key FROM albums a LEFT JOIN albums s ON a.art_source=s.id;")?;
     Ok(c)
 }
 
@@ -90,49 +106,56 @@ pub fn remove_folder(c: &Connection, path: &str) -> rusqlite::Result<()> {
     Ok(())
 }
 
-pub fn albums(c: &Connection) -> rusqlite::Result<Vec<Album>> {
+#[derive(Serialize)]
+pub struct LibraryAlbum {
+    #[serde(flatten)]
+    pub album: Album,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub members: Vec<String>,
+}
+
+fn read_album(r: &rusqlite::Row<'_>) -> rusqlite::Result<Album> {
+    Ok(Album {
+        id: r.get(0)?, artist: r.get(1)?, title: r.get(2)?, year: r.get(3)?,
+        genre: r.get(4)?, art: r.get::<_, bool>(5)?, cover_file: r.get(6)?,
+    })
+}
+
+pub fn albums(c: &Connection) -> rusqlite::Result<Vec<LibraryAlbum>> {
+    let mut members = std::collections::HashMap::<String, Vec<String>>::new();
+    let mut links = c.prepare("SELECT DISTINCT r.release_id,t.album_id FROM release_tracks r
+        JOIN tracks t ON t.path=r.path ORDER BY r.release_id,t.album_id")?;
+    let mut rows = links.query([])?;
+    while let Some(r) = rows.next()? { members.entry(r.get(0)?).or_default().push(r.get(1)?); }
     let mut st = c.prepare(
-        "SELECT id, artist, title, year, genre, has_art, cover_file FROM albums ORDER BY sort_key",
+        "SELECT id, artist, title, year, genre, has_art, cover_file FROM resolved_albums ORDER BY sort_key,id",
     )?;
     let rows = st.query_map([], |r| {
-        Ok(Album {
-            id: r.get(0)?,
-            artist: r.get(1)?,
-            title: r.get(2)?,
-            year: r.get(3)?,
-            genre: r.get(4)?,
-            art: r.get::<_, i64>(5)? != 0,
-            cover_file: r.get(6)?,
-        })
+        let album = read_album(r)?;
+        Ok(LibraryAlbum { members: members.remove(&album.id).unwrap_or_default(), album })
     })?;
     rows.collect()
 }
 
 pub fn album(c: &Connection, id: &str) -> rusqlite::Result<Option<Album>> {
     c.query_row(
-        "SELECT id, artist, title, year, genre, has_art, cover_file FROM albums WHERE id=?1",
-        [id],
-        |r| {
-            Ok(Album {
-                id: r.get(0)?,
-                artist: r.get(1)?,
-                title: r.get(2)?,
-                year: r.get(3)?,
-                genre: r.get(4)?,
-                art: r.get::<_, i64>(5)? != 0,
-                cover_file: r.get(6)?,
-            })
-        },
+        "SELECT id, artist, title, year, genre, has_art, cover_file FROM resolved_albums WHERE id=?1",
+        [id], read_album,
     )
     .optional()
 }
 
 pub fn tracks(c: &Connection, album_id: &str) -> rusqlite::Result<Vec<Track>> {
-    let mut st = c.prepare(
+    let sql = if album_id.starts_with("release-") {
+        "SELECT t.path,t.title,t.artist,t.track_no,r.disc_no,t.duration FROM release_tracks r
+         JOIN tracks t ON t.path=r.path WHERE r.release_id=?1
+         ORDER BY COALESCE(r.disc_no,1), COALESCE(t.track_no,99999), t.path"
+    } else {
         "SELECT path, title, artist, track_no, disc_no, duration FROM tracks
          WHERE album_id=?1
-         ORDER BY COALESCE(disc_no, 1), COALESCE(track_no, 99999), path",
-    )?;
+         ORDER BY COALESCE(disc_no, 1), COALESCE(track_no, 99999), path"
+    };
+    let mut st = c.prepare(sql)?;
     let rows = st.query_map([album_id], |r| {
         Ok(Track {
             path: r.get(0)?,
@@ -149,6 +172,10 @@ pub fn tracks(c: &Connection, album_id: &str) -> rusqlite::Result<Vec<Track>> {
 pub fn get_setting(c: &Connection, key: &str) -> rusqlite::Result<Option<String>> {
     c.query_row("SELECT value FROM settings WHERE key=?1", [key], |r| r.get(0))
         .optional()
+}
+
+pub fn note(c: &Connection, id: &str) -> rusqlite::Result<Option<String>> {
+    c.query_row("SELECT body FROM album_notes WHERE album_id=?1", [id], |r| r.get(0)).optional()
 }
 
 pub fn set_setting(c: &Connection, key: &str, value: &str) -> rusqlite::Result<()> {
@@ -184,6 +211,44 @@ pub fn replace_atmospheres(c: &Connection, album_id: &str, style: &str, files: &
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compilation_projection_keeps_artist_tracks_and_separate_releases() {
+        let mut c = open(Path::new(":memory:")).unwrap();
+        for id in ["a", "b", "c"] {
+            c.execute("INSERT INTO albums(id,artist,title,has_art,sort_key)
+                VALUES(?1,?1,'Jungle Jazz Vol 2',1,?1)", [id]).unwrap();
+        }
+        for (path, artist, track) in [("Jazz/CD2/one.mp3","a",1), ("Jazz/CD1/two.mp3","b",2),
+            ("Jazz/CD1/one.mp3","a",1), ("Elsewhere/one.mp3","a",1), ("Other/two.mp3","c",2)] {
+            c.execute("INSERT INTO tracks(path,album_id,title,artist,track_no,mtime)
+                VALUES(?1,?2,?1,?2,?3,1)", params![path,artist,track]).unwrap();
+        }
+        for _ in 0..2 {
+            let tx = c.transaction().unwrap();
+            crate::releases::rebuild(&tx).unwrap();
+            tx.commit().unwrap();
+        }
+        let library = albums(&c).unwrap();
+        let comp = library.iter().find(|a| a.members.len() == 2).unwrap();
+        assert_eq!(comp.album.artist, "Various Artists");
+        assert_eq!(comp.members, ["a","b"]);
+        assert!(comp.album.art && comp.album.cover_file.is_some());
+        assert_eq!(album(&c, &comp.album.id).unwrap().unwrap().title, "Jungle Jazz Vol 2");
+        let parts = tracks(&c, &comp.album.id).unwrap();
+        assert_eq!(parts.iter().map(|t| t.path.as_str()).collect::<Vec<_>>(),
+            ["Jazz/CD1/one.mp3","Jazz/CD1/two.mp3","Jazz/CD2/one.mp3"]);
+        assert_eq!(tracks(&c,"a").unwrap().len(), 3);
+        let solo = library.iter().find(|a| a.members == ["a"]).unwrap();
+        assert_eq!(tracks(&c, &solo.album.id).unwrap()[0].path, "Elsewhere/one.mp3");
+        assert!(library.iter().any(|a| a.album.id == "c" && a.members.is_empty()));
+        c.execute("DELETE FROM tracks WHERE album_id='b'", []).unwrap();
+        let tx = c.transaction().unwrap();
+        crate::releases::rebuild(&tx).unwrap();
+        tx.commit().unwrap();
+        assert!(album(&c, &comp.album.id).unwrap().is_none());
+        assert_eq!(tracks(&c,"a").unwrap().len(), 3);
+    }
 
     #[test]
     fn changing_one_style_preserves_legacy_images_and_other_styles() {

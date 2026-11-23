@@ -184,6 +184,7 @@ pub fn scan(app: &AppHandle, db_path: &Path, data_dir: &Path) -> Result<usize, S
     let mut seen: HashSet<String> = HashSet::new();
 
     let tx = conn.transaction().map_err(e2s)?;
+    let mut changed = false;
     let mut files = 0usize;
     for folder in folders.iter().filter(|f| !offline.contains(f)) {
         for entry in WalkDir::new(folder).follow_links(true).into_iter().filter_map(Result::ok) {
@@ -215,6 +216,7 @@ pub fn scan(app: &AppHandle, db_path: &Path, data_dir: &Path) -> Result<usize, S
             }
 
             let info = read_track(path);
+            changed = true;
             let album_id = fnv(&format!(
                 "{}\u{0}{}",
                 info.album_artist.to_lowercase(),
@@ -277,17 +279,19 @@ pub fn scan(app: &AppHandle, db_path: &Path, data_dir: &Path) -> Result<usize, S
             continue;
         }
         tx.execute("DELETE FROM tracks WHERE path=?1", [path]).map_err(e2s)?;
+        changed = true;
     }
     tx.execute(
-        "DELETE FROM albums WHERE id NOT IN (SELECT DISTINCT album_id FROM tracks)",
+        "DELETE FROM albums WHERE art_source IS NULL AND id NOT IN (SELECT DISTINCT album_id FROM tracks)",
         [],
     )
     .map_err(e2s)?;
+    if changed { crate::releases::rebuild(&tx).map_err(e2s)?; }
     tx.commit().map_err(e2s)?;
 
     let _ = app.emit("scan-progress", Progress { files });
     let albums: i64 = conn
-        .query_row("SELECT COUNT(*) FROM albums", [], |r| r.get(0))
+        .query_row("SELECT COUNT(*) FROM albums WHERE art_source IS NULL", [], |r| r.get(0))
         .map_err(e2s)?;
     Ok(albums as usize)
 }
