@@ -1,6 +1,6 @@
 [package]
 name = "muso"
-version = "0.1.15"
+version = "0.1.16"
 description = "Muso – a minimalist digital record crate"
 edition = "2021"
 license = "MIT"
@@ -37,3 +37,6 @@ opt-level = 3
 codegen-units = 1
 lto = "thin"
 strip = true
+
+[target."cfg(windows)".dependencies]
+tauri-plugin-opener = "2"

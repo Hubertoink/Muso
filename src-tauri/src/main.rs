@@ -216,15 +216,18 @@ fn open_image_folder(state: State<'_, AppState>, album_id: String) -> R<()> {
     }
     #[cfg(windows)]
     {
-        let conn = state.db.lock().map_err(err)?;
-        let mut query = conn.prepare("SELECT file FROM atmosphere_variants WHERE album_id=?1
-            UNION ALL SELECT file FROM atmospheres WHERE album_id=?1").map_err(err)?;
-        let files = query.query_map([album_id], |r| r.get::<_, String>(0)).map_err(err)?;
-        let selected = files.filter_map(Result::ok).map(|f| state.data_dir.join(f))
-            .find(|p| p.parent() == Some(dir.as_path()) && p.is_file());
+        let selected = {
+            let conn = state.db.lock().map_err(err)?;
+            let mut query = conn.prepare("SELECT file FROM atmosphere_variants WHERE album_id=?1
+                UNION ALL SELECT file FROM atmospheres WHERE album_id=?1").map_err(err)?;
+            let files = query.query_map([album_id], |r| r.get::<_, String>(0)).map_err(err)?;
+            files.filter_map(Result::ok).map(|f| state.data_dir.join(f))
+                .find(|p| p.parent() == Some(dir.as_path()) && p.is_file())
+        };
         if let Some(image) = selected {
-            std::process::Command::new("explorer.exe").arg("/select,").arg(image).spawn().map_err(err)?;
-            return Ok(());
+            if tauri_plugin_opener::reveal_item_in_dir(image).is_ok() {
+                return Ok(());
+            }
         }
     }
     #[cfg(not(windows))]
