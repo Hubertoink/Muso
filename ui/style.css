@@ -239,7 +239,9 @@ input { font: inherit; color: inherit; }
 .atmos::after { content: ''; position: absolute; inset: 0; background: url('grain.png') repeat; mix-blend-mode: soft-light; opacity: .52; pointer-events: none; }
 .effect-strength { margin-top: 14px; }
 .effect-strength input { width: 42%; accent-color: var(--accent); }
-#lightFilter, #rippleLayer { pointer-events: none; position: absolute; inset: 0; overflow: hidden; }
+.filter-defs { position: absolute; pointer-events: none; }
+#lightFilter, #atmosPictures { pointer-events: none; position: absolute; inset: 0; overflow: hidden; }
+#atmosPictures.refracting { filter: url(#waterRefraction); }
 #lightFilter { display: none; mix-blend-mode: screen; opacity: calc(.36 * var(--effect-strength)); }
 #album.showing-atmos[data-filter=light] #lightFilter,
 #album.showing-atmos[data-filter=haze] #lightFilter { display: block; inset: -15%; animation: light-drift 24s ease-in-out infinite alternate; }
@@ -248,12 +250,9 @@ input { font: inherit; color: inherit; }
 #album.showing-atmos[data-filter=film] #lightFilter { display: block; background: url('grain.png'); mix-blend-mode: overlay; animation: film-weave .8s steps(1) infinite; }
 @keyframes light-drift { from { transform: translate(-8%, -5%) scale(.96); } to { transform: translate(11%, 6%) scale(1.14); } }
 @keyframes film-weave { 25% { background-position: 17px 31px; } 50% { background-position: -23px 7px; } 75% { background-position: 11px -29px; } }
-.water-ripple { position: absolute; width: 190px; height: 190px; border-radius: 50%; pointer-events: none;
-  background: radial-gradient(circle closest-side, transparent 62%, rgba(160,205,210,.17) 66%, transparent 70%, transparent 85%, rgba(245,250,247,.65) 89%, rgba(31,50,62,.33) 93%, transparent 99%);
-  animation: water-ripple 1.65s ease-out forwards; }
-@keyframes water-ripple { from { opacity: var(--effect-strength); transform: translate(-50%, -50%) scale(.09); } to { opacity: 0; transform: translate(-50%, -50%) scale(1.25); } }
 @media (prefers-reduced-motion: reduce) {
-  #album.showing-atmos #lightFilter, .water-ripple { display: none !important; }
+  #album.showing-atmos #lightFilter { display: none !important; }
+  #atmosPictures.refracting { filter: none; }
 }
 #album.showing-atmos .atmos { opacity: 1; transition-duration: 1.8s; }
 #album.showing-atmos .cover { opacity: 0; transition-duration: 1.8s; pointer-events: none; }

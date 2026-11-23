@@ -408,6 +408,9 @@ async function openSettings() {
 const filterSelect = $('imageFilter');
 const rippleToggle = $('pointerRipples');
 const strengthInput = $('effectStrength');
+const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
+let waveFrame = 0;
+let wave;
 filterSelect.value = localStorage.getItem('muso.imageFilter') || 'light';
 if (!filterSelect.value) filterSelect.value = 'light';
 rippleToggle.checked = localStorage.getItem('muso.pointerRipples') !== 'off';
@@ -415,7 +418,7 @@ strengthInput.value = localStorage.getItem('muso.effectStrength') ?? '40';
 function applyEffects() {
   $('album').dataset.filter = filterSelect.value;
   $('album').style.setProperty('--effect-strength', Number(strengthInput.value) / 100);
-  if (!rippleToggle.checked || Number(strengthInput.value) === 0) $('rippleLayer').replaceChildren();
+  if (!rippleToggle.checked || Number(strengthInput.value) === 0) stopWave();
 }
 filterSelect.addEventListener('change', () => {
   localStorage.setItem('muso.imageFilter', filterSelect.value);
@@ -431,26 +434,45 @@ strengthInput.addEventListener('input', () => {
 });
 applyEffects();
 
-let lastRipple = -Infinity;
-const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
+function stopWave() {
+  cancelAnimationFrame(waveFrame);
+  waveFrame = 0;
+  wave = null;
+  $('atmosPictures').classList.remove('refracting');
+}
+function drawWave(now) {
+  const age = Math.max(0, (now - wave.lastContact) / 1250);
+  if (age >= 1 || document.hidden || reducedMotion.matches) { stopWave(); return; }
+  // The displacement field samples the existing image. Neutral grey leaves pixels in place.
+  const follow = 1 - Math.exp(-Math.max(0, now - wave.lastFrame) / 55);
+  wave.x += (wave.targetX - wave.x) * follow;
+  wave.y += (wave.targetY - wave.y) * follow;
+  wave.lastFrame = now;
+  const diameter = 155 + 220 * age + 9 * Math.sin((now - wave.start) / 105);
+  const field = $('waveField');
+  field.setAttribute('x', wave.x - diameter / 2);
+  field.setAttribute('y', wave.y - diameter / 2);
+  field.setAttribute('width', diameter);
+  field.setAttribute('height', diameter);
+  $('waveDepth').setAttribute('scale', 42 * (Number(strengthInput.value) / 100) * (1 - age) ** 2);
+  $('atmosPictures').classList.add('refracting');
+  waveFrame = requestAnimationFrame(drawWave);
+}
 function pointerRipple(e) {
   const album = $('album');
   if (!rippleToggle.checked || reducedMotion.matches || Number(strengthInput.value) === 0 ||
-      !album.classList.contains('showing-atmos') || e.target.closest('button, .popover, .controls')) return;
+      !album.classList.contains('showing-atmos') || e.target.closest('button, .popover, .controls, .al-track')) return;
+  const image = $('atmosPictures').querySelector('img.on');
+  if (!image?.complete || !image.naturalWidth) return;
+  const bounds = $('atmosPictures').getBoundingClientRect();
+  const x = e.clientX - bounds.left, y = e.clientY - bounds.top;
   const now = performance.now();
-  if (e.type === 'pointermove' && now - lastRipple < 180) return;
-  lastRipple = now;
-  const layer = $('rippleLayer');
-  const bounds = layer.getBoundingClientRect();
-  const ring = document.createElement('i');
-  ring.className = 'water-ripple';
-  ring.style.left = (e.clientX - bounds.left) + 'px';
-  ring.style.top = (e.clientY - bounds.top) + 'px';
-  if (layer.childElementCount >= 8) layer.firstElementChild.remove();
-  layer.appendChild(ring);
-  ring.addEventListener('animationend', () => ring.remove(), { once: true });
+  if (!wave) wave = { x, y, start: now, lastFrame: now };
+  Object.assign(wave, { targetX: x, targetY: y, lastContact: now });
+  if (!waveFrame) waveFrame = requestAnimationFrame(drawWave);
 }
 for (const event of ['pointermove', 'pointerdown']) $('album').addEventListener(event, pointerRipple);
+document.addEventListener('visibilitychange', () => { if (document.hidden) stopWave(); });
 $('addFolderBtn').addEventListener('click', async () => {
   renderFolders(await invoke('pick_folders'));
   invoke('scan_library');
@@ -823,7 +845,7 @@ function updateAtmosView() {
   const p = state.playing;
   const reveal = p?.introDone && readyAlbum === p.album.id && state.viewAlbum?.id === readyAlbum;
   $('album').classList.toggle('showing-atmos', !!reveal);
-  if (!reveal) $('rippleLayer').replaceChildren();
+  if (!reveal) stopWave();
 }
 async function startAtmospheres(albumId, announce = false) {
   stopAtmospheres();
