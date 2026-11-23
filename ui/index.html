@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Muso</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- First launch -->
+  <section id="onboard" class="screen hidden">
+    <div class="onboard-inner">
+      <div class="mark"></div>
+      <p id="onboardText">Muso needs access to your music.</p>
+      <button id="chooseBtn" class="pill">Choose folders</button>
+      <p id="scanStatus" class="status"></p>
+    </div>
+  </section>
+
+  <!-- Library / crate -->
+  <section id="library" class="screen hidden">
+    <div id="crate"></div>
+    <div id="caption">
+      <div id="capArtist"></div>
+      <div id="capTitle"></div>
+    </div>
+    <div id="counter"></div>
+    <button id="nowPlaying" class="hidden" title="Now playing">
+      <span class="dot"></span><span id="npText"></span>
+    </button>
+    <div id="libStatus" class="status"></div>
+  </section>
+
+  <!-- Corner icon + hidden overlay -->
+  <button id="menuBtn" class="corner hidden" aria-label="Menu"><span></span></button>
+  <div id="menu" class="hidden">
+    <div class="menu-scrim"></div>
+    <nav class="menu-panel">
+      <button data-action="search">Search</button>
+      <button data-action="settings">Settings</button>
+      <button data-action="refresh">Refresh Library</button>
+      <button data-action="ai">AI Features</button>
+    </nav>
+  </div>
+
+  <!-- Search -->
+  <div id="search" class="sheet hidden">
+    <input id="searchInput" type="text" placeholder="Search the crate" spellcheck="false" autocomplete="off" />
+    <div id="searchResults"></div>
+  </div>
+
+  <!-- Settings -->
+  <div id="settings" class="modal hidden">
+    <div class="modal-card">
+      <h2>Settings</h2>
+      <h3>Music folders</h3>
+      <ul id="folderList"></ul>
+      <button id="addFolderBtn" class="link">+ Add folder</button>
+      <h3>Album covers</h3>
+      <p class="muted">Look up artist and album names on MusicBrainz. Higher-resolution front covers from the Cover Art Archive are saved only in Muso.</p>
+      <button id="findCovers" class="link setting-action">Find better covers</button>
+      <p id="coverProgress" class="muted" role="status"></p>
+      <h3>Atmosphere effects</h3>
+      <label class="style-field">Animated filter
+        <select id="imageFilter">
+          <option value="off">Off</option>
+          <option value="light">Drifting light</option>
+          <option value="film">Film weave</option>
+          <option value="haze">Colour haze</option>
+        </select>
+      </label>
+      <label class="check"><input type="checkbox" id="pointerRipples" /> Ripples under the pointer or fingertip</label>
+      <label class="style-field effect-strength">Effect strength <input type="range" id="effectStrength" min="0" max="100" step="5" /></label>
+      <h3>OpenAI account <span class="muted">optional</span></h3>
+      <p class="muted">Use an API key from your existing OpenAI account for Visual Atmospheres. Image generation uses API billing.</p>
+      <button class="link setting-action openai-keys">Open my OpenAI API keys ↗</button>
+      <input id="keyInput" type="password" aria-label="OpenAI API key" placeholder="Paste API key" spellcheck="false" autocomplete="off" />
+      <div class="modal-actions"><button class="pill close">Done</button></div>
+    </div>
+  </div>
+
+  <!-- AI features -->
+  <div id="ai" class="modal hidden">
+    <div class="modal-card">
+      <h2>Visual Atmospheres</h2>
+      <p class="muted">An optional ambient companion. Muso sends album title, artist, genre and track names to OpenAI and
+        paints up to three wordless images per album. They are stored locally and slowly drift behind the music.</p>
+      <h3>OpenAI API key</h3>
+      <button class="link setting-action openai-keys">Open my OpenAI API keys ↗</button>
+      <input id="keyInput2" type="password" aria-label="OpenAI API key" placeholder="Paste API key" spellcheck="false" autocomplete="off" />
+      <label class="check"><input id="atmosToggle" type="checkbox" /> Show atmospheres during playback</label>
+      <label class="style-field">Atmosphere style <select id="aiStyle"></select></label>
+      <label class="check"><input id="researchToggle" type="checkbox" /> Research the artist and album before generating</label>
+      <p class="muted">Uses one OpenAI web search per generation. API charges apply.</p>
+      <div class="modal-actions">
+        <button id="aiGenerateBtn" class="link">Generate for the focused album</button>
+        <button class="pill close">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Album / playback -->
+  <section id="album" class="hidden">
+    <div class="bg"><img id="bgArt" alt="" /></div>
+    <div class="atmos"><img id="atmosA" alt="" /><img id="atmosB" alt="" /><div id="lightFilter" aria-hidden="true"></div><div id="rippleLayer" aria-hidden="true"></div></div>
+    <div class="veil"></div>
+
+    <button id="backBtn" class="chrome corner-left" aria-label="Back">
+      <svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7" /></svg>
+    </button>
+    <button id="albumMenuBtn" class="chrome corner-right" aria-label="Album settings">
+      <svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.4" /><circle cx="12" cy="12" r="1.4" /><circle cx="19" cy="12" r="1.4" /></svg>
+    </button>
+    <div id="albumMenu" class="popover hidden">
+      <button id="fullscreenBtn"><svg aria-hidden="true"><use id="fullscreenIcon" href="icons/lucide.svg#maximize"/></svg><span id="fullscreenLabel">Enter fullscreen</span></button>
+      <button id="showAtmosBtn" aria-pressed="false"><svg aria-hidden="true"><use href="icons/lucide.svg#gallery-vertical-end"/></svg>Show Visual Atmospheres<svg class="check-icon" aria-hidden="true"><use href="icons/lucide.svg#check"/></svg></button>
+      <button id="findAlbumCover"><svg aria-hidden="true"><use href="icons/lucide.svg#scan-search"/></svg>Find a higher-resolution cover</button>
+      <label class="style-field"><svg aria-hidden="true"><use href="icons/lucide.svg#swatch-book"/></svg>Atmosphere style <select id="albumStyle"></select></label>
+      <button id="genBtn"><svg aria-hidden="true"><use href="icons/lucide.svg#sparkles"/></svg><span id="genLabel">Generate Visual Atmospheres</span></button>
+      <button id="openImageFolder"><svg aria-hidden="true"><use href="icons/lucide.svg#folder-open"/></svg>Open image folder</button>
+    </div>
+
+    <div class="stage">
+      <div id="cover" class="cover"><img id="coverImg" alt="" /></div>
+      <div class="meta">
+        <div id="alArtist" class="al-artist"></div>
+        <div id="alTitle" class="al-title"></div>
+        <div id="alTrack" class="al-track"></div>
+      </div>
+      <div class="controls chrome-soft">
+        <button id="prevBtn" aria-label="Previous">
+          <svg viewBox="0 0 24 24"><path d="M6 5v14" /><path d="M19 5l-10 7 10 7z" class="fill" /></svg>
+        </button>
+        <button id="playBtn" class="play" aria-label="Play / Pause">
+          <svg id="icoPlay" viewBox="0 0 24 24"><path d="M8 5l12 7-12 7z" class="fill" /></svg>
+          <svg id="icoPause" viewBox="0 0 24 24"><path d="M8 5v14M16 5v14" /></svg>
+        </button>
+        <button id="nextBtn" aria-label="Next">
+          <svg viewBox="0 0 24 24"><path d="M18 5v14" /><path d="M5 5l10 7-10 7z" class="fill" /></svg>
+        </button>
+      </div>
+    </div>
+    <div id="atmosStatus" class="status"></div>
+  </section>
+
+  <div id="toast"></div>
+
+  <script src="main.js"></script>
+</body>
+</html>

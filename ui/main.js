@@ -1,0 +1,900 @@
+'use strict';
+
+const { invoke } = window.__TAURI__.core;
+const { listen } = window.__TAURI__.event;
+
+const ASSET = navigator.userAgent.includes('Windows') ? 'http://muso.localhost/' : 'muso://localhost/';
+const asset = (rel) => ASSET + rel;
+const coverUrl = (album, folder) => asset(folder + '/' + (album.cover_file || album.id + '.jpg'));
+const $ = (id) => document.getElementById(id);
+
+const WINDOW = 9; // sleeves rendered on each side of the focused one
+const ATMOS_INTERVAL = 45000;
+
+const state = {
+  albums: [],
+  pos: 0,
+  target: 0,
+  view: 'library',
+  viewAlbum: null,
+  playing: null, // { album, tracks, index, paused, ended }
+  size: 420,
+};
+
+/* ---------------- helpers ---------------- */
+
+function hue(id) {
+  return parseInt(id.slice(0, 6), 16) % 360;
+}
+function blankColor(id) {
+  return `hsl(${hue(id)}, 14%, 20%)`;
+}
+let toastTimer;
+function toast(msg, ms = 2600) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), ms);
+}
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const show = (el, on = true) => el.classList.toggle('hidden', !on);
+
+/* ---------------- crate ---------------- */
+
+const crate = $('crate');
+const pool = new Map();
+
+function layout() {
+  state.size = Math.round(clamp(Math.min(window.innerHeight * 0.52, window.innerWidth * 0.36), 220, 640));
+  document.documentElement.style.setProperty('--size', state.size + 'px');
+  render();
+}
+
+function makeSleeve(i) {
+  const a = state.albums[i];
+  const el = document.createElement('div');
+  el.className = 'sleeve';
+  el.dataset.index = i;
+  if (a.art) {
+    const img = new Image();
+    img.decoding = 'async';
+    img.draggable = false;
+    img.src = coverUrl(a, 'thumb');
+    img.onerror = () => { img.remove(); fillBlank(el, a); };
+    el.appendChild(img);
+  } else {
+    fillBlank(el, a);
+  }
+  return el;
+}
+
+function fillBlank(el, a) {
+  el.classList.add('blank');
+  el.style.setProperty('--blank', blankColor(a.id));
+  const ar = document.createElement('div');
+  ar.className = 'b-artist';
+  ar.textContent = a.artist;
+  const ti = document.createElement('div');
+  ti.className = 'b-title';
+  ti.textContent = a.title;
+  el.append(ar, ti);
+}
+
+function clearCrate() {
+  for (const el of pool.values()) el.remove();
+  pool.clear();
+}
+
+function render() {
+  const n = state.albums.length;
+  if (!n) return;
+  const center = Math.round(state.pos);
+  const lo = Math.max(0, center - WINDOW);
+  const hi = Math.min(n - 1, center + WINDOW);
+  for (const [i, el] of pool) {
+    if (i < lo || i > hi) { el.remove(); pool.delete(i); }
+  }
+  const S = state.size;
+  const side = S * 0.66;
+  const gap = S * 0.17;
+  for (let i = lo; i <= hi; i++) {
+    let el = pool.get(i);
+    if (!el) { el = makeSleeve(i); pool.set(i, el); crate.appendChild(el); }
+    const d = i - state.pos;
+    const ad = Math.abs(d);
+    const s = Math.sign(d);
+    const t = Math.min(ad, 1);
+    const x = s * (t * side + Math.max(0, ad - 1) * gap);
+    const z = -t * S * 0.6 - Math.max(0, ad - 1) * S * 0.05;
+    const rot = -s * t * 64;
+    el.style.transform = `translate3d(${x.toFixed(1)}px,0,${z.toFixed(1)}px) rotateY(${rot.toFixed(2)}deg)`;
+    el.style.zIndex = String(1000 - Math.round(ad * 10));
+    el.style.opacity = ad > WINDOW - 1.5 ? String(clamp(WINDOW - 0.5 - ad, 0, 1)) : '1';
+    el.style.setProperty('--shade', (Math.min(ad, 5) * 0.16).toFixed(3));
+  }
+}
+
+let lastCaption = -1;
+function updateCaption(force) {
+  const n = state.albums.length;
+  if (!n) return;
+  const i = clamp(Math.round(state.pos), 0, n - 1);
+  if (i === lastCaption && !force) return;
+  lastCaption = i;
+  const a = state.albums[i];
+  $('capArtist').textContent = a.artist;
+  const title = $('capTitle');
+  title.textContent = a.title;
+  if (a.year) {
+    const y = document.createElement('span');
+    y.className = 'year';
+    y.textContent = a.year;
+    title.appendChild(y);
+  }
+  $('counter').textContent = `${String(i + 1).padStart(4, '0')} / ${String(n).padStart(4, '0')}`;
+}
+
+let animating = false;
+function tick() {
+  const diff = state.target - state.pos;
+  if (Math.abs(diff) < 0.0015 && !dragging) {
+    state.pos = state.target;
+    animating = false;
+  } else {
+    state.pos += diff * (dragging ? 0.45 : 0.16);
+  }
+  render();
+  updateCaption();
+  if (animating) requestAnimationFrame(tick);
+}
+function kick() {
+  if (!animating) { animating = true; requestAnimationFrame(tick); }
+}
+function go(index) {
+  const n = state.albums.length;
+  if (!n) return;
+  const t = clamp(Math.round(index), 0, n - 1);
+  // Long jumps (search) start just before the destination so we don't stream thousands of sleeves.
+  if (Math.abs(t - state.pos) > 24) state.pos = t - Math.sign(t - state.pos) * 6;
+  state.target = t;
+  kick();
+}
+const focused = () => state.albums[clamp(Math.round(state.target), 0, state.albums.length - 1)];
+
+// wheel / trackpad
+let wheelAcc = 0;
+crate.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  if (state.view !== 'library') return;
+  const raw = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+  const d = e.deltaMode === 1 ? raw * 40 : raw;
+  wheelAcc += d;
+  const step = 70;
+  while (Math.abs(wheelAcc) >= step) {
+    const dir = Math.sign(wheelAcc);
+    state.target = clamp(state.target + dir, 0, state.albums.length - 1);
+    wheelAcc -= dir * step;
+  }
+  kick();
+}, { passive: false });
+
+// drag / swipe
+let dragging = false, moved = false, startX = 0, startTarget = 0, downSleeve = null, lastX = 0, lastT = 0, vel = 0;
+crate.addEventListener('pointerdown', (e) => {
+  if (e.button !== 0) return;
+  dragging = true; moved = false;
+  startX = lastX = e.clientX; lastT = performance.now(); vel = 0;
+  startTarget = state.target;
+  downSleeve = e.target.closest('.sleeve');
+  crate.setPointerCapture(e.pointerId);
+});
+crate.addEventListener('pointermove', (e) => {
+  if (!dragging) return;
+  const dx = e.clientX - startX;
+  if (Math.abs(dx) > 6) { moved = true; crate.classList.add('dragging'); }
+  if (!moved) return;
+  const now = performance.now();
+  vel = (e.clientX - lastX) / Math.max(1, now - lastT);
+  lastX = e.clientX; lastT = now;
+  state.target = clamp(startTarget - dx / (state.size * 0.32), 0, state.albums.length - 1);
+  kick();
+});
+function endDrag() {
+  if (!dragging) return;
+  dragging = false;
+  crate.classList.remove('dragging');
+  if (moved) {
+    go(state.target - vel * 6); // gentle flick
+  } else if (downSleeve) {
+    const i = Number(downSleeve.dataset.index);
+    if (i === Math.round(state.target)) openAlbum(state.albums[i]);
+    else go(i);
+  }
+  downSleeve = null;
+}
+crate.addEventListener('pointerup', endDrag);
+crate.addEventListener('pointercancel', endDrag);
+
+/* ---------------- library loading ---------------- */
+
+async function loadAlbums() {
+  const keepId = state.albums.length ? focused()?.id : null;
+  state.albums = await invoke('get_albums');
+  for (const a of state.albums) a.search = `${a.artist} ${a.title} ${a.year ?? ''}`.toLowerCase();
+  clearCrate();
+  lastCaption = -1;
+  let idx = keepId ? state.albums.findIndex((a) => a.id === keepId) : -1;
+  if (idx < 0) idx = Math.min(Math.round(state.target), Math.max(0, state.albums.length - 1));
+  state.pos = state.target = idx;
+  render();
+  updateCaption(true);
+}
+
+async function boot() {
+  layout();
+  const folders = await invoke('get_folders');
+  if (!folders.length) {
+    showOnboard();
+    return;
+  }
+  await loadAlbums();
+  if (state.albums.length) showLibrary();
+  else { showOnboard('Looking for music…'); }
+  invoke('scan_library'); // quiet incremental refresh
+}
+
+function showOnboard(status = '') {
+  state.view = 'onboard';
+  show($('onboard'));
+  show($('library'), false);
+  show($('menuBtn'), false);
+  $('scanStatus').textContent = status;
+}
+function showLibrary() {
+  state.view = 'library';
+  show($('onboard'), false);
+  show($('library'));
+  show($('menuBtn'));
+  layout();
+  updateCaption(true);
+}
+
+$('chooseBtn').addEventListener('click', async () => {
+  const folders = await invoke('pick_folders');
+  if (folders.length) {
+    $('scanStatus').textContent = 'Opening the crate…';
+    invoke('scan_library');
+  }
+});
+
+listen('scan-progress', ({ payload }) => {
+  const msg = `Digging · ${payload.files.toLocaleString()} files`;
+  if (state.view === 'onboard') $('scanStatus').textContent = msg;
+  else $('libStatus').textContent = msg;
+});
+listen('scan-done', async ({ payload }) => {
+  $('libStatus').textContent = '';
+  if (payload.error) toast(payload.error, 5000);
+  await loadAlbums();
+  if (state.albums.length) {
+    if (state.view === 'onboard') showLibrary();
+  } else if (state.view !== 'album') {
+    showOnboard();
+    $('onboardText').textContent = 'No music found yet. Choose another folder?';
+  }
+});
+
+/* ---------------- menu overlay ---------------- */
+
+function openMenu() { show($('menu')); }
+function closeMenu() { show($('menu'), false); }
+$('menuBtn').addEventListener('click', openMenu);
+$('menu').querySelector('.menu-scrim').addEventListener('click', closeMenu);
+$('menu').querySelectorAll('[data-action]').forEach((b) =>
+  b.addEventListener('click', () => {
+    closeMenu();
+    const act = b.dataset.action;
+    if (act === 'search') openSearch();
+    if (act === 'settings') openSettings();
+    if (act === 'ai') openAi();
+    if (act === 'refresh') {
+      invoke('scan_library').then((started) => toast(started ? 'Refreshing library…' : 'Already digging…'));
+    }
+  })
+);
+
+/* ---------------- search ---------------- */
+
+let results = [];
+let activeResult = 0;
+function openSearch(initial = '') {
+  if (state.view !== 'library') return;
+  show($('search'));
+  const input = $('searchInput');
+  input.value = initial;
+  input.focus();
+  runSearch();
+}
+function closeSearch() {
+  show($('search'), false);
+  $('searchResults').innerHTML = '';
+}
+function runSearch() {
+  const q = $('searchInput').value.trim().toLowerCase();
+  const box = $('searchResults');
+  box.innerHTML = '';
+  results = [];
+  activeResult = 0;
+  if (!q) return;
+  const words = q.split(/\s+/);
+  for (let i = 0; i < state.albums.length && results.length < 6; i++) {
+    const s = state.albums[i].search;
+    if (words.every((w) => s.includes(w))) results.push(i);
+  }
+  results.forEach((i, k) => {
+    const a = state.albums[i];
+    const b = document.createElement('button');
+    if (k === 0) b.classList.add('active');
+    const ar = document.createElement('span');
+    ar.className = 'a';
+    ar.textContent = a.artist;
+    b.append(ar, document.createTextNode(a.title));
+    b.addEventListener('click', () => { go(i); closeSearch(); });
+    box.appendChild(b);
+  });
+  if (results.length) go(results[0]);
+}
+function setActive(k) {
+  if (!results.length) return;
+  activeResult = (k + results.length) % results.length;
+  [...$('searchResults').children].forEach((b, j) => b.classList.toggle('active', j === activeResult));
+  go(results[activeResult]);
+}
+$('searchInput').addEventListener('input', runSearch);
+$('searchInput').addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') { closeSearch(); e.stopPropagation(); }
+  else if (e.key === 'Enter') { closeSearch(); e.stopPropagation(); }
+  else if (e.key === 'ArrowDown') { setActive(activeResult + 1); e.preventDefault(); }
+  else if (e.key === 'ArrowUp') { setActive(activeResult - 1); e.preventDefault(); }
+  e.stopPropagation();
+});
+
+/* ---------------- settings / ai ---------------- */
+
+async function renderFolders(list) {
+  const ul = $('folderList');
+  ul.innerHTML = '';
+  for (const f of list) {
+    const li = document.createElement('li');
+    const s = document.createElement('span');
+    s.textContent = f;
+    s.title = f;
+    const x = document.createElement('button');
+    x.textContent = '×';
+    x.title = 'Remove';
+    x.addEventListener('click', async () => {
+      renderFolders(await invoke('remove_folder', { path: f }));
+      invoke('scan_library');
+    });
+    li.append(s, x);
+    ul.appendChild(li);
+  }
+}
+async function loadKey() {
+  const key = (await invoke('get_setting', { key: 'openai_key' })) || '';
+  const fromEnvironment = await invoke('has_environment_key');
+  for (const input of [$('keyInput'), $('keyInput2')]) {
+    input.value = key;
+    input.placeholder = fromEnvironment ? 'Using OPENAI_API_KEY from this computer' : 'Paste API key';
+  }
+}
+async function saveKey(e) {
+  await invoke('set_setting', { key: 'openai_key', value: e.target.value });
+  toast(e.target.value.trim() ? 'Key saved' : 'Saved key removed');
+}
+document.querySelectorAll('.openai-keys').forEach((button) => {
+  button.addEventListener('click', () => invoke('open_openai_keys').catch((e) => toast(String(e))));
+});
+$('keyInput').addEventListener('change', saveKey);
+$('keyInput2').addEventListener('change', saveKey);
+
+async function openSettings() {
+  renderFolders(await invoke('get_folders'));
+  await loadKey();
+  show($('settings'));
+}
+
+const filterSelect = $('imageFilter');
+const rippleToggle = $('pointerRipples');
+const strengthInput = $('effectStrength');
+filterSelect.value = localStorage.getItem('muso.imageFilter') || 'light';
+if (!filterSelect.value) filterSelect.value = 'light';
+rippleToggle.checked = localStorage.getItem('muso.pointerRipples') !== 'off';
+strengthInput.value = localStorage.getItem('muso.effectStrength') ?? '40';
+function applyEffects() {
+  $('album').dataset.filter = filterSelect.value;
+  $('album').style.setProperty('--effect-strength', Number(strengthInput.value) / 100);
+  if (!rippleToggle.checked || Number(strengthInput.value) === 0) $('rippleLayer').replaceChildren();
+}
+filterSelect.addEventListener('change', () => {
+  localStorage.setItem('muso.imageFilter', filterSelect.value);
+  applyEffects();
+});
+rippleToggle.addEventListener('change', () => {
+  localStorage.setItem('muso.pointerRipples', rippleToggle.checked ? 'on' : 'off');
+  applyEffects();
+});
+strengthInput.addEventListener('input', () => {
+  localStorage.setItem('muso.effectStrength', strengthInput.value);
+  applyEffects();
+});
+applyEffects();
+
+let lastRipple = -Infinity;
+const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
+function pointerRipple(e) {
+  const album = $('album');
+  if (!rippleToggle.checked || reducedMotion.matches || Number(strengthInput.value) === 0 ||
+      !album.classList.contains('showing-atmos') || e.target.closest('button, .popover, .controls')) return;
+  const now = performance.now();
+  if (e.type === 'pointermove' && now - lastRipple < 180) return;
+  lastRipple = now;
+  const layer = $('rippleLayer');
+  const bounds = layer.getBoundingClientRect();
+  const ring = document.createElement('i');
+  ring.className = 'water-ripple';
+  ring.style.left = (e.clientX - bounds.left) + 'px';
+  ring.style.top = (e.clientY - bounds.top) + 'px';
+  if (layer.childElementCount >= 8) layer.firstElementChild.remove();
+  layer.appendChild(ring);
+  ring.addEventListener('animationend', () => ring.remove(), { once: true });
+}
+for (const event of ['pointermove', 'pointerdown']) $('album').addEventListener(event, pointerRipple);
+$('addFolderBtn').addEventListener('click', async () => {
+  renderFolders(await invoke('pick_folders'));
+  invoke('scan_library');
+});
+
+let coverSearchRunning = false;
+let stopCoverSearch = false;
+
+function applyCover(id, file) {
+  const album = state.albums.find((a) => a.id === id);
+  for (const a of [album, state.viewAlbum, state.playing?.album]) {
+    if (a?.id === id) Object.assign(a, { art: true, cover_file: file });
+  }
+  const index = state.albums.indexOf(album);
+  const sleeve = pool.get(index);
+  if (sleeve) {
+    sleeve.remove();
+    pool.delete(index);
+    render();
+  }
+  if (state.viewAlbum?.id === id) {
+    for (const el of [$('coverImg'), $('bgArt')]) {
+      el.src = coverUrl(state.viewAlbum, 'art');
+      show(el);
+    }
+  }
+}
+
+async function findCovers(albums, single = false) {
+  if (coverSearchRunning) return;
+  coverSearchRunning = true;
+  stopCoverSearch = false;
+  const button = $('findCovers');
+  button.textContent = 'Stop search';
+  $('findAlbumCover').disabled = true;
+  let checked = 0, updated = 0, failed = 0, consecutiveErrors = 0;
+  let lastError = '';
+  try {
+    for (const album of albums) {
+      if (stopCoverSearch) break;
+      $('coverProgress').textContent = `Checking ${checked + 1} of ${albums.length} · ${album.title}`;
+      try {
+        const file = await invoke('upgrade_cover', { albumId: album.id });
+        if (file) { applyCover(album.id, file); updated++; }
+        consecutiveErrors = 0;
+      } catch (e) {
+        failed++;
+        consecutiveErrors++;
+        lastError = String(e);
+      }
+      checked++;
+      if (consecutiveErrors >= 3) break;
+    }
+    let summary = `${checked} of ${albums.length} checked · ${updated} updated`;
+    if (single && !failed) summary = updated ? 'Cover updated' : 'No higher-resolution match found';
+    if (failed) summary += ` · ${failed} failed. ${lastError}`;
+    $('coverProgress').textContent = summary;
+    if (single || $('settings').classList.contains('hidden')) toast(summary, 4500);
+  } finally {
+    coverSearchRunning = false;
+    button.disabled = false;
+    button.textContent = 'Find better covers';
+    $('findAlbumCover').disabled = false;
+  }
+}
+$('findCovers').addEventListener('click', () => {
+  if (coverSearchRunning) {
+    stopCoverSearch = true;
+    $('findCovers').disabled = true;
+    $('findCovers').textContent = 'Stopping…';
+  } else {
+    findCovers(state.albums.slice());
+  }
+});
+$('findAlbumCover').addEventListener('click', () => {
+  show($('albumMenu'), false);
+  if (state.viewAlbum) {
+    toast('Looking for a better cover…');
+    findCovers([state.viewAlbum], true);
+  }
+});
+
+const atmosEnabled = () => localStorage.getItem('muso.atmos') !== '0';
+const styleNames = {
+  cinematic: 'Cinematic',
+  dreamscape: 'Dreamscape',
+  ambient: 'Ambient Drift',
+  tape: 'Tape Decay',
+  photogram: 'Silver Photogram',
+};
+function albumStyle(id) {
+  const saved = localStorage.getItem('muso.style.' + id);
+  return Object.hasOwn(styleNames, saved) ? saved : 'cinematic';
+}
+function showStyle(id) {
+  const style = albumStyle(id);
+  $('albumStyle').value = $('aiStyle').value = style;
+  $('genLabel').textContent = 'Generate ' + styleNames[style] + ' images';
+}
+for (const select of [$('albumStyle'), $('aiStyle')]) {
+  for (const [id, label] of Object.entries(styleNames)) select.add(new Option(label, id));
+  select.addEventListener('change', () => {
+    const a = state.viewAlbum || focused();
+    if (!a) return;
+    localStorage.setItem('muso.style.' + a.id, select.value);
+    showStyle(a.id);
+    if (state.viewAlbum) startAtmospheres(a.id);
+  });
+}
+async function openAi() {
+  await loadKey();
+  $('atmosToggle').checked = atmosEnabled();
+  $('researchToggle').checked = researchEnabled();
+  showStyle((state.viewAlbum || focused())?.id);
+  show($('ai'));
+}
+const researchEnabled = () => localStorage.getItem('muso.research') === '1';
+$('researchToggle').addEventListener('change', (e) => localStorage.setItem('muso.research', e.target.checked ? '1' : '0'));
+function setAtmosEnabled(enabled) {
+  localStorage.setItem('muso.atmos', enabled ? '1' : '0');
+  $('atmosToggle').checked = enabled;
+  if (state.viewAlbum) startAtmospheres(state.viewAlbum.id, true);
+}
+$('atmosToggle').addEventListener('change', (e) => setAtmosEnabled(e.target.checked));
+$('aiGenerateBtn').addEventListener('click', () => {
+  const a = state.viewAlbum || focused();
+  show($('ai'), false);
+  if (a) generate(a);
+});
+
+document.querySelectorAll('.modal').forEach((m) => {
+  m.addEventListener('click', (e) => { if (e.target === m) show(m, false); });
+  m.querySelector('.close').addEventListener('click', () => show(m, false));
+});
+
+/* ---------------- playback ---------------- */
+
+let playbackId = 0;
+async function playIndex(i) {
+  const p = state.playing;
+  if (!p) return;
+  if (i >= p.tracks.length) {
+    // The record has ended: lift the needle.
+    await invoke('stop');
+    Object.assign(p, { index: 0, paused: true, ended: true, introDone: false });
+    updatePlayUi();
+    return;
+  }
+  Object.assign(p, { index: Math.max(0, i), paused: false, ended: false, introDone: false, playbackId: ++playbackId });
+  updateAtmosView();
+  await invoke('play_track', { path: p.tracks[p.index].path, playbackId: p.playbackId });
+  updatePlayUi();
+}
+async function togglePlay() {
+  const p = state.playing;
+  if (!p) return;
+  if (p.ended) return playIndex(0);
+  p.paused = !p.paused;
+  await invoke(p.paused ? 'pause' : 'resume');
+  updatePlayUi();
+}
+const next = () => state.playing && playIndex(state.playing.index + 1);
+const prev = () => state.playing && playIndex(state.playing.index - 1);
+
+listen('track-ended', () => next());
+listen('cover-intro-ended', ({ payload }) => {
+  const p = state.playing;
+  if (!p || p.ended || p.playbackId !== payload) return;
+  p.introDone = true;
+  updateAtmosView();
+});
+listen('playback-error', ({ payload }) => {
+  toast(`Skipped · ${payload}`, 3500);
+  if (state.playing && !state.playing.ended) next();
+});
+
+function updatePlayUi() {
+  updateAtmosView();
+  const p = state.playing;
+  const np = $('nowPlaying');
+  show(np, !!p);
+  if (!p) return;
+  np.classList.toggle('paused', p.paused);
+  $('npText').textContent = `${p.album.artist} — ${p.album.title}`;
+  if (state.viewAlbum && state.viewAlbum.id === p.album.id) {
+    $('album').classList.toggle('is-paused', p.paused);
+    const t = p.tracks[p.index];
+    const el = $('alTrack');
+    el.innerHTML = '';
+    if (t) {
+      const n = document.createElement('span');
+      n.className = 'n';
+      n.textContent = String(t.trackNo ?? p.index + 1).padStart(2, '0');
+      el.append(n, document.createTextNode(t.title));
+    }
+  }
+}
+
+$('playBtn').addEventListener('click', togglePlay);
+$('nextBtn').addEventListener('click', next);
+$('prevBtn').addEventListener('click', prev);
+$('nowPlaying').addEventListener('click', () => state.playing && openAlbum(state.playing.album));
+
+/* ---------------- album view ---------------- */
+
+async function openAlbum(a) {
+  closeSearch();
+  closeMenu();
+  state.view = 'album';
+  state.viewAlbum = a;
+  const view = $('album');
+  view.classList.remove('leaving', 'idle');
+  view.style.setProperty('--blank', blankColor(a.id));
+  const cover = $('coverImg');
+  const bg = $('bgArt');
+  if (a.art) {
+    cover.src = bg.src = coverUrl(a, 'art');
+    show(cover); show(bg);
+  } else {
+    show(cover, false); show(bg, false);
+  }
+  $('alArtist').textContent = a.artist;
+  $('alTitle').textContent = a.title;
+  showStyle(a.id);
+  show($('albumMenu'), false);
+  $('atmosStatus').textContent = '';
+  show(view);
+  show($('menuBtn'), false);
+
+  if (!state.playing || state.playing.album.id !== a.id) {
+    const tracks = await invoke('get_tracks', { albumId: a.id });
+    if (state.viewAlbum?.id !== a.id) return;
+    state.playing = { album: a, tracks, index: 0, paused: false, ended: false };
+    playIndex(0);
+  }
+  updatePlayUi();
+  startAtmospheres(a.id);
+  poke();
+}
+
+function closeAlbum() {
+  const view = $('album');
+  view.classList.add('leaving');
+  stopAtmospheres();
+  state.view = 'library';
+  state.viewAlbum = null;
+  show($('menuBtn'));
+  setTimeout(() => { if (state.view === 'library') show(view, false); view.classList.remove('leaving'); }, 450);
+}
+$('backBtn').addEventListener('click', closeAlbum);
+
+// Calm mode: chrome fades away when the mouse rests.
+let idleTimer;
+function poke() {
+  $('album').classList.remove('idle');
+  clearTimeout(idleTimer);
+  idleTimer = setTimeout(() => {
+    if (state.view === 'album' && $('albumMenu').classList.contains('hidden')) $('album').classList.add('idle');
+  }, 3500);
+}
+$('album').addEventListener('mousemove', poke);
+$('album').addEventListener('click', (e) => {
+  poke();
+  if (!e.target.closest('#albumMenu, #albumMenuBtn')) show($('albumMenu'), false);
+});
+const playerWindow = window.__TAURI__.window.getCurrentWindow();
+function showFullscreenAction(fullscreen) {
+  $('fullscreenLabel').textContent = fullscreen ? 'Exit fullscreen' : 'Enter fullscreen';
+  $('fullscreenIcon').setAttribute('href', 'icons/lucide.svg#' + (fullscreen ? 'minimize' : 'maximize'));
+}
+async function toggleFullscreen() {
+  try {
+    const enter = !(await playerWindow.isFullscreen());
+    await playerWindow.setFullscreen(enter);
+    showFullscreenAction(enter);
+  } catch (e) { toast(String(e)); }
+}
+$('albumMenuBtn').addEventListener('click', async () => {
+  show($('albumMenu'), $('albumMenu').classList.contains('hidden'));
+  showFullscreenAction(await playerWindow.isFullscreen());
+});
+$('fullscreenBtn').addEventListener('click', () => { show($('albumMenu'), false); toggleFullscreen(); });
+$('openImageFolder').addEventListener('click', async () => {
+  show($('albumMenu'), false);
+  if (!state.viewAlbum) return;
+  try { await invoke('open_image_folder', { albumId: state.viewAlbum.id }); }
+  catch (e) { toast(String(e), 5000); }
+});
+$('showAtmosBtn').addEventListener('click', () => {
+  show($('albumMenu'), false);
+  setAtmosEnabled($('showAtmosBtn').getAttribute('aria-pressed') !== 'true');
+});
+$('genBtn').addEventListener('click', () => {
+  show($('albumMenu'), false);
+  if (state.viewAlbum) generate(state.viewAlbum);
+});
+
+/* ---------------- atmospheres ---------------- */
+
+let atmosTimer = null;
+let atmosToken = 0;
+let readyAlbum = null;
+function updateAtmosView() {
+  const p = state.playing;
+  const reveal = p?.introDone && readyAlbum === p.album.id && state.viewAlbum?.id === readyAlbum;
+  $('album').classList.toggle('showing-atmos', !!reveal);
+  if (!reveal) $('rippleLayer').replaceChildren();
+}
+async function startAtmospheres(albumId, announce = false) {
+  stopAtmospheres();
+  const token = ++atmosToken;
+  if (!atmosEnabled()) return;
+  const style = albumStyle(albumId);
+  let files = [];
+  try {
+    // Preview the chosen look on a saved set until this album has images in that style.
+    for (const candidate of new Set([style, ...Object.keys(styleNames)])) {
+      files = await invoke('get_atmospheres', { albumId, style: candidate });
+      if (token !== atmosToken) return;
+      if (files.length) {
+        $('album').dataset.preview = candidate === style ? '' : style;
+        break;
+      }
+    }
+  }
+  catch (e) { if (token === atmosToken) toast(String(e), 6000); return; }
+  if (token !== atmosToken) return;
+  if (!files.length) {
+    if (announce) toast('No saved images for this album. Choose Generate Visual Atmospheres.', 5500);
+    return;
+  }
+  const layers = [$('atmosA'), $('atmosB')];
+  let k = 0, cur = 0;
+  const showNext = () => {
+    const img = layers[cur];
+    const other = layers[1 - cur];
+    const file = files[k % files.length];
+    img.onload = () => {
+      if (token !== atmosToken) return;
+      readyAlbum = albumId;
+      updateAtmosView();
+      $('showAtmosBtn').setAttribute('aria-pressed', 'true');
+      img.classList.add('on');
+      other.classList.remove('on');
+      cur = 1 - cur;
+      if (files.length > 1) atmosTimer = setTimeout(showNext, ATMOS_INTERVAL);
+    };
+    img.onerror = () => {
+      if (token !== atmosToken) return;
+      files = files.filter((f) => f !== file);
+      if (files.length) { showNext(); return; }
+      stopAtmospheres();
+      toast('Saved atmosphere images could not be opened.', 5000);
+    };
+    img.src = asset(file);
+    k++;
+  };
+  showNext();
+}
+function stopAtmospheres() {
+  atmosToken++;
+  clearTimeout(atmosTimer);
+  atmosTimer = null;
+  readyAlbum = null;
+  updateAtmosView();
+  $('showAtmosBtn').setAttribute('aria-pressed', 'false');
+  for (const id of ['atmosA', 'atmosB']) {
+    const img = $(id);
+    img.classList.remove('on');
+    img.onload = img.onerror = null;
+    img.removeAttribute('src');
+  }
+}
+
+const generating = new Set();
+async function generate(a) {
+  const key = await invoke('get_setting', { key: 'openai_key' });
+  if (!key && !(await invoke('has_environment_key'))) { openAi(); toast('Add an OpenAI API key first'); return; }
+  if (generating.has(a.id)) return;
+  generating.add(a.id);
+  toast(`Composing atmospheres for ${a.title}…`);
+  try {
+    const files = await invoke('generate_atmospheres', { albumId: a.id, research: researchEnabled(), style: albumStyle(a.id) });
+    toast(`${files.length} atmosphere image(s) saved · ${a.title}`);
+    if (state.viewAlbum && state.viewAlbum.id === a.id) startAtmospheres(a.id);
+  } catch (e) {
+    toast(String(e), 6000);
+  } finally {
+    generating.delete(a.id);
+    if (state.viewAlbum && state.viewAlbum.id === a.id) $('atmosStatus').textContent = '';
+  }
+}
+listen('atmos-progress', ({ payload }) => {
+  if (state.viewAlbum && state.viewAlbum.id === payload.albumId) {
+    $('atmosStatus').textContent = `${payload.message} · ${payload.step}/${payload.total - 1}`;
+  }
+});
+
+/* ---------------- keyboard ---------------- */
+
+window.addEventListener('keydown', (e) => {
+  const modalOpen = [...document.querySelectorAll('.modal')].some((m) => !m.classList.contains('hidden'));
+  if (e.target.matches('input, select')) return;
+  if (e.key === 'Escape') {
+    if (modalOpen) document.querySelectorAll('.modal').forEach((m) => show(m, false));
+    else if (!$('menu').classList.contains('hidden')) closeMenu();
+    else if (!$('search').classList.contains('hidden')) closeSearch();
+    else if (state.view === 'album') closeAlbum();
+    return;
+  }
+  if (modalOpen) return;
+  if (e.key === 'F11' || (e.key === 'f' && state.view === 'album')) {
+    toggleFullscreen();
+    e.preventDefault();
+    return;
+  }
+  if (e.key === ' ') { togglePlay(); e.preventDefault(); return; }
+
+  if (state.view === 'album') {
+    if (e.key === 'ArrowRight') next();
+    else if (e.key === 'ArrowLeft') prev();
+    else if (e.key === 'Backspace') closeAlbum();
+    poke();
+    return;
+  }
+  if (state.view !== 'library' || !state.albums.length) return;
+  const t = Math.round(state.target);
+  if (e.key === 'ArrowRight' || e.key === 'ArrowDown') go(t + 1);
+  else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') go(t - 1);
+  else if (e.key === 'PageDown') go(t + 10);
+  else if (e.key === 'PageUp') go(t - 10);
+  else if (e.key === 'Home') go(0);
+  else if (e.key === 'End') go(state.albums.length - 1);
+  else if (e.key === 'Enter') openAlbum(focused());
+  else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') { openSearch(); e.preventDefault(); }
+  else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey && /\S/.test(e.key)) {
+    // Just start typing to dig.
+    e.preventDefault();
+    openSearch(e.key);
+  } else return;
+  e.preventDefault();
+});
+
+window.addEventListener('resize', layout);
+window.addEventListener('contextmenu', (e) => e.preventDefault());
+
+boot().catch((e) => toast(String(e), 8000));
