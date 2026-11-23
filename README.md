@@ -17,6 +17,7 @@ Built with Rust, Tauri 2, SQLite, Symphonia/Rodio and the `image` crate. It work
 | Library | Just start typing to search, or use Ctrl+F. |
 | Corner ● | Opens Search · Settings · Refresh Library · AI Features. |
 | Album | Space plays or pauses, ← → change tracks, F or F11 toggles fullscreen, Esc goes back. |
+| Album track row | Swipe, drag or scroll through the album. Click a title to play it. The playing track is centered with earlier tracks to the left and later tracks to the right. |
 | Album ⋯ | Enter or exit fullscreen, show saved Visual Atmospheres, generate new images or find a higher-resolution cover. |
 
 Supported formats are FLAC, MP3, AAC/M4A (including ALAC), OGG Vorbis, WAV and AIFF. Artwork comes from embedded covers first, then from `cover`, `folder` or `front` images in the album folder.

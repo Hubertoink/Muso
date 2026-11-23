@@ -599,8 +599,13 @@ async function playIndex(i) {
     updatePlayUi();
     return;
   }
+  const changingTrack = p.playbackId && state.viewAlbum?.id === p.album.id;
   Object.assign(p, { index: Math.max(0, i), paused: false, ended: false, introDone: false, playbackId: ++playbackId });
   updateAtmosView();
+  if (changingTrack && !reducedMotion.matches) {
+    coverFade?.cancel();
+    coverFade = $('cover').animate([{ opacity: 0 }, { opacity: 1 }], { duration: 1450, easing: 'ease-in-out' });
+  }
   await invoke('play_track', { path: p.tracks[p.index].path, playbackId: p.playbackId });
   updatePlayUi();
 }
@@ -627,6 +632,74 @@ listen('playback-error', ({ payload }) => {
   if (state.playing && !state.playing.ended) next();
 });
 
+let coverFade;
+const trackRail = $('alTrack');
+let renderedTracks;
+let selectedTrack = -1;
+function centerTrack(smooth = false) {
+  const button = trackRail.children[selectedTrack];
+  if (!button) return;
+  trackRail.scrollTo({
+    left: button.offsetLeft - (trackRail.clientWidth - button.offsetWidth) / 2,
+    behavior: smooth && !reducedMotion.matches ? 'smooth' : 'instant',
+  });
+}
+function updateTrackRail(p) {
+  const changedAlbum = renderedTracks !== p.tracks;
+  if (changedAlbum) {
+    renderedTracks = p.tracks;
+    selectedTrack = -1;
+    const buttons = p.tracks.map((track, index) => {
+      const button = document.createElement('button');
+      const number = document.createElement('span');
+      number.className = 'n';
+      number.textContent = String(track.trackNo ?? index + 1).padStart(2, '0');
+      button.append(number, document.createTextNode(track.title));
+      button.title = track.title;
+      button.addEventListener('click', () => playIndex(index));
+      return button;
+    });
+    trackRail.replaceChildren(...buttons);
+  }
+  if (selectedTrack === p.index) return;
+  trackRail.children[selectedTrack]?.removeAttribute('aria-current');
+  selectedTrack = p.index;
+  trackRail.children[selectedTrack]?.setAttribute('aria-current', 'true');
+  centerTrack(!changedAlbum);
+}
+let railDrag = null;
+let suppressTrackClick = false;
+trackRail.addEventListener('pointerdown', (e) => {
+  suppressTrackClick = false;
+  if (e.pointerType === 'mouse' && e.button === 0) railDrag = { x: e.clientX, left: trackRail.scrollLeft, id: e.pointerId };
+  poke();
+});
+trackRail.addEventListener('pointermove', (e) => {
+  if (!railDrag || railDrag.id !== e.pointerId || !(e.buttons & 1)) return;
+  const distance = e.clientX - railDrag.x;
+  if (!suppressTrackClick && Math.abs(distance) < 5) return;
+  suppressTrackClick = true;
+  trackRail.setPointerCapture(e.pointerId);
+  trackRail.scrollLeft = railDrag.left - distance;
+});
+for (const event of ['pointerup', 'pointercancel', 'lostpointercapture']) {
+  trackRail.addEventListener(event, () => { railDrag = null; });
+}
+trackRail.addEventListener('click', (e) => {
+  if (suppressTrackClick && e.detail) { e.stopImmediatePropagation(); suppressTrackClick = false; }
+}, true);
+trackRail.addEventListener('wheel', (e) => {
+  poke();
+  if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
+  e.preventDefault();
+  trackRail.scrollLeft += e.deltaY * (e.deltaMode === 1 ? 16 : 1);
+}, { passive: false });
+trackRail.addEventListener('scroll', poke, { passive: true });
+trackRail.addEventListener('keydown', (e) => {
+  if (e.key === ' ' || e.key === 'Enter') e.stopPropagation();
+});
+new ResizeObserver(() => centerTrack()).observe(trackRail);
+
 function updatePlayUi() {
   updateAtmosView();
   const p = state.playing;
@@ -637,15 +710,7 @@ function updatePlayUi() {
   $('npText').textContent = `${p.album.artist} — ${p.album.title}`;
   if (state.viewAlbum && state.viewAlbum.id === p.album.id) {
     $('album').classList.toggle('is-paused', p.paused);
-    const t = p.tracks[p.index];
-    const el = $('alTrack');
-    el.innerHTML = '';
-    if (t) {
-      const n = document.createElement('span');
-      n.className = 'n';
-      n.textContent = String(t.trackNo ?? p.index + 1).padStart(2, '0');
-      el.append(n, document.createTextNode(t.title));
-    }
+    updateTrackRail(p);
   }
 }
 
@@ -705,6 +770,7 @@ $('backBtn').addEventListener('click', closeAlbum);
 // Calm mode: chrome fades away when the mouse rests.
 let idleTimer;
 function poke() {
+  if ($('album').classList.contains('idle')) centerTrack();
   $('album').classList.remove('idle');
   clearTimeout(idleTimer);
   idleTimer = setTimeout(() => {
