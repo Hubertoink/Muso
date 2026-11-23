@@ -38,7 +38,10 @@ function toast(msg, ms = 2600) {
   toastTimer = setTimeout(() => t.classList.remove('show'), ms);
 }
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
-const show = (el, on = true) => el.classList.toggle('hidden', !on);
+function show(el, on = true) {
+  if (el.classList.contains('animated-overlay')) el.inert = !on;
+  el.classList.toggle('hidden', !on);
+}
 
 /* ---------------- crate ---------------- */
 
@@ -236,13 +239,14 @@ $('noteAction').addEventListener('click', async () => {
     toggleArticleMenu(false);
     $('articleTitle').textContent = album.title;
     $('articleArtist').textContent = album.artist;
+    $('articleDetails').textContent = [album.year, album.genre?.trim()].filter(Boolean).join(' · ');
     $('articleBody').replaceChildren(...body.split(/\n\s*\n/).map(text => {
       const p = document.createElement('p'); p.textContent = text;
       if (text.startsWith('Quelle')) p.className = 'source';
       return p;
     }));
     show($('article'));
-    $('article').querySelector('.modal-card').scrollTop = 0;
+    $('article').querySelector('.article-content').scrollTop = 0;
     $('article').querySelector('.close').focus({ preventScroll:true });
     return;
   }
@@ -1067,7 +1071,121 @@ $('nowPlaying').addEventListener('click', () => state.playing && openAlbum(state
 
 /* ---------------- album view ---------------- */
 
-async function openAlbum(a) {
+const proposedCover = $('proposedCover');
+let proposal = null;
+let albumRequest = 0;
+
+function clearProposal() {
+  const previous = proposal;
+  proposal = null;
+  previous?.animation?.cancel();
+  if (previous?.drag && proposedCover.hasPointerCapture(previous.drag.id)) {
+    proposedCover.releasePointerCapture(previous.drag.id);
+  }
+  proposedCover.classList.remove('dragging');
+  proposedCover.removeAttribute('style');
+  show(proposedCover, false);
+}
+
+function openAlbum(a) {
+  ++albumRequest;
+  clearProposal();
+  const playing = state.playing;
+  if (playing?.album.id === a.id) return displayAlbum(a);
+  if (!playing || playing.paused || playing.ended) return startAlbum(a);
+
+  proposal = { album: a, drag: null, busy: false };
+  const preview = $('proposedImg');
+  preview.onerror = () => show(preview, false);
+  show(preview, a.art);
+  if (a.art) preview.src = coverUrl(a, 'art');
+  else preview.removeAttribute('src');
+  proposedCover.style.setProperty('--blank', blankColor(a.id));
+  const hint = 'Swipe right to play ' + a.artist + ' — ' + a.title;
+  proposedCover.title = hint;
+  proposedCover.setAttribute('aria-label', hint);
+  proposedCover.querySelector('.swipe-hint').textContent = a.art ? 'Swipe right →' : a.title + ' →';
+  displayAlbum(playing.album);
+  show(proposedCover);
+  proposedCover.focus({preventScroll:true});
+  if (!reducedMotion.matches) {
+    proposal.animation = proposedCover.animate([
+      { transform: 'translateX(24%) scale(.94) rotate(0deg)' },
+      { transform: 'translateX(48%) scale(.94) rotate(5deg)', offset: .55 },
+      { transform: 'translateX(46%) scale(.94) rotate(0deg)' },
+    ], { duration: 740, easing: 'ease-in-out' });
+  }
+}
+
+proposedCover.addEventListener('pointerdown', e => {
+  if (!proposal || proposal.busy || proposal.drag || !e.isPrimary || e.button !== 0) return;
+  proposal.animation?.cancel();
+  proposal.drag = { id: e.pointerId, x: e.clientX, y: e.clientY };
+  proposedCover.setPointerCapture(e.pointerId);
+  proposedCover.classList.add('dragging');
+});
+proposedCover.addEventListener('pointermove', e => {
+  const drag = proposal?.drag;
+  if (!drag || drag.id !== e.pointerId) return;
+  const pull = clamp(e.clientX - drag.x, 0, proposedCover.offsetWidth * .5);
+  proposedCover.style.setProperty('--pull', pull + 'px');
+  proposedCover.style.setProperty('--tilt', Math.min(7, pull / 18) + 'deg');
+});
+function endProposalDrag(e) {
+  const drag = proposal?.drag;
+  if (!drag || drag.id !== e.pointerId) return;
+  proposal.drag = null;
+  const dx = e.clientX - drag.x;
+  const threshold = clamp(proposedCover.offsetWidth * .14, 36, 80);
+  if (e.type === 'pointerup' && dx >= threshold && dx > Math.abs(e.clientY - drag.y)) {
+    startAlbum(proposal.album);
+    return;
+  }
+  proposedCover.classList.remove('dragging');
+  proposedCover.style.removeProperty('--pull');
+  proposedCover.style.removeProperty('--tilt');
+}
+for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) {
+  proposedCover.addEventListener(type, endProposalDrag);
+}
+proposedCover.addEventListener('keydown', e => {
+  if (e.key === 'Enter' || e.key === ' ') e.stopPropagation();
+});
+proposedCover.addEventListener('click', e => {
+  if (e.detail === 0 && proposal && !proposal.busy) startAlbum(proposal.album);
+});
+
+async function startAlbum(a) {
+  const offer = proposal;
+  if (offer?.busy) return;
+  if (offer) offer.busy = true;
+  const request = ++albumRequest;
+  try {
+    const tracks = await invoke('get_tracks', {albumId: a.id});
+    if (request !== albumRequest) return;
+    if (!tracks.length) throw new Error('No tracks available for this album.');
+    if (offer && !reducedMotion.matches) {
+      proposedCover.style.zIndex = '2';
+      offer.animation = proposedCover.animate([
+        { transform: getComputedStyle(proposedCover).transform },
+        { transform: 'translateX(0) scale(1) rotate(0deg)' },
+      ], {duration: 320, easing: 'cubic-bezier(.2,.75,.25,1)', fill: 'forwards'});
+      await offer.animation.finished;
+    }
+    if (request !== albumRequest) return;
+    clearProposal();
+    state.playing = { album: a, tracks, index: 0, paused: false, ended: false };
+    displayAlbum(a);
+    await playIndex(0);
+  } catch (e) {
+    if (request !== albumRequest) return;
+    clearProposal();
+    updatePlayUi();
+    toast(String(e), 4500);
+  }
+}
+
+function displayAlbum(a) {
   closeSearch();
   closeMenu();
   state.view = 'album';
@@ -1091,18 +1209,14 @@ async function openAlbum(a) {
   show(view);
   show($('menuBtn'), false);
 
-  if (!state.playing || state.playing.album.id !== a.id) {
-    const tracks = await invoke('get_tracks', { albumId: a.id });
-    if (state.viewAlbum?.id !== a.id) return;
-    state.playing = { album: a, tracks, index: 0, paused: false, ended: false };
-    playIndex(0);
-  }
   updatePlayUi();
   startAtmospheres(a.id);
   poke();
 }
 
 function closeAlbum() {
+  ++albumRequest;
+  clearProposal();
   const view = $('album');
   view.classList.add('leaving');
   stopAtmospheres();
@@ -1120,7 +1234,7 @@ function poke() {
   $('album').classList.remove('idle');
   clearTimeout(idleTimer);
   idleTimer = setTimeout(() => {
-    if (state.view === 'album' && $('albumMenu').classList.contains('hidden')) $('album').classList.add('idle');
+    if (state.view === 'album' && !proposal && $('albumMenu').classList.contains('hidden')) $('album').classList.add('idle');
   }, 3500);
 }
 $('album').addEventListener('mousemove', poke);
@@ -1179,7 +1293,7 @@ let readyAlbum = null;
 let playlist = null;
 function updateAtmosView() {
   const p = state.playing;
-  const reveal = p?.introDone && readyAlbum === p.album.id && state.viewAlbum?.id === readyAlbum;
+  const reveal = !proposal && p?.introDone && readyAlbum === p.album.id && state.viewAlbum?.id === readyAlbum;
   $('album').classList.toggle('showing-atmos', !!reveal);
   spectrum.setPlayback(!!reveal && !p.paused, p?.playbackId);
   if (!reveal) stopWave();

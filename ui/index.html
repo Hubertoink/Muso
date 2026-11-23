@@ -41,7 +41,7 @@
 
   <!-- Corner icon + hidden overlay -->
   <button id="menuBtn" class="corner hidden" aria-label="Menu"><span></span></button>
-  <div id="menu" class="hidden">
+  <div id="menu" class="animated-overlay hidden" inert>
     <div class="menu-scrim"></div>
     <nav class="menu-panel">
       <button data-action="search">Search</button>
@@ -99,11 +99,12 @@
   </div>
 
   <!-- AI features -->
-  <div id="article" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="articleTitle"><div class="modal-card">
+  <div id="article" class="modal animated-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="articleTitle" inert><div class="modal-card">
     <header class="article-header">
-      <div id="articleArtist" class="al-artist"></div><h2 id="articleTitle"></h2>
+      <div><div id="articleArtist" class="al-artist"></div><h2 id="articleTitle"></h2></div>
+      <div id="articleDetails"></div>
     </header>
-    <div class="article-content">
+    <div class="article-content" tabindex="0" role="region" aria-labelledby="articleTitle">
       <div id="articleBody"></div>
     </div>
     <footer class="article-footer">
@@ -191,7 +192,13 @@
     </div>
 
     <div class="stage">
-      <div id="cover" class="cover"><img id="coverImg" alt="" /></div>
+      <div class="cover-stack">
+        <button id="proposedCover" class="hidden" type="button">
+          <img id="proposedImg" alt="" draggable="false" />
+          <span class="swipe-hint">Swipe right →</span>
+        </button>
+        <div id="cover" class="cover"><img id="coverImg" alt="" /></div>
+      </div>
       <div class="meta">
         <div id="alArtist" class="al-artist"></div>
         <div id="alTitle" class="al-title"></div>
