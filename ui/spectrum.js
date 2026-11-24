@@ -62,7 +62,7 @@ function createMiniMeter(invoke, listen, root) {
   };
 }
 
-function createSpectrumView(invoke, listen) {
+function createSpectrumView(invoke, listen, localRefraction) {
   const toggle = document.getElementById('spectrumToggle');
   const control = id => document.getElementById(id);
   const strength = control('eqIntensity');
@@ -87,6 +87,8 @@ function createSpectrumView(invoke, listen) {
   const map = ctx.createImageData(canvas.width, canvas.height);
   map.data.fill(255);
   let visible = false, active = false, trackId;
+  let drawFrame = 0, latest;
+  const centres = new Float32Array(canvas.width), amplitudes = new Float32Array(canvas.width);
   toggle.checked = localStorage.getItem('muso.spectrum') === '1';
   function applyStyle() {
     control('eqColourRow').classList.toggle('hidden', style.value !== 'pigment');
@@ -111,6 +113,10 @@ function createSpectrumView(invoke, listen) {
   applyStyle();
 
   function clear() {
+    cancelAnimationFrame(drawFrame);
+    drawFrame = 0;
+    latest = null;
+    localRefraction?.clear('spectrum');
     surface.classList.remove('active');
     line.style.opacity = '0';
     pigment.style.opacity = '0';
@@ -163,6 +169,11 @@ function createSpectrumView(invoke, listen) {
         brush.fillRect(x, base - lift, 1, lift + .5);
       }
       if (x % 2 === 0 || x === w - 1) points.push((fraction * 1000).toFixed(1) + ' ' + (center * 100).toFixed(1));
+      if (localRefraction) {
+        centres[x] = center;
+        amplitudes[x] = envelope;
+        continue;
+      }
       for (let y = 0; y < h; y++) {
         const dist = (y / (h - 1) - center) * 33;
         const ripple = envelope * Math.exp(-dist * dist * .55) * Math.sin(dist * 4);
@@ -171,17 +182,26 @@ function createSpectrumView(invoke, listen) {
         map.data[offset + 1] = 128 + 124 * ripple;
       }
     }
-    ctx.putImageData(map, 0, 0);
-    field.setAttribute('href', canvas.toDataURL('image/png'));
-    depth.setAttribute('scale', 38 * gain);
+    if (localRefraction) {
+      localRefraction.spectrum(centres, amplitudes, gain);
+    } else {
+      ctx.putImageData(map, 0, 0);
+      field.setAttribute('href', canvas.toDataURL('image/png'));
+      depth.setAttribute('scale', 38 * gain);
+      surface.classList.add('active');
+    }
     path.setAttribute('d', 'M' + points.join(' L'));
     line.style.opacity = String(gain * Math.min(1, 1.65 * peak));
     if (painting) pigment.style.opacity = String(gain * Math.min(1, 2 * peak));
-    surface.classList.add('active');
   }
 
   listen('audio-spectrum', ({ payload: [id, bands] }) => {
-    if (active && id === trackId && bands.length === levels.length) draw(bands);
+    if (!active || id !== trackId || bands.length !== levels.length) return;
+    latest = bands;
+    if (!drawFrame) drawFrame = requestAnimationFrame(() => {
+      drawFrame = 0;
+      draw(latest);
+    });
   });
   return {
     setPlayback(display, id) {

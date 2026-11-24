@@ -17,6 +17,11 @@ no album covers, no musical instruments, no recognizable people.";
 pub fn style_direction(style: &str) -> Option<(&'static str, &'static str)> {
     let direction = match style {
         "cinematic" => "Grainy 35 mm cinema. Use framing, depth of field and exposure to interpret the music's particular character.",
+        "postmodern" => "A meticulously realist postmodern tableau: place familiar materials in an unexpected relation of scale, function or context. Give objects credible weight, surfaces and directional light. Choose the juxtaposition from a specific musical or historical detail of this record.",
+        "surreal" => "A photoreal surreal scene governed by one impossible physical rule suggested by the recording. Carry its consequences through reflections, shadows and perspective in a believable space. Choose a fresh premise for this album.",
+        "urbanphoto" => "An observational urban photograph with natural exposure, fine film grain and an unposed decisive moment. Let the record suggest a particular human trace, street detail or relationship between built spaces. Find the frame and time of day in the album context.",
+        "landscapephoto" => "A realistic landscape photograph made on location, with credible terrain, atmospheric depth and light. Pick the environment, weather, viewpoint and distance from the recording. Explore the ground at arm's length as readily as a distant horizon.",
+        "pixelart" => "Hand-placed pixel art on a visible square grid, with crisp silhouettes, solid colour clusters and carefully stepped outlines. Build an original subject from this record's character and organise the pixel shapes around its phrasing. Flat colour blocks, sparse highlights, no dithering, game interface or faux screenshot.",
         "dreamscape" => "Analog double exposure with impossible scale and luminous halation. Let the relationship between layers follow the arrangement of the song.",
         "ambient" => "Matte pigment, diffuse boundaries and powdery grain. Use the recording's actual density, silences and contrasts to decide where shapes emerge.",
         "tape" => "A worn analog video still. Translate rhythm into displaced scan lines, chroma bleed and bands of magnetic dropout. Let the album determine the subject and exposure.",

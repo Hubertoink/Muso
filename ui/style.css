@@ -389,14 +389,16 @@ body:has(> .modal:not(.hidden, .from-player))::before { background-color: rgb(0 
   50% { transform: scale(1.12) translate(-2%, 1.5%) rotate(2deg); }
   100% { transform: scale(1.05) translate(2%, -1%) rotate(-1.5deg); }
 }
-.atmos img {
+.atmos img, .painting-layer {
   opacity: var(--motion-opacity);
   position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover;
   --motion-opacity: 0; transition: --motion-opacity 1.2s ease-in-out;
   filter: var(--atmos-filter, saturate(1.04));
   animation: kenburns 90s ease-in-out infinite alternate;
 }
-.atmos img.on { --motion-opacity: 1; }
+.atmos img.on, .painting-layer:has(> img.on) { --motion-opacity: 1; }
+.painting-layer > img { opacity: 1; filter: none; animation: none; transition: none; }
+.painting-layer > canvas { position: absolute; pointer-events: none; }
 .atmos { opacity: var(--motion-opacity); --motion-opacity: 0; transition: --motion-opacity .18s; overflow: hidden; pointer-events: none; }
 #atmosGrain { position: absolute; top: -4px; left: -4px; width: calc(100% + 8px); height: calc(100% + 8px); opacity: .065; }
 .effect-strength { margin-top: 14px; }
@@ -443,6 +445,11 @@ body:has(> .modal:not(.hidden, .from-player))::before { background-color: rgb(0 
 #album[data-preview=cel] { --atmos-filter: saturate(1.18) contrast(1.08); }
 #album[data-preview=ukiyoe] { --atmos-filter: sepia(.23) saturate(.83); }
 #album[data-preview=dither] { --atmos-filter: contrast(1.18) saturate(.8); }
+#album[data-preview=pixelart] { --atmos-filter: contrast(1.16) saturate(1.2); }
+#album[data-preview=postmodern] { --atmos-filter: contrast(1.07) saturate(.94); }
+#album[data-preview=surreal] { --atmos-filter: saturate(1.12) hue-rotate(-6deg); }
+#album[data-preview=urbanphoto] { --atmos-filter: contrast(1.13) saturate(.88); }
+#album[data-preview=landscapephoto] { --atmos-filter: saturate(1.09) contrast(1.04); }
 #album[data-preview=nouveau] { --atmos-filter: sepia(.28) saturate(.95); }
 #album[data-preview=bauhaus] { --atmos-filter: saturate(1.22) contrast(1.12); }
 #album[data-preview=sumi] { --atmos-filter: grayscale(.95) contrast(1.14); }
@@ -693,8 +700,8 @@ body:has(> .modal:not(.hidden, .from-player))::before { background-color: rgb(0 
 
 @media (prefers-reduced-motion: reduce) {
   #album, #album.leaving, #crateTray, #crateTray.open,
-  #album :is(.cover, .atmos, .atmos img), #crateShelf, #cratesHeader { transition-duration: 0s; }
-  #album :is(.cover, .cover img, .bg img, .atmos img), #cratesPage, .shelf-crate.entering,
+  #album :is(.cover, .atmos, .atmos img, .painting-layer), #crateShelf, #cratesHeader { transition-duration: 0s; }
+  #album :is(.cover, .cover img, .bg img, .atmos img, .painting-layer), #cratesPage, .shelf-crate.entering,
   .tray-crate :is(.stack, .cc), #fanFoot { animation: none; }
   #fanCovers .fan-cover { transition-duration: 0s !important; transition-delay: 0s !important; }
 }

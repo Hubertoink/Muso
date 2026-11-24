@@ -1172,7 +1172,8 @@ $('keyInput2').addEventListener('change', saveKey);
 const filterSelect = $('imageFilter');
 const rippleToggle = $('pointerRipples');
 const strengthInput = $('effectStrength');
-const spectrum = createSpectrumView(invoke, listen);
+const localRefraction = createLinuxRefraction($('atmosPictures'));
+const spectrum = createSpectrumView(invoke, listen, localRefraction);
 const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
 let waveFrame = 0;
 let wave;
@@ -1203,6 +1204,7 @@ function stopWave() {
   cancelAnimationFrame(waveFrame);
   waveFrame = 0;
   wave = null;
+  localRefraction?.clear('pointer');
   $('atmosPictures').classList.remove('refracting');
 }
 function drawWave(now) {
@@ -1218,6 +1220,13 @@ function drawWave(now) {
   const diameter = 155 + 220 * age;
   const width = diameter * (1 + unrest * (.14 * Math.sin(t) + .09 * Math.sin(2.73 * t)));
   const height = diameter * (1 + unrest * (.12 * Math.cos(1.47 * t) - .07 * Math.sin(2.21 * t)));
+  if (localRefraction) {
+    const bounds = $('atmosPictures').getBoundingClientRect();
+    localRefraction.pointer(bounds.left + wave.x, bounds.top + wave.y, width, height/width, t,
+      (50 + 9*unrest) * Number(strengthInput.value)/100 * (1-age)**2);
+    waveFrame = requestAnimationFrame(drawWave);
+    return;
+  }
   const field = $('waveField');
   field.setAttribute('x', wave.x - width / 2 + unrest * 9 * Math.sin(1.83 * t));
   field.setAttribute('y', wave.y - height / 2 + unrest * 7 * Math.cos(2.37 * t));
@@ -1342,6 +1351,11 @@ const styleNames = {
   cel: 'Midnight Cel',
   ukiyoe: 'Ukiyo-e Woodcut',
   dither: 'Dithered Worlds',
+  pixelart: 'Pixel Art',
+  postmodern: 'Postmodern Realism',
+  surreal: 'Surreal Realism',
+  urbanphoto: 'Urban Photography',
+  landscapephoto: 'Landscape Photography',
   nouveau: 'Art Nouveau',
   bauhaus: 'Bauhaus Study',
   sumi: 'Sumi-e Ink',
