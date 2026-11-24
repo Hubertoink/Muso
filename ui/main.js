@@ -89,7 +89,7 @@ for (const letter of letters) {
   button.tabIndex = -1;
   button.disabled = true;
   button.addEventListener('click', e => {
-    if (drag) return;
+    if (libraryGestures.active) return;
     if (browsingNew) leaveNew();
     go(Number(button.dataset.index));
     if (e.detail) button.blur();
@@ -258,7 +258,7 @@ indexGenres.addEventListener('pointercancel', endBarDrag);
 indexGenres.addEventListener('click', e => {
   if (performance.now() - barDraggedAt < 250) return;
   const b = e.target.closest('button');
-  if (!b || drag) return;
+  if (!b || libraryGestures.active) return;
   if (browsingNew) leaveNew();
   if (b.dataset.name === currentGroup && genreMarks.find(m => m.name === currentGroup)?.subs.length) {
     if (indexSubs.classList.contains('hidden')) renderSubs(); else show(indexSubs, false);
@@ -270,7 +270,7 @@ indexGenres.addEventListener('click', e => {
 });
 indexSubs.addEventListener('click', e => {
   const b = e.target.closest('button');
-  if (!b || drag) return;
+  if (!b || libraryGestures.active) return;
   go(Number(b.dataset.index));
   if (e.detail) b.blur();
 });
@@ -573,7 +573,7 @@ function tick(now) {
   if (state.pos !== state.target) {
     lastFrame = now;
     frame = requestAnimationFrame(tick);
-  } else if (!drag) {
+  } else if (!libraryGestures.active) {
     crate.dispatchEvent(new Event('librarysettled'));
   }
 }
@@ -597,12 +597,9 @@ const focused = () => state.albums[clamp(Math.round(state.target), 0, state.albu
 
 // wheel / trackpad
 let wheelAcc = 0;
-// The crate handles touch with Pointer Events. WebKitGTK otherwise also emits
-// wheel deltas, including a kinetic scroll after the finger has lifted.
-crate.addEventListener('touchstart', e => e.preventDefault(), { passive: false });
 crate.addEventListener('wheel', (e) => {
   e.preventDefault();
-  if (state.view !== 'library' || drag || !state.albums.length) return;
+  if (state.view !== 'library' || libraryGestures.active || !state.albums.length) return;
   const raw = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
   const d = e.deltaMode === 1 ? raw * 40 : raw;
   wheelAcc += d;
@@ -641,118 +638,19 @@ const swipeDirection = $('librarySwipeDirection');
 swipeDirection.value = localStorage.getItem('muso.librarySwipeDirection') === 'follow' ? 'follow' : 'opposite';
 swipeDirection.addEventListener('change', () => localStorage.setItem('muso.librarySwipeDirection', swipeDirection.value));
 
-const directionSlop = 10; // CSS pixels
-const velocityWindow = 100; // ms
-let drag = null;
-function moveThroughSleeves(gesture, e, current, last) {
-  const dx = e.clientX - gesture.x;
-  const pos = clamp(current + dx * gesture.indexDirection / gesture.spacing, 0, last);
-  gesture.x = e.clientX;
-
-  const samples = gesture.samples;
-  while (samples.length && samples[0].t < e.timeStamp - velocityWindow) samples.shift();
-  const sample = { pos, t: e.timeStamp };
-  const delta = pos - gesture.extreme.pos;
-  if (delta && delta * gesture.direction >= 0) {
-    gesture.direction = Math.sign(delta);
-    gesture.extreme = sample;
-  } else if (delta) {
-    // Fast swipes can roll back briefly on lift. Count a turn relative to the recent stroke.
-    const stroke = samples.length ? Math.abs(gesture.extreme.pos - samples[0].pos) * gesture.spacing : 0;
-    if (Math.abs(delta) * gesture.spacing >= clamp(stroke / 3, directionSlop, 32)) {
-      samples.length = 0;
-      if (gesture.extreme.t >= e.timeStamp - velocityWindow) samples.push(gesture.extreme);
-      gesture.direction = Math.sign(delta);
-      gesture.extreme = sample;
-    }
-  }
-  samples.push(sample);
-  return pos;
-}
-
-function moveSleeves(e) {
-  state.pos = state.target = moveThroughSleeves(drag, e, state.pos, state.albums.length - 1);
-}
-
-function settleSwipe(gesture, releasedAt, pos, navigate) {
-  const { samples, direction, spacing } = gesture;
-  const first = samples.find(sample => sample.t >= releasedAt - velocityWindow) ?? samples.at(-1);
-  const distance = pos - first.pos, elapsed = releasedAt - first.t;
-  const velocity = elapsed >= 8 && distance * direction * spacing >= directionSlop ? distance / elapsed : 0;
-  const flick = Math.abs(velocity) * spacing >= 0.35;
-  const touchFlick = gesture.touch && flick;
-  const glideTime = touchFlick ? 225 : 170;
-  const maxGlide = touchFlick ? 5 : 4;
-  const projected = Math.round(pos + clamp(velocity * glideTime, -maxGlide, maxGlide));
-  // A quick flick commits even over a short distance. A careful drag can land near a centre.
-  const margin = flick ? 0 : Math.min(0.18, 30 / spacing);
-  let end = projected;
-  if (direction > 0) end = Math.max(end, Math.ceil(pos - margin));
-  if (direction < 0) end = Math.min(end, Math.floor(pos + margin));
-  navigate(end, velocity ? clamp(Math.abs((end - pos) / velocity), 65, glideTime) : defaultSettleTime);
-}
-
-crate.addEventListener('pointerdown', e => {
-  if (drag || e.button !== 0 || !e.isPrimary || !state.albums.length) return;
-  const sleeve = e.target.closest('.sleeve');
-  const start = { pos: state.pos, t: e.timeStamp };
-  drag = {
-    id: e.pointerId, startX: e.clientX, startY: e.clientY, x: e.clientX,
-    touch: e.pointerType === 'touch',
-    indexDirection: e.pointerType === 'touch' && swipeDirection.value === 'opposite' ? 1 : -1,
-    sleeve, mode: 'pending', caught: state.target !== state.pos, spacing: sleeveSpacing(),
-    direction: 0, extreme: start, samples: [start],
-  };
-  state.target = state.pos;
-  wheelAcc = 0;
-  crate.setPointerCapture(e.pointerId);
+const libraryGestures = bindSleeveGestures(crate, state, {
+  spacing: sleeveSpacing,
+  lastIndex: () => state.albums.length - 1,
+  hold: () => { wheelAcc = 0; },
+  render: kick,
+  navigate: go,
+  activate: sleeve => openAlbum(state.albums[Number(sleeve.dataset.index)]),
+  filing: {
+    begin: (sleeve, x, y) => albumCrates.begin(state.albums[Number(sleeve.dataset.index)], sleeve, x, y),
+    drag: (x, y) => albumCrates.drag(x, y),
+    end: (x, y, cancelled) => albumCrates.end(x, y, cancelled),
+  },
 });
-
-function trackDrag(e) {
-  const dx = Math.abs(e.clientX - drag.startX), dy = e.clientY - drag.startY;
-  if (drag.mode === 'pending') {
-    if (dx > 6 && dx >= Math.abs(dy)) {
-      drag.mode = 'browse';
-      crate.classList.add('dragging');
-    } else if (Math.abs(dy) > 10 && Math.abs(dy) > dx * 1.2) {
-      drag.mode = 'vertical';
-      if (dy > 0 && drag.sleeve && e.type === 'pointermove') {
-        drag.mode = 'file';
-        albumCrates.begin(state.albums[Number(drag.sleeve.dataset.index)], drag.sleeve, e.clientX, e.clientY);
-      }
-    }
-  }
-  if (drag.mode === 'file') albumCrates.drag(e.clientX, e.clientY);
-  if (drag.mode !== 'browse') return;
-  for (const sample of e.getCoalescedEvents?.() || []) moveSleeves(sample);
-  moveSleeves(e);
-  kick();
-}
-crate.addEventListener('pointermove', e => {
-  if (drag?.id === e.pointerId) trackDrag(e);
-});
-
-function endDrag(e) {
-  if (drag?.id !== e.pointerId || (e.type === 'lostpointercapture' && e.target !== crate)) return;
-  const released = e.type === 'pointerup';
-  // On touch, the last move is the last position in contact with the screen.
-  if (released && !(e.pointerType === 'touch' && drag.mode === 'browse')) trackDrag(e);
-  const gesture = drag;
-  drag = null;
-  crate.classList.remove('dragging');
-  if (gesture.mode === 'file') albumCrates.end(e.clientX, e.clientY, !released);
-  if (released && gesture.mode === 'browse') settleSwipe(gesture, e.timeStamp, state.pos, go);
-  else if (released && gesture.mode === 'pending' && !gesture.caught && gesture.sleeve &&
-      Math.abs(e.clientX - gesture.startX) <= 6 && Math.abs(e.clientY - gesture.startY) <= 10) {
-    const i = Number(gesture.sleeve.dataset.index);
-    if (i === Math.round(state.pos)) openAlbum(state.albums[i]);
-    else go(i);
-  } else go(state.pos);
-  kick();
-}
-crate.addEventListener('pointerup', endDrag);
-crate.addEventListener('pointercancel', endDrag);
-crate.addEventListener('lostpointercapture', endDrag);
 
 /* ---------------- library loading ---------------- */
 
@@ -764,7 +662,7 @@ async function loadAlbums() {
     invoke('genre_state').catch(e => { console.warn('Muso genres', e); return null; }),
   ]);
   // Replacing sleeves during a drag or glide would round the live position and detach the grabbed cover.
-  if (drag || state.pos !== state.target) {
+  if (libraryGestures.active || state.pos !== state.target) {
     await new Promise(resolve => crate.addEventListener('librarysettled', resolve, { once: true }));
   }
   if (request !== libraryRequest) return;
@@ -807,7 +705,7 @@ function refreshRecent() {
   }
 }
 function expireRecent() {
-  if (drag) { expiryTimer = setTimeout(expireRecent, 500); return; }
+  if (libraryGestures.active) { expiryTimer = setTimeout(expireRecent, 500); return; }
   refreshRecent();
   if (browsingNew) applyLibraryOrder();
 }
@@ -816,7 +714,7 @@ function leaveNew() {
   applyLibraryOrder(albumsById.get(savedPosition?.id) ?? null, savedPosition?.index);
 }
 newButton.addEventListener('click', () => {
-  if (drag) return;
+  if (libraryGestures.active) return;
   closeSearch();
   if (browsingNew) return leaveNew();
   refreshRecent();
@@ -846,7 +744,7 @@ function applyLibraryOrder(previous = focused(), fallback = state.albums.length 
   updateCaption(true);
 }
 $('indexMode').addEventListener('click', () => {
-  if (drag) return;
+  if (libraryGestures.active) return;
   closeSearch();
   if (browsingNew) leaveNew();
   if (indexMode === 'artist') preferredMember = focused()?.id;
@@ -2211,7 +2109,7 @@ window.addEventListener('keydown', (e) => {
     poke();
     return;
   }
-  if (state.view !== 'library' || drag || !state.albums.length) return;
+  if (state.view !== 'library' || libraryGestures.active || !state.albums.length) return;
   const t = Math.round(state.target);
   if (e.key === 'ArrowRight' || e.key === 'ArrowDown') go(t + 1);
   else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') go(t - 1);

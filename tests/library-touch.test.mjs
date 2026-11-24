@@ -712,6 +712,31 @@ test('AI style is a default that an album can override, remember and restore', a
   assert.equal(await page.evaluate(() => localStorage.getItem('muso.style.' + state.viewAlbum.id)), null);
 });
 
+test('reopening a saved style keeps the covers fanned out after the first cover is hidden', async () => {
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.locator('#crate .sleeve[data-index="20"]').click();
+  await page.locator('#albumMenuBtn').click();
+  const trigger = page.locator('#albumStyle');
+  await trigger.click();
+  await page.keyboard.press('End');
+  const covers = page.locator('#styleCanvas .sleeve');
+  assert.ok(await covers.first().isHidden());
+  await page.locator('#useStyle').click();
+
+  for (const width of [1200, 640]) {
+    await page.setViewportSize({ width, height: 800 });
+    await trigger.click();
+    assert.equal(await covers.last().getAttribute('aria-pressed'), 'true');
+    const [far, near, selected] = await covers.evaluateAll(sleeves => sleeves.slice(-3).map(el => {
+      const { left, width } = el.getBoundingClientRect();
+      return { center: left + width / 2, width };
+    }));
+    assert.ok(near.center - far.center > selected.width * 0.05, 'side covers are spaced apart');
+    assert.ok(selected.center - near.center > selected.width * 0.3, 'selected cover is distinct from its neighbour');
+    await page.keyboard.press('Escape');
+  }
+});
+
 test('the atmosphere toggle reflects saved images even with display turned off', async () => {
   await page.evaluate(() => localStorage.setItem('muso.atmos', '0'));
   await down(); await up();
@@ -772,6 +797,49 @@ test('the style covers follow touch swipes and wheel browsing without changing t
   assert.equal(await position(), 20);
   assert.equal(await page.evaluate(() => window.generationRequests?.length ?? 0), 0);
 });
+
+for (const preference of ['opposite', 'follow']) {
+  test(`style covers can be caught and tapped with the ${preference} swipe preference`, async () => {
+    await down(); await up();
+    await page.evaluate(pref => {
+      document.querySelector('#librarySwipeDirection').value = pref;
+      localStorage.setItem('muso.style.' + state.viewAlbum.id, 'pixelart');
+    }, preference);
+    await page.locator('#albumMenuBtn').click();
+    await page.locator('#albumStyle').click();
+    const stage = page.locator('#styleCanvas');
+    const bounds = await stage.boundingBox();
+    const x = bounds.x + bounds.width / 2, y = bounds.y + bounds.height / 2;
+    const sign = preference === 'follow' ? -1 : 1;
+    const offset = () => stage.locator('[data-style=pixelart]').evaluate(el => el.style.transform);
+    await page.evaluate(() => document.addEventListener('touchstart', e => {
+      window.styleTouchClaimed = e.defaultPrevented;
+    }, {once:true}));
+    await touch('touchStart', x, 16, y);
+    await touch('touchMove', x + sign * 55, 16, y);
+    await touch('touchMove', x + sign * 125, 16, y);
+    await touch('touchEnd', null, 4);
+    assert.equal(await page.evaluate(() => window.styleTouchClaimed), true);
+    assert.ok(await page.evaluate(() => {
+      const index = Object.values(styleNames).indexOf(document.querySelector('#styleCaption').textContent);
+      return index > Object.keys(styleNames).indexOf('pixelart');
+    }));
+    await touch('touchStart', x, 16, y);
+    const caught = await offset();
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    assert.equal(await offset(), caught);
+    await touch('touchEnd', null, 120);
+    assert.ok(await page.locator('#stylePicker').isVisible());
+    assert.equal(await page.locator('#albumStyle').textContent(), 'Pixel Art');
+    await page.waitForFunction(() => [...document.querySelectorAll('#styleCanvas .sleeve:not([hidden])')].some(el =>
+      el.style.transform === 'translate3d(0px, 0px, 0px) rotateY(0deg)'));
+    const name = await page.locator('#styleCaption').textContent();
+    await touch('touchStart', x, 16, y);
+    await touch('touchEnd', null, 16);
+    assert.ok(await page.locator('#stylePicker').isHidden());
+    assert.equal(await page.locator('#albumStyle').textContent(), name);
+  });
+}
 
 test('the cover stays up until the current atmosphere has decoded', async () => {
   // Use the HTTP form of Muso's image protocol so Playwright can serve a real image.

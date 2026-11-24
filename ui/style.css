@@ -574,7 +574,6 @@ body:has(> .modal:not(.hidden, .from-player))::before { background-color: rgb(0 
 #stylePicker h2 { font-weight: 400; font-size: 20px; }
 #closeStylePicker { font-size: 24px; width: 36px; height: 36px; color: var(--ink-dim); }
 #styleCanvas {
-  --size: min(43vh, 44vw, 380px);
   position: relative; height: calc(var(--size) + 50px);
   perspective: 1500px; touch-action: none; cursor: grab;
 }
