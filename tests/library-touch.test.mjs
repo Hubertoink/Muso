@@ -1,0 +1,550 @@
+import assert from 'node:assert/strict';
+import { after, before, beforeEach, afterEach, test } from 'node:test';
+import { chromium } from 'playwright-core';
+
+let browser, page, input, now;
+before(async () => {
+  browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH });
+});
+after(() => browser?.close());
+beforeEach(async () => {
+  page = await browser.newPage({ viewport: { width: 1200, height: 800 }, hasTouch: true });
+  await page.addInitScript(() => {
+    const albums = Array.from({ length: 80 }, (_, i) => ({
+      id: i.toString(16).padStart(6, '0'), artist: 'Test', title: 'Record ' + i,
+    }));
+    localStorage.setItem('muso.libraryPosition', JSON.stringify({ index: 20, id: albums[20].id }));
+    const events = new Map();
+    window.emitPlayback = (name, payload) => events.get(name)({ payload });
+    window.refreshLibrary = () => {
+      albums[19].title = 'Updated record';
+      return events.get('scan-done')({ payload: {} });
+    };
+    const crates = { active: null, lists: [] };
+    window.fillCrate = count => {
+      crates.lists = [{ id: 1, name: 'Records', albums: albums.slice(0, count).map(({ id }) => ({ id })) }];
+    };
+    window.__TAURI__ = {
+      core: { invoke: async (command, args) => {
+        if (command === 'get_folders') { await window.folderGate; return ['test']; }
+        if (command === 'get_albums') return structuredClone(albums);
+        if (command === 'get_setting') return sessionStorage.getItem(args.key);
+        if (command === 'set_setting') return sessionStorage.setItem(args.key, args.value.trim());
+        if (command === 'has_environment_key') return sessionStorage.getItem('test.envKey') === 'yes';
+        if (command === 'has_openai_key') return Boolean(sessionStorage.getItem('openai_key')) || sessionStorage.getItem('test.envKey') === 'yes';
+        if (command === 'get_album_note') return sessionStorage.getItem('note.' + args.albumId);
+        if (command === 'generate_album_note') {
+          sessionStorage.setItem('note.' + args.albumId, 'Saved album article');
+          return 'Saved album article';
+        }
+        if (command === 'delete_album_note') return sessionStorage.removeItem('note.' + args.albumId);
+        if (command === 'library_crates') {
+          if (args.change?.type === 'add') {
+            crates.lists.push({ id: 1, name: 'Filed records', albums: [{ id: args.change.album }] });
+          }
+          return structuredClone(crates);
+        }
+        if (command === 'get_tracks') return window.testTracks ?? [{ path: 'test', title: 'Track' }];
+        if (command === 'get_atmospheres') return [];
+      } },
+      event: { listen: async (name, fn) => events.set(name, fn) },
+      app: { getVersion: async () => 'test' },
+      window: { getCurrentWindow: () => ({ isFullscreen: async () => false }) },
+    };
+  });
+  await page.goto(new URL('../ui/index.html', import.meta.url).href);
+  await page.locator('#crate .sleeve[data-index="20"]').waitFor();
+  input = await page.context().newCDPSession(page);
+  now = Date.now() / 1000;
+});
+afterEach(() => page?.close());
+
+// Send touch through the browser's input pipeline with a repeatable finger speed.
+async function touch(type, x, elapsed = 16, y = 350) {
+  now += elapsed / 1000;
+  await input.send('Input.dispatchTouchEvent', {
+    type, timestamp: now, touchPoints: x == null ? [] : [{ x, y, id: 1 }],
+  });
+}
+const down = () => touch('touchStart', 600);
+const move = (x, ms, y) => touch('touchMove', x, ms, y);
+const up = ms => touch('touchEnd', null, ms);
+async function position() {
+  return page.evaluate(() => state.pos);
+}
+async function settled() {
+  await page.waitForFunction(() => state.pos === state.target && Number.isInteger(state.pos));
+  return position();
+}
+
+test('a left swipe moves the sleeve right and a library refresh preserves its position', async () => {
+  await down();
+  await move(540);
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)));
+  const offset = await page.locator('.sleeve[data-index="20"]').evaluate(el =>
+    new DOMMatrix(getComputedStyle(el).transform).m41);
+  assert.ok(Math.abs(offset - 60) < 2, 'a 60 px left swipe moved the sleeve by ' + offset);
+  const held = await position();
+  await page.evaluate(() => { window.refreshDone = window.refreshLibrary(); });
+  assert.equal(await position(), held);
+  await up(220);
+  assert.equal(await settled(), 19);
+  await page.evaluate(() => window.refreshDone);
+  assert.equal(await page.locator('#capTitle').textContent(), 'Updated record');
+});
+
+for (const sign of [-1, 1]) {
+  test('small lift jitter keeps the committed swipe direction ' + sign, async () => {
+    await down();
+    await move(600 + sign * 30);
+    await move(600 + sign * 74);
+    // A pause followed by 5 px of fingertip roll in the opposite direction.
+    await move(600 + sign * 73, 200);
+    await move(600 + sign * 69, 16);
+    await up(1);
+    assert.equal(await settled(), 20 + sign);
+  });
+}
+
+test('a cancelled flick settles on the sleeve under the finger', async () => {
+  await down();
+  await move(555);
+  await move(510);
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)));
+  const nearest = await page.evaluate(() => Math.round(state.target));
+  await touch('touchCancel', null);
+  assert.equal(await settled(), nearest);
+  assert.equal(await page.locator('#album').isVisible(), false);
+});
+
+test('a fast flick glides, and another touch catches it without opening an album', async () => {
+  await down();
+  await move(530);
+  await move(460);
+  await up();
+  const end = await page.evaluate(() => state.target);
+  assert.ok(end >= 15 && end <= 18, 'unexpected flick destination ' + end);
+  await down();
+  const caught = await position();
+  await page.waitForTimeout(120);
+  assert.equal(await position(), caught);
+  await up();
+  assert.equal(await settled(), Math.round(caught));
+  assert.equal(await page.locator('#album').isVisible(), false);
+});
+
+test('a deliberate reversal before lifting changes the landing sleeve', async () => {
+  await down();
+  await move(365);
+  await move(390);
+  await move(520);
+  await up(220);
+  assert.equal(await settled(), 20);
+});
+
+test('changing direction at the collection edge moves immediately', async () => {
+  await page.keyboard.press('Home');
+  assert.equal(await settled(), 0);
+  await down();
+  await move(470);
+  await move(550);
+  await up(220);
+  assert.equal(await settled(), 1);
+  await page.keyboard.press('End');
+  assert.equal(await settled(), 79);
+  await down();
+  await move(800);
+  await up();
+  assert.equal(await settled(), 79);
+});
+
+test('a downward pull opens the crate tray and a tap opens the centred record', async () => {
+  await down();
+  await move(604, 32, 420);
+  await page.locator('#crateTray.open').waitFor();
+  await up();
+  await page.locator('#crateTray.open').waitFor({ state: 'detached' });
+  assert.equal(await position(), 20);
+  await down();
+  await up();
+  await page.locator('#album').waitFor();
+  assert.equal(await page.locator('#alTitle').textContent(), 'Record 20');
+});
+
+test('a short quick swipe to the left centres the previous sleeve', async () => {
+  await down();
+  await move(581, 16);
+  await up(8);
+  assert.equal(await settled(), 19);
+});
+
+test('losing pointer capture cancels the glide and permits the next gesture', async () => {
+  await page.evaluate(() => {
+    crate.addEventListener('gotpointercapture', e => { window.captured = e.pointerId; }, { once: true });
+  });
+  await down();
+  await move(530);
+  await page.waitForFunction(() => window.captured !== undefined);
+  await page.evaluate(() => crate.releasePointerCapture(window.captured));
+  await move(480);
+  await up();
+  assert.equal(await settled(), 20);
+  await down();
+  await move(530);
+  await up(220);
+  assert.equal(await settled(), 19);
+});
+
+test('dragging left with a mouse moves the sleeve left', async () => {
+  await page.mouse.move(600, 350);
+  await page.mouse.down();
+  await page.mouse.move(540, 350);
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)));
+  const offset = await page.locator('.sleeve[data-index="20"]').evaluate(el =>
+    new DOMMatrix(getComputedStyle(el).transform).m41);
+  assert.ok(Math.abs(offset + 60) < 2, 'a 60 px mouse drag to the left moved the sleeve by ' + offset);
+  await page.mouse.up();
+});
+
+test('a touch tap clears mouse hover while keyboard focus and the next mouse move still highlight the index', async () => {
+  const mode = page.locator('#indexMode');
+  const color = () => mode.evaluate(el => getComputedStyle(el).color);
+  const rest = await color();
+  await mode.hover();
+  const highlighted = await color();
+  assert.notEqual(highlighted, rest);
+  await mode.tap();
+  assert.equal(await page.locator('#indexModeLabel').textContent(), 'Album');
+  assert.equal(await color(), rest);
+  const current = page.locator('#indexLetters [aria-current=true]');
+  const scale = () => current.evaluate(el => Number(getComputedStyle(el).getPropertyValue('--letter-scale')));
+  assert.equal(await scale(), 1);
+  await page.keyboard.press('Tab');
+  assert.ok(await current.evaluate(el => el.matches(':focus-visible')));
+  assert.equal(await scale(), 1.8);
+  await mode.hover({ position: { x: 5, y: 5 } });
+  assert.equal(await color(), highlighted);
+});
+
+async function setApiKey(dialog, value) {
+  await page.locator('#menuBtn').click();
+  await page.locator('[data-action=' + dialog + ']').click();
+  await page.locator('#' + dialog + ' input[type=password]').fill(value);
+  await page.locator('#' + dialog + ' .close').click();
+}
+
+test('the write action follows the saved key and existing articles remain readable and deletable without it', async () => {
+  const write = page.getByRole('button', { name: 'Write album article with AI' });
+  await page.waitForFunction(() => visibleNote?.album);
+  assert.equal(await page.locator('#notePreview').isVisible(), false);
+  await setApiKey('settings', 'fixture-key');
+  await write.waitFor();
+  await page.reload();
+  await write.click();
+  const read = page.getByRole('button', { name: 'Read album article' });
+  await read.waitFor();
+  await setApiKey('ai', '   ');
+  await read.click();
+  assert.equal(await page.locator('#articleBody').textContent(), 'Saved album article');
+  await page.locator('#articleMore').click();
+  assert.equal(await page.locator('#rewriteArticle').isVisible(), false);
+  const remove = page.locator('#deleteArticle');
+  assert.ok(await remove.evaluate(el => el === document.activeElement));
+  await remove.click();
+  await remove.click();
+  await page.locator('#notePreview').waitFor({ state: 'hidden' });
+  assert.equal(await write.count(), 0);
+});
+
+test('an environment key enables the write action at startup and after the saved key is removed', async () => {
+  await page.evaluate(() => sessionStorage.setItem('test.envKey', 'yes'));
+  await page.reload();
+  const write = page.getByRole('button', { name: 'Write album article with AI' });
+  await write.waitFor();
+  await setApiKey('ai', 'fixture-key');
+  await setApiKey('settings', '');
+  assert.equal(await write.isVisible(), true);
+});
+
+test('the touch preference works immediately and survives a reload', async () => {
+  await page.locator('#menuBtn').click();
+  await page.locator('[data-action=settings]').click();
+  const select = page.getByLabel('Library swipe direction');
+  assert.equal(await select.inputValue(), 'opposite');
+  await select.selectOption('follow');
+  await page.locator('#settings .close').click();
+  await down();
+  await move(540);
+  await up(220);
+  assert.equal(await settled(), 21);
+
+  await page.reload();
+  await page.locator('#crate .sleeve[data-index="20"]').waitFor();
+  await down();
+  await move(660);
+  await up(220);
+  assert.equal(await settled(), 19);
+  await page.locator('#menuBtn').click();
+  await page.locator('[data-action=settings]').click();
+  assert.equal(await select.inputValue(), 'follow');
+  await select.selectOption('opposite');
+  await page.locator('#settings .close').click();
+  await down();
+  await move(540);
+  await up(220);
+  assert.equal(await settled(), 18);
+});
+
+test('the menu keeps its backdrop while Settings loads and the scrollbar clears both corners', async () => {
+  await page.evaluate(() => { window.folderGate = new Promise(resolve => { window.readyFolders = resolve; }); });
+  await page.locator('#menuBtn').click();
+  await page.locator('[data-action=settings]').click();
+  assert.equal(await page.locator('#menu').evaluate(el => el.inert), false);
+  await page.evaluate(() => window.readyFolders());
+  const scroll = page.locator('#settings .modal-scroll');
+  await scroll.waitFor();
+  const insideCorners = await scroll.evaluate(el => {
+    const card = el.parentElement, shell = card.getBoundingClientRect(), viewport = el.getBoundingClientRect();
+    const radius = parseFloat(getComputedStyle(card).borderRadius);
+    return viewport.top - shell.top >= radius && shell.bottom - viewport.bottom >= radius;
+  });
+  assert.ok(insideCorners);
+  await page.locator('#settings .close').scrollIntoViewIfNeeded();
+  assert.ok(await scroll.evaluate(el => el.scrollTop > 0));
+  await page.locator('#settings .close').click();
+  await page.locator('#menuBtn').click();
+  await page.locator('[data-action=eq]').click();
+  await page.locator('#eq').waitFor();
+  assert.equal(await page.locator('#spectrumToggle').evaluate(el => el === document.activeElement), true);
+});
+
+test('an interrupted return cannot brighten the source of the next pull', async () => {
+  await down();
+  await move(600, 32, 450);
+  await up();
+  await down();
+  await move(600, 32, 465);
+  await page.locator('#crateTray.open').waitFor();
+  // Hold longer than the interrupted return flight.
+  await page.waitForTimeout(650);
+  assert.equal(await page.locator('.crate-ghost').count(), 1);
+  assert.equal(await page.locator('.sleeve.filing').getAttribute('data-index'), '20');
+  await touch('touchCancel', null);
+  await page.locator('.crate-ghost').waitFor({ state: 'detached' });
+  assert.equal(await page.locator('.sleeve.filing').count(), 0);
+});
+
+test('filing keeps the source dim until the copy lands, including through a scan', async () => {
+  await down();
+  await move(600, 32, 460);
+  // Wait until the tray has reached the drop point before releasing.
+  await page.waitForFunction(() => document.elementFromPoint(600, 730)?.closest('.tray-crate.new'));
+  await move(600, 32, 730);
+  await up();
+  const copy = page.locator('.crate-ghost');
+  await copy.evaluate(el => el.getAnimations()[0].pause());
+  await page.evaluate(() => window.refreshLibrary());
+  assert.equal(await page.locator('.sleeve.filing').getAttribute('data-index'), '20');
+  await copy.evaluate(el => el.getAnimations()[0].finish());
+  await page.locator('.tray-crate.landed').waitFor();
+  assert.equal(await page.locator('.sleeve.filing').count(), 0);
+  assert.equal(await copy.count(), 0);
+});
+
+for (const preference of ['follow', 'opposite']) {
+  for (const fingerDirection of [-1, 1]) {
+    test(`fast ${preference} swipe (${fingerDirection}) keeps moving through lift recoil`, async () => {
+      await page.locator('#librarySwipeDirection').evaluate((select, value) => {
+        select.value = value;
+        select.dispatchEvent(new Event('change'));
+      }, preference);
+      const albumDirection = preference === 'follow' ? -fingerDirection : fingerDirection;
+      await down();
+      await move(600 + fingerDirection * 45);
+      await move(600 + fingerDirection * 110);
+      await move(600 + fingerDirection * 175);
+      await move(600 + fingerDirection * 161, 8);
+      await up(4);
+      const path = await page.evaluate(async () => {
+        const positions = [state.pos];
+        while (state.pos !== state.target) {
+          await new Promise(resolve => requestAnimationFrame(resolve));
+          positions.push(state.pos);
+        }
+        return positions;
+      });
+      assert.ok((path.at(-1) - 20) * albumDirection >= 1, 'destination ' + path.at(-1));
+      assert.ok(path.every((pos, i) => i === 0 || (pos - path[i - 1]) * albumDirection >= 0));
+    });
+  }
+}
+
+test('a touch lift with a stale coordinate keeps the last sleeve position', async () => {
+  await page.evaluate(() => {
+    crate.addEventListener('pointerup', e => Object.defineProperty(e, 'clientX', { value: 600 }),
+      { capture: true, once: true });
+  });
+  await down();
+  await move(520);
+  await move(440);
+  await up(200);
+  assert.equal(await settled(), 19);
+});
+
+test('a fast deliberate turn flings in the new direction', async () => {
+  await down();
+  await move(535);
+  await move(435);
+  await move(395);
+  await move(445);
+  await move(470);
+  await up(4);
+  assert.ok(await settled() > 20);
+});
+
+test('the crate claims native touch scrolling and accepts a real wheel immediately after lift', async () => {
+  await page.evaluate(() => {
+    document.addEventListener('touchstart', e => { window.touchClaimed = e.defaultPrevented; }, { once: true });
+  });
+  await page.mouse.move(600, 350);
+  await down();
+  await move(520);
+  await up(200);
+  assert.equal(await page.evaluate(() => window.touchClaimed), true);
+  assert.equal(await page.evaluate(() => state.target), 19);
+  await page.mouse.wheel(0, 70);
+  await page.waitForFunction(() => state.target === 20);
+  assert.equal(await settled(), 20);
+});
+
+test('EQ closes back to the sidebar and an interrupted dismissal can reopen it', async () => {
+  const menu = page.locator('#menu'), eq = page.locator('#eq');
+  await page.locator('#menuBtn').click();
+  await page.locator('[data-action=eq]').click();
+  await eq.waitFor();
+  await page.keyboard.press('Escape');
+  assert.ok(await eq.evaluate(el => el.inert));
+  assert.ok(await page.locator('[data-action=eq]').evaluate(el => el === document.activeElement));
+  await page.keyboard.press('Escape');
+  await page.locator('#menuBtn').dispatchEvent('click');
+  await page.waitForFunction(() => document.querySelector('.menu-panel').getBoundingClientRect().right === innerWidth);
+  assert.equal(await menu.evaluate(el => el.inert), false);
+  assert.equal(await page.evaluate(() => scrollX), 0);
+  await page.mouse.click(60, 60);
+  await menu.waitFor({ state: 'hidden' });
+  await eq.waitFor({ state: 'hidden' });
+});
+
+for (const direction of ['follow', 'opposite']) {
+  test(`a 160 px touch flick glides three records with ${direction} selected`, async () => {
+    await page.locator('#librarySwipeDirection').evaluate((select, value) => { select.value = value; }, direction);
+    await down();
+    await move(550);
+    await move(495);
+    await move(440);
+    await up(16);
+    assert.equal(await page.evaluate(() => state.target), direction === 'follow' ? 23 : 17);
+  });
+}
+
+test('swiping the track list scrolls without a track-name tooltip or a playback change', async () => {
+  await page.evaluate(() => {
+    window.testTracks = ['Scratch N Sniff', "OWOL's Theme", 'Neko Soup'].map(title => ({ title, path: title }));
+  });
+  await down();
+  await up();
+  const rail = page.getByRole('navigation', { name: 'Album tracks' });
+  const track = rail.getByRole('button', { name: /OWOL's Theme/ });
+  await track.waitFor();
+  const { x, y, width, height } = await track.boundingBox();
+  const start = x + width / 2, middle = y + height / 2;
+  await touch('touchStart', start, 16, middle);
+  await move(start - 60, 32, middle);
+  await move(start - 150, 32, middle);
+  await up();
+  await page.waitForFunction(() => document.getElementById('alTrack').scrollLeft > 0);
+  assert.equal(await rail.getByRole('button', { name: /Scratch N Sniff/ }).getAttribute('aria-current'), 'true');
+  assert.ok(await track.evaluate(el => !el.closest('[title]') && !el.querySelector('[title]')));
+});
+
+test('a direct track selection ignores end and error events from the previous track', async () => {
+  await page.evaluate(() => {
+    window.testTracks = ['One', 'Two', 'Three', 'Four'].map(title => ({ title, path: title }));
+  });
+  await down();
+  await up();
+  const tracks = page.locator('#alTrack button');
+  await tracks.nth(3).waitFor();
+  const first = await page.evaluate(() => state.playing.playbackId);
+  await tracks.nth(3).click();
+  await page.evaluate(id => {
+    window.emitPlayback('track-ended', id);
+    window.emitPlayback('playback-error', [id, 'previous track']);
+  }, first);
+  assert.equal(await tracks.nth(3).getAttribute('aria-current'), 'true');
+  assert.equal(await page.locator('#toast.show').count(), 0);
+  await tracks.nth(0).click();
+  await page.evaluate(() => window.emitPlayback('track-ended', state.playing.playbackId));
+  await page.waitForFunction(() => state.playing.index === 1);
+  assert.equal(await tracks.nth(1).getAttribute('aria-current'), 'true');
+});
+
+test('accepting the sleeve behind the playing album keeps its image at the handoff', async () => {
+  await down();
+  await up();
+  await page.locator('#alTrack button').waitFor();
+  await page.locator('#backBtn').click();
+  await page.locator('#album').waitFor({ state: 'hidden' });
+  await page.keyboard.press('ArrowRight');
+  await settled();
+  await down();
+  await up();
+  const offer = page.locator('#proposedCover');
+  await offer.waitFor();
+  await page.evaluate(() => { window.offeredImage = document.querySelector('#proposedImg'); });
+  await offer.press('Enter');
+  await offer.waitFor({ state: 'hidden' });
+  assert.equal(await page.locator('#alTitle').textContent(), 'Record 21');
+  assert.equal(await page.evaluate(() => window.offeredImage === document.querySelector('#coverImg')), true);
+});
+
+test('a queued record keeps the outgoing artwork until the incoming cover is ready', async () => {
+  await page.evaluate(async () => {
+    const nextAlbum = { ...state.albums[21], art: true };
+    await startAlbum(state.albums[20], [nextAlbum]);
+    window.previousImage = document.querySelector('#coverImg');
+    window.previousImage.src = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><rect width="32" height="32" fill="blue"/></svg>';
+    window.previousImage.classList.remove('hidden');
+    await window.previousImage.decode();
+    const decode = HTMLImageElement.prototype.decode;
+    HTMLImageElement.prototype.decode = function () {
+      if (this.id === 'coverImg') return new Promise(resolve => { window.coverReady = resolve; });
+      return decode.call(this);
+    };
+  });
+  await page.locator('#nextBtn').click();
+  const outgoing = page.locator('.outgoing-sleeve img');
+  await outgoing.waitFor();
+  assert.ok(await outgoing.evaluate(el => el === window.previousImage));
+  const paused = await page.locator('.outgoing-backdrop').evaluate(el => getComputedStyle(el).animationPlayState);
+  assert.equal(paused, 'paused');
+  await page.evaluate(() => window.coverReady());
+  await outgoing.waitFor({ state: 'detached' });
+  assert.equal(await page.locator('#alTitle').textContent(), 'Record 21');
+});
+
+test('a large crate finishes folding before its stack reappears', async () => {
+  await page.evaluate(() => window.fillCrate(40));
+  await page.locator('#menuBtn').click();
+  await page.locator('[data-action=crates]').click();
+  const stack = page.locator('.shelf-crate[data-id="1"] .stack');
+  await stack.click();
+  await page.locator('#fanClose').click();
+  const fan = page.locator('#crateFan');
+  const lastDelay = await page.locator('.fan-cover').first().evaluate(el =>
+    parseFloat(getComputedStyle(el).transitionDelay) * 1000);
+  assert.ok(lastDelay <= 216);
+  assert.ok(await stack.evaluate(el => el.classList.contains('lifted-away')));
+  await fan.waitFor({ state: 'hidden' });
+  assert.ok(await stack.isVisible());
+});

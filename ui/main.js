@@ -43,6 +43,16 @@ function show(el, on = true) {
   el.classList.toggle('hidden', !on);
 }
 
+// On hybrid devices a tap can leave :hover matched until the mouse moves again.
+const rootClasses = document.documentElement.classList;
+rootClasses.toggle('can-hover', matchMedia('(any-hover: hover)').matches);
+function updatePointerHover(e) {
+  rootClasses.toggle('can-hover', e.pointerType !== 'touch');
+}
+for (const event of ['pointerdown', 'pointermove']) {
+  document.addEventListener(event, updatePointerHover, { capture: true, passive: true });
+}
+
 /* ---------------- crate ---------------- */
 
 const crate = $('crate');
@@ -149,6 +159,7 @@ function makeSleeve(i) {
   } else {
     fillBlank(el, a);
   }
+  albumCrates.bindFilingSleeve(a, el);
   return el;
 }
 
@@ -169,6 +180,9 @@ function clearCrate() {
   pool.clear();
 }
 
+// Horizontal travel from the centre to the next sleeve, shared by layout and input.
+const sleeveSpacing = () => state.size * 0.66;
+
 function render() {
   const n = state.albums.length;
   if (!n) return;
@@ -179,7 +193,7 @@ function render() {
     if (i < lo || i > hi) { el.remove(); pool.delete(i); }
   }
   const S = state.size;
-  const side = S * 0.66;
+  const side = sleeveSpacing();
   const gap = S * 0.17;
   for (let i = lo; i <= hi; i++) {
     let el = pool.get(i);
@@ -202,15 +216,25 @@ let lastCaption = -1;
 let noteTimer, noteRequest = 0, visibleNote = null;
 const pendingArticles = new Map();
 let articleAlbum;
+let hasOpenAIKey = false;
+let keyRequest = 0;
+async function refreshKeyAvailability() {
+  const request = ++keyRequest;
+  const available = await invoke('has_openai_key');
+  if (request !== keyRequest) return;
+  hasOpenAIKey = available;
+  show($('rewriteArticle'), hasOpenAIKey);
+  if (visibleNote) renderNote();
+}
 function renderNote() {
   const { album, body } = visibleNote;
   const stage = pendingArticles.get(album.id);
   $('noteTeaser').textContent = body?.split(/\n\s*\n/)[0] || '';
   $('noteAction').textContent = body ? 'Read album article' : 'Write album article with AI';
-  show($('noteAction'), !stage);
+  show($('noteAction'), !stage && (Boolean(body) || hasOpenAIKey));
   show($('noteProgress'), Boolean(stage));
   $('noteStage').textContent = stage || '';
-  show($('notePreview'));
+  show($('notePreview'), Boolean(body || stage || hasOpenAIKey));
 }
 listen('article-progress', ({ payload: [id, stage] }) => {
   if (!pendingArticles.has(id)) return;
@@ -261,7 +285,7 @@ function toggleArticleMenu(open) {
 $('articleMore').addEventListener('click', () => {
   const open = $('articleMenu').classList.contains('hidden');
   toggleArticleMenu(open);
-  if (open) $('rewriteArticle').focus();
+  if (open) $(hasOpenAIKey ? 'rewriteArticle' : 'deleteArticle').focus();
 });
 document.addEventListener('click', e => {
   if (!$('articleMenu').classList.contains('hidden') && !e.target.closest('.article-tools')) toggleArticleMenu(false);
@@ -283,9 +307,9 @@ $('deleteArticle').addEventListener('click', () => {
 });
 
 async function changeArticle(album, action) {
-  if (!album || pendingArticles.has(album.id)) return;
-  show($('article'), false);
   const deleting = action === 'delete';
+  if (!album || pendingArticles.has(album.id) || (!deleting && !hasOpenAIKey)) return;
+  show($('article'), false);
   pendingArticles.set(album.id, deleting ? 'Deleting' : 'Queued');
   if (visibleNote?.album.id === album.id) renderNote();
   try {
@@ -345,31 +369,36 @@ function updateCaption(force) {
   $('counter').textContent = `${String(i + 1).padStart(4, '0')} / ${String(n).padStart(4, '0')}`;
 }
 
-let animating = false;
-let dragFollow = 0.45, settleEase = 0.16;
-function tick() {
+const defaultSettleTime = 95; // Exponential decay time in milliseconds.
+let frame = 0, lastFrame = 0, settleTime = defaultSettleTime;
+function tick(now) {
+  frame = 0;
   const diff = state.target - state.pos;
-  if (Math.abs(diff) < 0.0015 && !dragging) {
-    state.pos = state.target;
-    animating = false;
-  } else {
-    state.pos += diff * (dragging ? dragFollow : settleEase);
-  }
+  const elapsed = Math.max(0, now - lastFrame);
+  state.pos = Math.abs(diff) * sleeveSpacing() < 0.25
+    ? state.target : state.pos + diff * -Math.expm1(-elapsed / settleTime);
   render();
   updateCaption();
-  if (animating) requestAnimationFrame(tick);
+  if (state.pos !== state.target) {
+    lastFrame = now;
+    frame = requestAnimationFrame(tick);
+  } else if (!drag) {
+    crate.dispatchEvent(new Event('librarysettled'));
+  }
 }
 function kick() {
-  if (!animating) { animating = true; requestAnimationFrame(tick); }
+  if (frame) return;
+  lastFrame = performance.now();
+  frame = requestAnimationFrame(tick);
 }
-function go(index, ease = 0.16) {
+function go(index, time = defaultSettleTime) {
   const n = state.albums.length;
   if (!n) return;
   const t = clamp(Math.round(index), 0, n - 1);
   // Long jumps (search) start just before the destination so we don't stream thousands of sleeves.
   if (Math.abs(t - state.pos) > 24) state.pos = t - Math.sign(t - state.pos) * 6;
   state.target = t;
-  settleEase = ease;
+  settleTime = time;
   rememberPosition();
   kick();
 }
@@ -377,14 +406,17 @@ const focused = () => state.albums[clamp(Math.round(state.target), 0, state.albu
 
 // wheel / trackpad
 let wheelAcc = 0;
+// The crate handles touch with Pointer Events. WebKitGTK otherwise also emits
+// wheel deltas, including a kinetic scroll after the finger has lifted.
+crate.addEventListener('touchstart', e => e.preventDefault(), { passive: false });
 crate.addEventListener('wheel', (e) => {
   e.preventDefault();
-  if (state.view !== 'library') return;
+  if (state.view !== 'library' || drag || !state.albums.length) return;
   const raw = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
   const d = e.deltaMode === 1 ? raw * 40 : raw;
   wheelAcc += d;
   const step = 70;
-  settleEase = 0.16;
+  settleTime = defaultSettleTime;
   while (Math.abs(wheelAcc) >= step) {
     const dir = Math.sign(wheelAcc);
     state.target = clamp(state.target + dir, 0, state.albums.length - 1);
@@ -414,91 +446,115 @@ function leaveCrates() {
   albumCrates.close();
   showLibrary();
 }
-let dragPointer = null, startY = 0, filingAlbum = false, downAlbum = null;
-let dragging = false, moved = false, startX = 0, startTarget = 0, downSleeve = null, caughtGlide = false;
-let velocitySamples = [];
-const albumWidth = () => state.size * 0.32;
-function addVelocitySample(x, t) {
-  velocitySamples.push({ x, t });
-  while (velocitySamples.length > 2 && velocitySamples[0].t < t - 150) velocitySamples.shift();
+const swipeDirection = $('librarySwipeDirection');
+swipeDirection.value = localStorage.getItem('muso.librarySwipeDirection') === 'follow' ? 'follow' : 'opposite';
+swipeDirection.addEventListener('change', () => localStorage.setItem('muso.librarySwipeDirection', swipeDirection.value));
+
+const directionSlop = 10; // CSS pixels
+const velocityWindow = 100; // ms
+let drag = null;
+function moveSleeves(e) {
+  const dx = e.clientX - drag.x;
+  const pos = clamp(state.pos + dx * drag.indexDirection / drag.spacing, 0, state.albums.length - 1);
+  drag.x = e.clientX;
+  state.pos = state.target = pos;
+
+  const samples = drag.samples;
+  while (samples.length && samples[0].t < e.timeStamp - velocityWindow) samples.shift();
+  const sample = { pos, t: e.timeStamp };
+  const delta = pos - drag.extreme.pos;
+  if (delta && delta * drag.direction >= 0) {
+    drag.direction = Math.sign(delta);
+    drag.extreme = sample;
+  } else if (delta) {
+    // Fast swipes can roll back briefly on lift. Count a turn relative to the recent stroke.
+    const stroke = samples.length ? Math.abs(drag.extreme.pos - samples[0].pos) * drag.spacing : 0;
+    if (Math.abs(delta) * drag.spacing >= clamp(stroke / 3, directionSlop, 32)) {
+      samples.length = 0;
+      if (drag.extreme.t >= e.timeStamp - velocityWindow) samples.push(drag.extreme);
+      drag.direction = Math.sign(delta);
+      drag.extreme = sample;
+    }
+  }
+  samples.push(sample);
 }
-// Pixels per millisecond over the last 100 ms of movement; zero when the finger rested before lifting.
-function releaseVelocity(now) {
-  const last = velocitySamples[velocitySamples.length - 1];
-  if (!last || now - last.t > 180) return 0;
-  const first = velocitySamples.find(s => s.t >= last.t - 100);
-  const elapsed = last.t - first.t;
-  return elapsed >= 8 ? (last.x - first.x) / elapsed : 0;
+
+function settleSwipe(gesture, releasedAt) {
+  const { samples, direction, spacing } = gesture;
+  const pos = state.pos;
+  const first = samples.find(sample => sample.t >= releasedAt - velocityWindow) ?? samples.at(-1);
+  const distance = pos - first.pos, elapsed = releasedAt - first.t;
+  const velocity = elapsed >= 8 && distance * direction * spacing >= directionSlop ? distance / elapsed : 0;
+  const flick = Math.abs(velocity) * spacing >= 0.35;
+  const touchFlick = gesture.touch && flick;
+  const glideTime = touchFlick ? 225 : 170;
+  const maxGlide = touchFlick ? 5 : 4;
+  const projected = Math.round(pos + clamp(velocity * glideTime, -maxGlide, maxGlide));
+  // A quick flick commits even over a short distance. A careful drag can land near a centre.
+  const margin = flick ? 0 : Math.min(0.18, 30 / spacing);
+  let end = projected;
+  if (direction > 0) end = Math.max(end, Math.ceil(pos - margin));
+  if (direction < 0) end = Math.min(end, Math.floor(pos + margin));
+  go(end, velocity ? clamp(Math.abs((end - pos) / velocity), 65, glideTime) : defaultSettleTime);
 }
-// Where a released swipe comes to rest. It follows the swipe instead of snapping back to the nearest sleeve.
-function flickTarget(target, start, velocity) {
-  const travelled = target - start;
-  const projected = target + velocity * 325;
-  const dir = Math.abs(velocity) > 0.0008 ? Math.sign(velocity) : Math.sign(travelled);
-  let end = dir > 0 ? Math.ceil(projected - 0.35) : dir < 0 ? Math.floor(projected + 0.35) : Math.round(projected);
-  const from = Math.round(start);
-  if (dir > 0 && travelled > 0.15) end = Math.max(end, from + 1);
-  if (dir < 0 && travelled < -0.15) end = Math.min(end, from - 1);
-  return clamp(end, Math.round(target) - 20, Math.round(target) + 20);
-}
-crate.addEventListener('pointerdown', (e) => {
-  if (e.button !== 0 || !e.isPrimary || dragging) return;
-  dragPointer = e.pointerId; startY = e.clientY; filingAlbum = false;
-  dragging = true; moved = false;
-  dragFollow = e.pointerType === 'touch' ? 1 : 0.45;
-  // Touching a gliding crate stops it where it is.
-  caughtGlide = Math.abs(state.target - state.pos) > 0.05;
-  if (caughtGlide) state.target = state.pos;
-  startX = e.clientX;
-  velocitySamples = [];
-  addVelocitySample(e.clientX, e.timeStamp);
-  startTarget = state.target;
-  downSleeve = e.target.closest('.sleeve');
-  downAlbum = downSleeve && state.albums[Number(downSleeve.dataset.index)];
+
+crate.addEventListener('pointerdown', e => {
+  if (drag || e.button !== 0 || !e.isPrimary || !state.albums.length) return;
+  const sleeve = e.target.closest('.sleeve');
+  const start = { pos: state.pos, t: e.timeStamp };
+  drag = {
+    id: e.pointerId, startX: e.clientX, startY: e.clientY, x: e.clientX,
+    touch: e.pointerType === 'touch',
+    indexDirection: e.pointerType === 'touch' && swipeDirection.value === 'opposite' ? 1 : -1,
+    sleeve, mode: 'pending', caught: state.target !== state.pos, spacing: sleeveSpacing(),
+    direction: 0, extreme: start, samples: [start],
+  };
+  state.target = state.pos;
+  wheelAcc = 0;
   crate.setPointerCapture(e.pointerId);
 });
-crate.addEventListener('pointermove', (e) => {
-  if (!dragging || dragPointer !== e.pointerId) return;
-  const dx = e.clientX - startX;
-  const dy = e.clientY - startY;
-  if (!moved && !filingAlbum && downAlbum && dy > 10 && dy > Math.abs(dx)) {
-    filingAlbum = true;
-    albumCrates.begin(downAlbum, downSleeve, e.clientX, e.clientY);
+
+function trackDrag(e) {
+  const dx = Math.abs(e.clientX - drag.startX), dy = e.clientY - drag.startY;
+  if (drag.mode === 'pending') {
+    if (dx > 6 && dx >= Math.abs(dy)) {
+      drag.mode = 'browse';
+      crate.classList.add('dragging');
+    } else if (Math.abs(dy) > 10 && Math.abs(dy) > dx * 1.2) {
+      drag.mode = 'vertical';
+      if (dy > 0 && drag.sleeve && e.type === 'pointermove') {
+        drag.mode = 'file';
+        albumCrates.begin(state.albums[Number(drag.sleeve.dataset.index)], drag.sleeve, e.clientX, e.clientY);
+      }
+    }
   }
-  if (filingAlbum) { albumCrates.drag(e.clientX, e.clientY); return; }
-  if (!moved && Math.abs(dx) < Math.abs(dy)) return;
-  if (Math.abs(dx) > 6) { moved = true; crate.classList.add('dragging'); }
-  if (!moved) return;
-  const samples = e.getCoalescedEvents?.() ?? [];
-  for (const s of samples.length ? samples : [e]) addVelocitySample(s.clientX, s.timeStamp || e.timeStamp);
-  state.target = clamp(startTarget - dx / albumWidth(), 0, state.albums.length - 1);
+  if (drag.mode === 'file') albumCrates.drag(e.clientX, e.clientY);
+  if (drag.mode !== 'browse') return;
+  for (const sample of e.getCoalescedEvents?.() || []) moveSleeves(sample);
+  moveSleeves(e);
   kick();
+}
+crate.addEventListener('pointermove', e => {
+  if (drag?.id === e.pointerId) trackDrag(e);
 });
+
 function endDrag(e) {
-  if (!dragging || dragPointer !== e.pointerId) return;
-  dragging = false;
+  if (drag?.id !== e.pointerId || (e.type === 'lostpointercapture' && e.target !== crate)) return;
+  const released = e.type === 'pointerup';
+  // On touch, the last move is the last position in contact with the screen.
+  if (released && !(e.pointerType === 'touch' && drag.mode === 'browse')) trackDrag(e);
+  const gesture = drag;
+  drag = null;
   crate.classList.remove('dragging');
-  if (filingAlbum) {
-    albumCrates.end(e.clientX, e.clientY, e.type !== 'pointerup');
-    filingAlbum = false;
-    return;
-  }
-  if (moved) {
-    // Finger to the left moves forward through the crate.
-    const velocity = -releaseVelocity(e.timeStamp) / albumWidth();
-    const end = flickTarget(state.target, startTarget, velocity);
-    // Start the glide at the finger's speed and let it decelerate into the sleeve.
-    const frameSpeed = Math.abs(velocity) * 16.7;
-    const distance = Math.abs(end - state.pos);
-    go(end, distance > 0.01 && frameSpeed > 0 ? clamp(frameSpeed / distance, 0.06, 0.2) : 0.16);
-  } else if (caughtGlide || e.type !== 'pointerup' || Math.abs(e.clientY - startY) > 10) {
-    go(state.target);
-  } else if (downSleeve) {
-    const i = Number(downSleeve.dataset.index);
-    if (i === Math.round(state.target)) openAlbum(state.albums[i]);
+  if (gesture.mode === 'file') albumCrates.end(e.clientX, e.clientY, !released);
+  if (released && gesture.mode === 'browse') settleSwipe(gesture, e.timeStamp);
+  else if (released && gesture.mode === 'pending' && !gesture.caught && gesture.sleeve &&
+      Math.abs(e.clientX - gesture.startX) <= 6 && Math.abs(e.clientY - gesture.startY) <= 10) {
+    const i = Number(gesture.sleeve.dataset.index);
+    if (i === Math.round(state.pos)) openAlbum(state.albums[i]);
     else go(i);
-  }
-  downSleeve = null;
+  } else go(state.pos);
+  kick();
 }
 crate.addEventListener('pointerup', endDrag);
 crate.addEventListener('pointercancel', endDrag);
@@ -510,6 +566,10 @@ let libraryRequest = 0;
 async function loadAlbums() {
   const request = ++libraryRequest;
   const albums = await invoke('get_albums');
+  // Replacing sleeves during a drag or glide would round the live position and detach the grabbed cover.
+  if (drag || state.pos !== state.target) {
+    await new Promise(resolve => crate.addEventListener('librarysettled', resolve, { once: true }));
+  }
   if (request !== libraryRequest) return;
   const byId = new Map(albums.map(a => [a.id, a]));
   albumsById = byId;
@@ -545,6 +605,7 @@ function applyLibraryOrder() {
   updateCaption(true);
 }
 $('indexMode').addEventListener('click', () => {
+  if (drag) return;
   closeSearch();
   if (indexMode === 'artist') preferredMember = focused()?.id;
   indexMode = indexMode === 'artist' ? 'album' : 'artist';
@@ -553,6 +614,7 @@ $('indexMode').addEventListener('click', () => {
 });
 
 async function boot() {
+  refreshKeyAvailability().catch(e => console.warn('Muso API key status', e));
   layout();
   await albumCrates.load();
   const folders = await invoke('get_folders');
@@ -656,19 +718,34 @@ function openMenu() {
   show($('menu'));
   playerWindow.isFullscreen().then(showFullscreenAction).catch(e => toast(String(e)));
 }
-function closeMenu() { show($('menu'), false); }
+let menuSelection = 0;
+function closeMenu() {
+  ++menuSelection;
+  show($('menu'), false);
+}
 $('menuBtn').addEventListener('click', openMenu);
 $('menu').querySelector('.menu-scrim').addEventListener('click', closeMenu);
 $('menu').querySelectorAll('[data-action]').forEach((b) =>
-  b.addEventListener('click', () => {
-    closeMenu();
+  b.addEventListener('click', async () => {
     const act = b.dataset.action;
+    if (act === 'settings' || act === 'ai') {
+      const selection = ++menuSelection;
+      try {
+        const [folders] = await Promise.all([act === 'settings' ? invoke('get_folders') : null, loadKey()]);
+        if (selection !== menuSelection) return;
+        if (act === 'settings') renderFolders(folders);
+        else prepareAi();
+        show($(act));
+      } catch (error) {
+        if (selection === menuSelection) toast(String(error));
+        return;
+      }
+    }
+    closeMenu();
     if (act === 'search') openSearch();
     if (act === 'crates') openCrates();
-    if (act === 'settings') openSettings();
     if (act === 'eq') openEQ(false);
     if (act === 'fullscreen') toggleFullscreen();
-    if (act === 'ai') openAi();
     if (act === 'refresh') {
       invoke('scan_library').then((started) => toast(started ? 'Refreshing library…' : 'Already digging…'));
     }
@@ -761,20 +838,18 @@ async function loadKey() {
   }
 }
 async function saveKey(e) {
-  await invoke('set_setting', { key: 'openai_key', value: e.target.value });
-  toast(e.target.value.trim() ? 'Key saved' : 'Saved key removed');
+  const value = e.target.value.trim();
+  try {
+    await invoke('set_setting', { key: 'openai_key', value });
+    await refreshKeyAvailability();
+    toast(value ? 'Key saved' : 'Saved key removed');
+  } catch (e) { toast(String(e)); }
 }
 document.querySelectorAll('.openai-keys').forEach((button) => {
   button.addEventListener('click', () => invoke('open_openai_keys').catch((e) => toast(String(e))));
 });
 $('keyInput').addEventListener('change', saveKey);
 $('keyInput2').addEventListener('change', saveKey);
-
-async function openSettings() {
-  renderFolders(await invoke('get_folders'));
-  await loadKey();
-  show($('settings'));
-}
 
 const filterSelect = $('imageFilter');
 const rippleToggle = $('pointerRipples');
@@ -989,12 +1064,10 @@ $('autoStyle').addEventListener('change', () => {
   showStyle((state.viewAlbum || focused())?.id);
   if (state.viewAlbum) startAtmospheres(state.viewAlbum.id);
 });
-async function openAi() {
-  await loadKey();
+function prepareAi() {
   $('atmosToggle').checked = atmosEnabled();
   $('researchToggle').checked = researchEnabled();
   showStyle((state.viewAlbum || focused())?.id);
-  show($('ai'));
 }
 const researchEnabled = () => localStorage.getItem('muso.research') === '1';
 $('researchToggle').addEventListener('change', (e) => localStorage.setItem('muso.research', e.target.checked ? '1' : '0'));
@@ -1022,26 +1095,24 @@ async function playIndex(i) {
   const p = state.playing;
   if (!p) return;
   if (i >= p.tracks.length) {
+    const endingId = p.playbackId;
     if (p.remaining?.length && !p.advancing) {
       p.advancing = true;
       try { await startAlbum(p.remaining[0], p.remaining.slice(1), true); }
       finally { p.advancing = false; }
-      if (state.playing !== p) return;
+      if (state.playing !== p || p.playbackId !== endingId) return;
     }
     if (p.advancing) return;
     // The record has ended: lift the needle.
     await invoke('stop');
+    if (state.playing !== p || p.playbackId !== endingId) return;
     Object.assign(p, { index: 0, paused: true, ended: true, introDone: false });
     updatePlayUi();
     return;
   }
-  const changingTrack = p.playbackId && state.viewAlbum?.id === p.album.id;
+  if (p.advancing) ++albumRequest;
   Object.assign(p, { index: Math.max(0, i), paused: false, ended: false, introDone: false, playbackId: ++playbackId });
   updateAtmosView();
-  if (changingTrack && !reducedMotion.matches) {
-    coverFade?.cancel();
-    coverFade = $('cover').animate([{ opacity: 0 }, { opacity: 1 }], { duration: 1450, easing: 'ease-in-out' });
-  }
   await invoke('play_track', { path: p.tracks[p.index].path, playbackId: p.playbackId });
   updatePlayUi();
 }
@@ -1056,7 +1127,9 @@ async function togglePlay() {
 const next = () => state.playing && playIndex(state.playing.index + 1);
 const prev = () => state.playing && playIndex(state.playing.index - 1);
 
-listen('track-ended', () => next());
+listen('track-ended', ({ payload }) => {
+  if (state.playing?.playbackId === payload && !state.playing.ended) next();
+});
 listen('cover-intro-ended', ({ payload }) => {
   const p = state.playing;
   if (!p || p.ended || p.playbackId !== payload) return;
@@ -1064,11 +1137,13 @@ listen('cover-intro-ended', ({ payload }) => {
   updateAtmosView();
 });
 listen('playback-error', ({ payload }) => {
-  toast(`Skipped · ${payload}`, 3500);
-  if (state.playing && !state.playing.ended) next();
+  const [id, message] = payload;
+  if (id === null) { toast(message, 3500); return; }
+  if (state.playing?.playbackId !== id || state.playing.ended) return;
+  toast(`Skipped · ${message}`, 3500);
+  next();
 });
 
-let coverFade;
 const trackRail = $('alTrack');
 let renderedTracks;
 let selectedTrack = -1;
@@ -1092,7 +1167,6 @@ function updateTrackRail(p) {
       number.textContent = String(track.trackNo ?? index + 1).padStart(2, '0');
       const label = p.album.members?.length > 1 && track.artist ? track.artist + ' — ' + track.title : track.title;
       button.append(number, document.createTextNode(label));
-      button.title = label;
       button.addEventListener('click', () => playIndex(index));
       return button;
     });
@@ -1215,26 +1289,28 @@ function openAlbum(a) {
   proposedCover.focus({preventScroll:true});
   if (!reducedMotion.matches) {
     proposal.animation = proposedCover.animate([
-      { transform: 'translateX(24%) scale(.94) rotate(0deg)' },
-      { transform: 'translateX(48%) scale(.94) rotate(5deg)', offset: .55 },
-      { transform: 'translateX(46%) scale(.94) rotate(0deg)' },
+      { '--motion-transform': 'translateX(24%) scale(.94) rotate(0deg)' },
+      { '--motion-transform': 'translateX(48%) scale(.94) rotate(5deg)', offset: .55 },
+      { '--motion-transform': 'translateX(46%) scale(.94) rotate(0deg)' },
     ], { duration: 740, easing: 'ease-in-out' });
   }
 }
 
 proposedCover.addEventListener('pointerdown', e => {
   if (!proposal || proposal.busy || proposal.drag || !e.isPrimary || e.button !== 0) return;
-  proposal.animation?.cancel();
-  proposal.drag = { id: e.pointerId, x: e.clientX, y: e.clientY };
-  proposedCover.setPointerCapture(e.pointerId);
+  const startPose = getComputedStyle(proposedCover).transform;
   proposedCover.classList.add('dragging');
+  proposal.animation?.cancel();
+  proposedCover.style.setProperty('--motion-transform', startPose);
+  proposal.drag = { id: e.pointerId, x: e.clientX, y: e.clientY, startPose };
+  proposedCover.setPointerCapture(e.pointerId);
 });
 proposedCover.addEventListener('pointermove', e => {
   const drag = proposal?.drag;
   if (!drag || drag.id !== e.pointerId) return;
   const pull = clamp(e.clientX - drag.x, 0, proposedCover.offsetWidth * .5);
-  proposedCover.style.setProperty('--pull', pull + 'px');
-  proposedCover.style.setProperty('--tilt', Math.min(7, pull / 18) + 'deg');
+  proposedCover.style.setProperty('--motion-transform',
+    `translateX(${pull}px) ${drag.startPose} rotate(${Math.min(7, pull / 18)}deg)`);
 });
 function endProposalDrag(e) {
   const drag = proposal?.drag;
@@ -1247,8 +1323,7 @@ function endProposalDrag(e) {
     return;
   }
   proposedCover.classList.remove('dragging');
-  proposedCover.style.removeProperty('--pull');
-  proposedCover.style.removeProperty('--tilt');
+  proposedCover.style.removeProperty('--motion-transform');
 }
 for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) {
   proposedCover.addEventListener(type, endProposalDrag);
@@ -1263,19 +1338,25 @@ proposedCover.addEventListener('click', e => {
 let crateRequest;
 function clearCrateTransition() {
   const view = $('album');
-  view.classList.remove('changing-record');
+  view.classList.remove('changing-record', 'waiting-for-cover');
   view.querySelectorAll('.outgoing-sleeve, .outgoing-backdrop').forEach(layer => layer.remove());
 }
 
 function animateCrateChange() {
   const view = $('album');
-  const sleeve = $('cover').cloneNode(true);
+  const sleeve = $('cover').cloneNode(false);
   sleeve.removeAttribute('id');
-  sleeve.firstElementChild.removeAttribute('id');
+  // Keep the painted image in the outgoing sleeve, including while the new art decodes.
+  const previousImage = $('coverImg');
+  const nextImage = new Image();
+  nextImage.id = 'coverImg';
+  nextImage.alt = '';
+  previousImage.replaceWith(nextImage);
+  previousImage.removeAttribute('id');
+  sleeve.append(previousImage);
   sleeve.classList.add('outgoing-sleeve');
   sleeve.style.setProperty('--blank', view.style.getPropertyValue('--blank'));
-  sleeve.style.setProperty('--outgoing-opacity', getComputedStyle($('cover')).opacity);
-  coverFade?.cancel();
+  view.style.setProperty('--outgoing-opacity', getComputedStyle($('cover')).opacity);
   sleeve.setAttribute('aria-hidden', 'true');
   $('cover').after(sleeve);
 
@@ -1297,7 +1378,8 @@ function animateCrateChange() {
   }
   atmosphere.after(backdrop);
   view.classList.add('changing-record');
-  backdrop.addEventListener('animationend', clearCrateTransition, { once: true });
+  backdrop.addEventListener('animationend', () => { if (backdrop.isConnected) clearCrateTransition(); }, { once: true });
+  return backdrop;
 }
 
 async function startAlbum(a, remaining = [], advancing = false) {
@@ -1313,13 +1395,24 @@ async function startAlbum(a, remaining = [], advancing = false) {
     if (!tracks.length) throw new Error('No tracks available for this album.');
     if (offer && !reducedMotion.matches) {
       proposedCover.style.zIndex = '2';
+      const startPose = getComputedStyle(proposedCover).transform;
+      offer.animation?.cancel();
       offer.animation = proposedCover.animate([
-        { transform: getComputedStyle(proposedCover).transform },
-        { transform: 'translateX(0) scale(1) rotate(0deg)' },
+        { '--motion-transform': startPose },
+        { '--motion-transform': 'translateX(0) scale(1) rotate(0deg)' },
       ], {duration: 320, easing: 'cubic-bezier(.2,.75,.25,1)', fill: 'forwards'});
       await offer.animation.finished;
     }
     if (request !== albumRequest) return;
+    if (offer) {
+      // Put the exact preview image in front without reloading it at the handoff.
+      const preview = $('proposedImg'), previous = $('coverImg');
+      preview.onerror = null;
+      previous.replaceWith(preview);
+      proposedCover.prepend(previous);
+      previous.id = 'proposedImg';
+      preview.id = 'coverImg';
+    }
     clearProposal();
     state.playing = { album: a, tracks, index: 0, paused: false, ended: false, remaining };
     if (!advancing || state.view === 'album') displayAlbum(a, advancing);
@@ -1336,7 +1429,7 @@ async function startAlbum(a, remaining = [], advancing = false) {
 
 function displayAlbum(a, advancing = false) {
   clearCrateTransition();
-  if (advancing && state.viewAlbum?.id !== a.id && !reducedMotion.matches && !document.hidden) animateCrateChange();
+  const outgoing = advancing && state.viewAlbum?.id !== a.id && !reducedMotion.matches && !document.hidden && animateCrateChange();
   closeSearch();
   closeMenu();
   state.view = 'album';
@@ -1347,8 +1440,16 @@ function displayAlbum(a, advancing = false) {
   const cover = $('coverImg');
   const bg = $('bgArt');
   if (a.art) {
-    cover.src = bg.src = coverUrl(a, 'art');
+    const url = coverUrl(a, 'art');
+    if (cover.src !== url) cover.src = url;
+    if (bg.src !== url) bg.src = url;
     show(cover); show(bg);
+    if (outgoing) {
+      view.classList.add('waiting-for-cover');
+      cover.decode().catch(() => {
+        if (outgoing.isConnected && cover.src === url && !cover.naturalWidth) show(cover, false);
+      }).finally(() => { if (outgoing.isConnected) view.classList.remove('waiting-for-cover'); });
+    }
   } else {
     show(cover, false); show(bg, false);
   }
@@ -1368,16 +1469,22 @@ function displayAlbum(a, advancing = false) {
 function closeAlbum() {
   // Leaving the player can cancel a manual selection, but a crate keeps playing in the library.
   if (crateRequest !== albumRequest) ++albumRequest;
-  clearCrateTransition();
   clearProposal();
   const view = $('album');
   view.classList.add('leaving');
-  stopAtmospheres();
   state.view = 'library';
   state.viewAlbum = null;
   show($('menuBtn'));
   syncMini();
-  setTimeout(() => { if (state.view === 'library') show(view, false); view.classList.remove('leaving'); }, 450);
+  const finish = () => {
+    show(view, false);
+    view.classList.remove('leaving');
+    clearCrateTransition();
+    stopAtmospheres();
+  };
+  const exit = view.getAnimations().find(animation => animation.transitionProperty === '--motion-opacity');
+  if (exit) exit.finished.then(finish, () => {});
+  else finish();
 }
 $('backBtn').addEventListener('click', closeAlbum);
 
@@ -1417,11 +1524,11 @@ function openEQ(fromPlayer) {
   if (fromPlayer) show($('albumMenu'), false);
   $('eq').classList.toggle('from-player', fromPlayer);
   show($('eq'));
-  $('spectrumToggle').focus();
+  $('spectrumToggle').focus({ preventScroll: true });
 }
 $('albumEQ').addEventListener('click', () => openEQ(true));
 $('eq').querySelector('.close').addEventListener('click', () => {
-  if (!$('eq').classList.contains('from-player')) { openMenu(); $('menu').querySelector('[data-action="eq"]').focus(); }
+  if (!$('eq').classList.contains('from-player')) { openMenu(); $('menu').querySelector('[data-action="eq"]').focus({ preventScroll: true }); }
   else { poke(); $('albumMenuBtn').focus(); }
 });
 $('openImageFolder').addEventListener('click', async () => {
@@ -1551,8 +1658,13 @@ listen('atmos-image-ready', ({ payload }) => {
   if (payload.files.length === 1 && styleAlbum === payload.albumId) showStyle(payload.albumId);
 });
 async function generate(a) {
-  const key = await invoke('get_setting', { key: 'openai_key' });
-  if (!key && !(await invoke('has_environment_key'))) { openAi(); toast('Add an OpenAI API key first'); return; }
+  if (!(await invoke('has_openai_key'))) {
+    await loadKey();
+    prepareAi();
+    show($('ai'));
+    toast('Add an OpenAI API key first');
+    return;
+  }
   if (generating.has(a.id)) return;
   generating.add(a.id);
   toast(`Composing atmospheres for ${a.title}…`);
@@ -1613,7 +1725,7 @@ window.addEventListener('keydown', (e) => {
     poke();
     return;
   }
-  if (state.view !== 'library' || !state.albums.length) return;
+  if (state.view !== 'library' || drag || !state.albums.length) return;
   const t = Math.round(state.target);
   if (e.key === 'ArrowRight' || e.key === 'ArrowDown') go(t + 1);
   else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') go(t - 1);

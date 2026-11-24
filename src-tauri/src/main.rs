@@ -106,6 +106,17 @@ fn environment_key() -> Option<String> {
     std::env::var("OPENAI_API_KEY").ok().map(|v| v.trim().to_owned()).filter(|v| !v.is_empty())
 }
 
+fn openai_key(conn: &rusqlite::Connection) -> R<Option<String>> {
+    let saved = db::get_setting(conn, "openai_key").map_err(err)?;
+    Ok(saved.map(|v| v.trim().to_owned()).filter(|v| !v.is_empty()).or_else(environment_key))
+}
+
+#[tauri::command]
+fn has_openai_key(state: State<'_, AppState>) -> R<bool> {
+    let conn = state.db.lock().map_err(err)?;
+    Ok(openai_key(&conn)?.is_some())
+}
+
 #[tauri::command]
 fn has_environment_key() -> bool {
     environment_key().is_some()
@@ -134,8 +145,7 @@ async fn generate_album_note(app: AppHandle, state: State<'_, AppState>, album_i
         }
         (db::album(&c,&album_id).map_err(err)?.ok_or("Album not found")?,
          db::tracks(&c,&album_id).map_err(err)?,
-         db::get_setting(&c,"openai_key").map_err(err)?.filter(|k| !k.is_empty())
-             .or_else(environment_key).ok_or("Add an OpenAI API key in Settings first.")?)
+         openai_key(&c)?.ok_or("Add an OpenAI API key in Settings first.")?)
     };
     let progress = |stage: &str| {
         let _ = app.emit("article-progress", (&album_id, stage));
@@ -245,11 +255,7 @@ async fn generate_atmospheres(app: AppHandle, state: State<'_, AppState>, album_
     };
     let (key, album, tracks) = {
         let conn = state.db.lock().map_err(err)?;
-        let key = db::get_setting(&conn, "openai_key")
-            .map_err(err)?
-            .filter(|k| !k.is_empty())
-            .or_else(environment_key)
-            .ok_or("No OpenAI API key set")?;
+        let key = openai_key(&conn)?.ok_or("No OpenAI API key set")?;
         let album = db::album(&conn, &album_id).map_err(err)?.ok_or("Album not found")?;
         let tracks = db::tracks(&conn, &album_id).map_err(err)?;
         (key, album, tracks)
@@ -336,6 +342,7 @@ fn main() {
             upgrade_cover,
             open_openai_keys,
             has_environment_key,
+            has_openai_key,
             get_tracks,
             play_track,
             set_spectrum_enabled,

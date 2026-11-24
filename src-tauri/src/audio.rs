@@ -29,7 +29,7 @@ impl Player {
                 let (_stream, handle) = match OutputStream::try_default() {
                     Ok(s) => s,
                     Err(e) => {
-                        let _ = app.emit("playback-error", format!("No audio device: {e}"));
+                        let _ = app.emit("playback-error", (None::<u64>, format!("No audio device: {e}")));
                         while rx.recv().is_ok() {}
                         return;
                     }
@@ -62,10 +62,10 @@ impl Player {
                                     cover_intro = Some(playback_id);
                                 }
                                 (Err(e), _) => {
-                                    let _ = app.emit("playback-error", e);
+                                    let _ = app.emit("playback-error", (Some(playback_id), e));
                                 }
                                 (_, Err(e)) => {
-                                    let _ = app.emit("playback-error", e.to_string());
+                                    let _ = app.emit("playback-error", (Some(playback_id), e.to_string()));
                                 }
                             }
                         }
@@ -97,7 +97,7 @@ impl Player {
                             }
                             if sink.as_ref().is_some_and(|s| s.empty()) {
                                 sink = None;
-                                let _ = app.emit("track-ended", ());
+                                let _ = app.emit("track-ended", current_id);
                             } else if sink.as_ref().is_some_and(|s| s.get_pos() >= Duration::from_secs(10)) {
                                 if let Some(id) = cover_intro.take() {
                                     let _ = app.emit("cover-intro-ended", id);
@@ -116,5 +116,23 @@ impl Player {
         if let Ok(tx) = self.tx.lock() {
             let _ = tx.send(cmd);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Decoder;
+    use std::io::Cursor;
+
+    #[test]
+    fn silent_mp3_channels_at_the_end_of_the_bit_reservoir_play_in_full() {
+        // A 32 kbps MPEG-1 Layer III stereo frame has 68 bytes of main data.
+        // The first channel uses all 544 bits. The remaining channels need zero bits.
+        let mut frame = [0u8; 104];
+        frame[..4].copy_from_slice(&[0xff, 0xfb, 0x10, 0]);
+        frame[6..8].copy_from_slice(&544u16.to_be_bytes());
+        frame[36..].fill(0xff);
+        let decoded = Decoder::new(Cursor::new(frame.repeat(8))).unwrap();
+        assert_eq!(decoded.count(), 8 * 1152 * 2);
     }
 }

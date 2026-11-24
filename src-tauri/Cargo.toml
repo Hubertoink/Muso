@@ -1,6 +1,6 @@
 [package]
 name = "muso"
-version = "0.1.21"
+version = "0.1.22"
 description = "Muso – a minimalist digital record crate"
 edition = "2021"
 license = "MIT"
@@ -40,3 +40,8 @@ strip = true
 
 [target."cfg(windows)".dependencies]
 tauri-plugin-opener = "2"
+
+[patch.crates-io]
+# Rodio 0.20 uses Symphonia 0.5. Backport the silent MP3 granule fix from
+# https://github.com/pdeljanov/Symphonia/pull/528 until the 0.5 series includes it.
+symphonia-bundle-mp3 = { path = "vendor/symphonia-bundle-mp3" }

@@ -93,37 +93,46 @@
   </div>
 
   <!-- Settings -->
-  <div id="settings" class="modal hidden">
+  <div id="settings" class="modal animated-overlay hidden" inert>
     <div class="modal-card">
-      <h2>Settings</h2>
-      <h3>Music folders</h3>
-      <ul id="folderList"></ul>
-      <button id="addFolderBtn" class="link">+ Add folder</button>
-      <h3>Album covers</h3>
-      <p class="muted">Look up artist and album names on MusicBrainz. Higher-resolution front covers from the Cover Art Archive are saved only in Muso.</p>
-      <button id="findCovers" class="link setting-action">Find better covers</button>
-      <p id="coverProgress" class="muted" role="status"></p>
-      <h3>Collection archive</h3>
-      <p class="muted">Transfer album articles, covers and atmosphere images. On the other computer, scan your music folders before importing.</p>
-      <button class="link setting-action" id="exportArchive">Export archive…</button>
-      <button class="link setting-action" id="importArchive">Import archive…</button>
-      <p id="archiveStatus" role="status" class="muted"></p>
-      <h3>Atmosphere effects</h3>
-      <label class="style-field">Animated filter
-        <select id="imageFilter">
-          <option value="off">Off</option>
-          <option value="light">Drifting light</option>
-          <option value="film">Film weave</option>
-          <option value="haze">Colour haze</option>
-        </select>
-      </label>
-      <label class="check"><input type="checkbox" id="pointerRipples" /> Ripples under the pointer or fingertip</label>
-      <label class="style-field effect-strength">Effect strength <input type="range" id="effectStrength" min="0" max="100" step="5" /></label>
-      <h3>OpenAI account <span class="muted">optional</span></h3>
-      <p class="muted">Album articles and Visual Atmospheres use your OpenAI API key. Generating new content uses API billing.</p>
-      <button class="link setting-action openai-keys">Open my OpenAI API keys ↗</button>
-      <input id="keyInput" type="password" aria-label="OpenAI API key" placeholder="Paste API key" spellcheck="false" autocomplete="off" />
-      <div class="modal-actions"><button class="pill close">Done</button></div>
+      <div class="modal-scroll">
+        <h2>Settings</h2>
+        <h3>Music folders</h3>
+        <ul id="folderList"></ul>
+        <button id="addFolderBtn" class="link">+ Add folder</button>
+        <h3>Touch</h3>
+        <label class="style-field">Library swipe direction
+          <select id="librarySwipeDirection">
+            <option value="opposite">Covers move opposite to finger</option>
+            <option value="follow">Covers follow finger</option>
+          </select>
+        </label>
+        <h3>Album covers</h3>
+        <p class="muted">Look up artist and album names on MusicBrainz. Higher-resolution front covers from the Cover Art Archive are saved only in Muso.</p>
+        <button id="findCovers" class="link setting-action">Find better covers</button>
+        <p id="coverProgress" class="muted" role="status"></p>
+        <h3>Collection archive</h3>
+        <p class="muted">Transfer album articles, covers and atmosphere images. On the other computer, scan your music folders before importing.</p>
+        <button class="link setting-action" id="exportArchive">Export archive…</button>
+        <button class="link setting-action" id="importArchive">Import archive…</button>
+        <p id="archiveStatus" role="status" class="muted"></p>
+        <h3>Atmosphere effects</h3>
+        <label class="style-field">Animated filter
+          <select id="imageFilter">
+            <option value="off">Off</option>
+            <option value="light">Drifting light</option>
+            <option value="film">Film weave</option>
+            <option value="haze">Colour haze</option>
+          </select>
+        </label>
+        <label class="check"><input type="checkbox" id="pointerRipples" /> Ripples under the pointer or fingertip</label>
+        <label class="style-field effect-strength">Effect strength <input type="range" id="effectStrength" min="0" max="100" step="5" /></label>
+        <h3>OpenAI account <span class="muted">optional</span></h3>
+        <p class="muted">Album articles and Visual Atmospheres use your OpenAI API key. Generating new content uses API billing.</p>
+        <button class="link setting-action openai-keys">Open my OpenAI API keys ↗</button>
+        <input id="keyInput" type="password" aria-label="OpenAI API key" placeholder="Paste API key" spellcheck="false" autocomplete="off" />
+        <div class="modal-actions"><button class="pill close">Done</button></div>
+      </div>
     </div>
   </div>
 
@@ -140,41 +149,45 @@
       <div class="article-tools">
         <button id="articleMore" class="pill" aria-label="Article options" aria-expanded="false" aria-controls="articleMenu">•••</button>
         <div class="popover hidden" id="articleMenu">
-          <button id="rewriteArticle">Regenerate article with AI</button>
+          <button id="rewriteArticle" class="hidden">Regenerate article with AI</button>
           <button id="deleteArticle">Delete article</button>
         </div>
       </div>
       <button class="pill close">Done</button>
     </footer>
   </div></div>
-  <div id="eq" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="eqTitle">
+  <div id="eq" class="modal animated-overlay hidden" inert role="dialog" aria-modal="true" aria-labelledby="eqTitle">
     <div class="modal-card">
-      <h2 id="eqTitle">EQ Settings</h2>
-      <label class="check"><input type="checkbox" id="spectrumToggle" /> Show visualizer on atmosphere images</label>
-      <label class="style-field">Wave style <select id="eqStyle"><option value="ripple">Ripple line</option><option value="pigment">Rising pigment</option><option value="echo">Echo lines</option></select></label>
-      <label id="eqColourRow" class="style-field">Pigment colour <input id="eqColour" type="color" value="#ee905f" /></label>
-      <label class="eq-slider">Sensitivity <input id="eqSensitivity" type="range" min="25" max="200" step="5" value="115"/><output for="eqSensitivity"></output></label>
-      <label class="eq-slider">Wave height <input id="eqHeight" type="range" min="10" max="100" step="5" value="70"/><output for="eqHeight"></output></label>
-      <label class="eq-slider">Intensity <input id="eqIntensity" type="range" min="0" max="100" step="5" value="80"/><output for="eqIntensity"></output></label>
-      <div class="modal-actions"><button class="pill close">Done</button></div>
+      <div class="modal-scroll">
+        <h2 id="eqTitle">EQ Settings</h2>
+        <label class="check"><input type="checkbox" id="spectrumToggle" /> Show visualizer on atmosphere images</label>
+        <label class="style-field">Wave style <select id="eqStyle"><option value="ripple">Ripple line</option><option value="pigment">Rising pigment</option><option value="echo">Echo lines</option></select></label>
+        <label id="eqColourRow" class="style-field">Pigment colour <input id="eqColour" type="color" value="#ee905f" /></label>
+        <label class="eq-slider">Sensitivity <input id="eqSensitivity" type="range" min="25" max="200" step="5" value="115"/><output for="eqSensitivity"></output></label>
+        <label class="eq-slider">Wave height <input id="eqHeight" type="range" min="10" max="100" step="5" value="70"/><output for="eqHeight"></output></label>
+        <label class="eq-slider">Intensity <input id="eqIntensity" type="range" min="0" max="100" step="5" value="80"/><output for="eqIntensity"></output></label>
+        <div class="modal-actions"><button class="pill close">Done</button></div>
+      </div>
     </div>
   </div>
 
-  <div id="ai" class="modal hidden">
+  <div id="ai" class="modal animated-overlay hidden" inert>
     <div class="modal-card">
-      <h2>Visual Atmospheres</h2>
-      <p class="muted">Muso creates up to three images from the album metadata, track titles and loudness measurements from short local excerpts. Only text and measurements go to OpenAI. The images are saved on this computer.</p>
-      <h3>OpenAI API key</h3>
-      <button class="link setting-action openai-keys">Open my OpenAI API keys ↗</button>
-      <input id="keyInput2" type="password" aria-label="OpenAI API key" placeholder="Paste API key" spellcheck="false" autocomplete="off" />
-      <label class="check"><input id="atmosToggle" type="checkbox" /> Show atmospheres during playback</label>
-      <label class="check"><input id="autoStyle" type="checkbox" /> Let AI choose a visual style for each album</label>
-      <label class="style-field">Atmosphere style <select id="aiStyle"></select></label>
-      <label class="check"><input id="researchToggle" type="checkbox" /> Research the artist and album before generating</label>
-      <p class="muted">One web search looks for album descriptions, genre influences and listening notes. These guide the scenes and palette. API charges apply.</p>
-      <div class="modal-actions">
-        <button id="aiGenerateBtn" class="link">Generate for the focused album</button>
-        <button class="pill close">Done</button>
+      <div class="modal-scroll">
+        <h2>Visual Atmospheres</h2>
+        <p class="muted">Muso creates up to three images from the album metadata, track titles and loudness measurements from short local excerpts. Only text and measurements go to OpenAI. The images are saved on this computer.</p>
+        <h3>OpenAI API key</h3>
+        <button class="link setting-action openai-keys">Open my OpenAI API keys ↗</button>
+        <input id="keyInput2" type="password" aria-label="OpenAI API key" placeholder="Paste API key" spellcheck="false" autocomplete="off" />
+        <label class="check"><input id="atmosToggle" type="checkbox" /> Show atmospheres during playback</label>
+        <label class="check"><input id="autoStyle" type="checkbox" /> Let AI choose a visual style for each album</label>
+        <label class="style-field">Atmosphere style <select id="aiStyle"></select></label>
+        <label class="check"><input id="researchToggle" type="checkbox" /> Research the artist and album before generating</label>
+        <p class="muted">One web search looks for album descriptions, genre influences and listening notes. These guide the scenes and palette. API charges apply.</p>
+        <div class="modal-actions">
+          <button id="aiGenerateBtn" class="link">Generate for the focused album</button>
+          <button class="pill close">Done</button>
+        </div>
       </div>
     </div>
   </div>

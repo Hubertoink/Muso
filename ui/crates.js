@@ -64,7 +64,11 @@ function createAlbumCrates({ invoke, lookup, play, back, toast, coverUrl, blankC
   /* ---------------- tray: appears only while a cover is pulled down ---------------- */
 
   let ghost = null, drop = null;
+  let trayLists, trayWidth;
   function renderTray() {
+    if (trayLists === data.lists && trayWidth === window.innerWidth) return;
+    trayLists = data.lists;
+    trayWidth = window.innerWidth;
     const box = el('trayCrates');
     const count = data.lists.length + 1;
     const size = Math.round(clamp(window.innerWidth / count - 46, 52, 92));
@@ -85,31 +89,47 @@ function createAlbumCrates({ invoke, lookup, play, back, toast, coverUrl, blankC
   function targetAt(x, y) {
     return document.elementFromPoint(x, y)?.closest('.tray-crate') || null;
   }
+  function removeGhost(g) {
+    g.flight?.cancel();
+    g.el.remove();
+    g.sleeve.classList.remove('filing');
+  }
+  // A scan or cover upgrade can replace the source element during the landing.
+  function bindFilingSleeve(album, sleeve) {
+    if (ghost?.el.isConnected && ghost.album.id === album.id) {
+      ghost.sleeve = sleeve;
+      sleeve.classList.add('filing');
+    }
+  }
   function begin(album, sleeve, x, y) {
+    if (ghost) removeGhost(ghost);
     renderTray();
+    tray.querySelectorAll('.landed, .reject, .over').forEach(item => item.classList.remove('landed', 'reject', 'over'));
+    drop = null;
     tray.classList.add('open');
     const r = sleeve.getBoundingClientRect();
     const size = Math.min(r.width, r.height);
-    const g = document.createElement('div');
-    g.className = 'crate-ghost';
+    const g = sleeve.cloneNode(true);
+    g.classList.replace('sleeve', 'crate-ghost');
+    g.removeAttribute('style');
+    g.style.setProperty('--blank', blankColor(album.id));
     g.style.width = g.style.height = size + 'px';
-    const img = sleeve.querySelector('img');
-    if (img) g.appendChild(img.cloneNode());
-    else { g.classList.add('blank'); g.style.setProperty('--blank', blankColor(album.id)); g.textContent = album.title; }
-    document.body.appendChild(g);
-    sleeve.classList.add('filing');
+    const img = g.querySelector('img');
+    if (img) img.decoding = 'sync';
     const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
-    ghost = { el: g, album, sleeve, size, home: { x: cx, y: cy }, grab: { x: x - cx, y: y - cy }, startY: y, lastX: x, rot: 0 };
+    ghost = { el: g, album, sleeve, size, home: { x: cx, y: cy }, grab: { x: x - cx, y: y - cy },
+      startY: y, lastX: x, rot: 0, trayTop: window.innerHeight - tray.offsetHeight };
     place(x, y);
+    sleeve.classList.add('filing');
+    document.body.appendChild(g);
   }
   function place(x, y) {
-    const trayTop = tray.getBoundingClientRect().top;
-    const p = clamp((y - ghost.startY) / Math.max(80, trayTop - ghost.startY), 0, 1);
+    const p = clamp((y - ghost.startY) / Math.max(80, ghost.trayTop - ghost.startY), 0, 1);
     const scale = 1 - p * 0.62;
     ghost.rot = ghost.rot * 0.8 + clamp((x - ghost.lastX) * 0.9, -16, 16) * 0.2;
     ghost.lastX = x;
     const cx = x - ghost.grab.x * scale, cy = y - ghost.grab.y * scale;
-    ghost.el.style.transform = `translate3d(${cx - ghost.size / 2}px,${cy - ghost.size / 2}px,0) scale(${scale}) rotate(${ghost.rot.toFixed(2)}deg)`;
+    ghost.el.style.setProperty('--motion-transform', `translate3d(${cx - ghost.size / 2}px,${cy - ghost.size / 2}px,0) scale(${scale}) rotate(${ghost.rot.toFixed(2)}deg)`);
   }
   function drag(x, y) {
     if (!ghost) return;
@@ -121,53 +141,52 @@ function createAlbumCrates({ invoke, lookup, play, back, toast, coverUrl, blankC
       drop = t;
     }
   }
-  function flyGhost(g, x, y, scale, rot, fade) {
-    g.el.style.transition = `transform .55s ${SPRING}, opacity .45s ease`;
-    g.el.style.transform = `translate3d(${x - g.size / 2}px,${y - g.size / 2}px,0) scale(${scale}) rotate(${rot}deg)`;
-    if (fade) g.el.style.opacity = '0';
+  function flyGhost(g, x, y, scale, rot) {
+    const transform = `translate3d(${x - g.size / 2}px,${y - g.size / 2}px,0) scale(${scale}) rotate(${rot}deg)`;
+    g.flight = g.el.animate([{ '--motion-transform': g.el.style.getPropertyValue('--motion-transform') }, { '--motion-transform': transform }], {
+      duration: matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 550,
+      easing: SPRING, fill: 'forwards',
+    });
+    // Grabbing another sleeve interrupts this flight.
+    return g.flight.finished.catch(() => {});
   }
   async function end(x, y, cancelled) {
     if (!ghost) return;
-    const g = ghost, target = !cancelled && targetAt(x, y);
-    ghost = null;
+    const g = ghost, target = cancelled ? null : targetAt(x, y);
     drop?.classList.remove('over');
     drop = null;
-    if (!target) {
-      flyGhost(g, g.home.x, g.home.y, 1, 0, false);
-      tray.classList.remove('open');
-      await wait(480);
-      g.sleeve.classList.remove('filing');
-      g.el.remove();
-      return;
-    }
-    const id = target.dataset.id ? Number(target.dataset.id) : null;
-    if (id !== null && listById(id)?.albums.some(e => e.id === g.album.id)) {
-      target.classList.add('reject');
-      flyGhost(g, g.home.x, g.home.y, 1, 0, false);
-      toast('Already in ' + listById(id).name);
-      await wait(520);
-      g.sleeve.classList.remove('filing');
-      g.el.remove();
+    const id = target?.dataset.id ? Number(target.dataset.id) : null;
+    const duplicate = id !== null && listById(id)?.albums.some(e => e.id === g.album.id);
+    if (!target || duplicate) {
+      if (duplicate) {
+        target.classList.add('reject');
+        toast('Already in ' + listById(id).name);
+      } else tray.classList.remove('open');
+      await flyGhost(g, g.home.x, g.home.y, 1, 0);
+      if (ghost !== g) return;
+      removeGhost(g);
+      ghost = null;
       tray.classList.remove('open');
       return;
     }
     const s = target.querySelector('.stack').getBoundingClientRect();
-    flyGhost(g, s.left + s.width / 2, s.top + s.height / 2, s.width / g.size, tilt(g.album.id) * 0.3, false);
-    g.sleeve.classList.remove('filing');
-    const saved = update({ type: 'add', id, album: g.album.id });
-    await wait(420);
-    try {
-      await saved;
-      const item = target;
-      const fresh = trayItem(id === null ? data.lists[data.lists.length - 1] : listById(id),
-        id === null ? data.lists[data.lists.length - 1].name : listById(id).name,
-        parseFloat(item.querySelector('.stack').style.getPropertyValue('--s')));
+    const [saved] = await Promise.allSettled([
+      update({ type: 'add', id, album: g.album.id }),
+      flyGhost(g, s.left + s.width / 2, s.top + s.height / 2, s.width / g.size, tilt(g.album.id) * 0.3),
+    ]);
+    if (ghost !== g) return;
+    if (saved.status === 'fulfilled') {
+      const list = id === null ? data.lists[data.lists.length - 1] : listById(id);
+      const fresh = trayItem(list, list.name, parseFloat(target.querySelector('.stack').style.getPropertyValue('--s')));
       fresh.classList.add('landed');
-      item.replaceWith(fresh);
-    } catch { /* toast already shown */ }
-    g.el.remove();
+      target.replaceWith(fresh);
+    }
+    removeGhost(g);
     await wait(650);
-    if (!ghost) tray.classList.remove('open');
+    if (ghost === g) {
+      ghost = null;
+      tray.classList.remove('open');
+    }
   }
 
   /* ---------------- crates page ---------------- */
@@ -175,7 +194,7 @@ function createAlbumCrates({ invoke, lookup, play, back, toast, coverUrl, blankC
   function shelfSize() {
     return Math.round(clamp(Math.min(window.innerWidth / 5, window.innerHeight / 3.6), 130, 220));
   }
-  function renderShelf() {
+  function renderShelf(entering = false) {
     const size = shelfSize();
     const items = data.lists.map((list, i) => {
       const b = document.createElement('button');
@@ -209,6 +228,7 @@ function createAlbumCrates({ invoke, lookup, play, back, toast, coverUrl, blankC
       if (id) unfold(id, true);
     });
     items.push(add);
+    if (entering) items.forEach(item => item.classList.add('entering'));
     shelf.replaceChildren(...items);
     el('cratesHint').textContent = data.lists.length
       ? 'Click a crate to spread it out. Drag covers to change the order.'
@@ -218,8 +238,11 @@ function createAlbumCrates({ invoke, lookup, play, back, toast, coverUrl, blankC
   function open() {
     page.classList.remove('hidden');
     page.classList.remove('leaving');
-    renderShelf();
-    update(null).then(() => { if (!fanState) renderShelf(); }).catch(() => {});
+    const shown = JSON.stringify(data.lists);
+    renderShelf(true);
+    update(null).then(() => {
+      if (isOpen() && !fanState && JSON.stringify(data.lists) !== shown) renderShelf();
+    }).catch(() => {});
     el('cratesBack').focus({ preventScroll: true });
   }
   function close() {
@@ -254,7 +277,7 @@ function createAlbumCrates({ invoke, lookup, play, back, toast, coverUrl, blankC
     return { slots, step, x0, cy };
   }
   function setT(c, x, y, r, s = 1) {
-    c.style.transform = `translate3d(${x.toFixed(1)}px,${y.toFixed(1)}px,0) rotate(${r.toFixed(2)}deg) scale(${s})`;
+    c.style.setProperty('--motion-transform', `translate3d(${x.toFixed(1)}px,${y.toFixed(1)}px,0) rotate(${r.toFixed(2)}deg) scale(${s})`);
   }
   function layoutFan(skip, order = fanState.order) {
     const { slots } = fanLayout(order.length, fanState.S);
@@ -293,7 +316,7 @@ function createAlbumCrates({ invoke, lookup, play, back, toast, coverUrl, blankC
       c.title = (lookup(entry.id) || entry).artist + ' — ' + (lookup(entry.id) || entry).title + (lookup(entry.id) ? '' : ' (unavailable)');
       const o = originT(i, S);
       c.style.transition = 'none';
-      c.style.opacity = i > 3 ? '0' : '1';
+      if (i > 3) c.style.setProperty('--motion-opacity', '0');
       setT(c, o.x, o.y, o.r, o.s);
       c.addEventListener('pointerdown', grab);
       fanCovers.appendChild(c);
@@ -309,8 +332,9 @@ function createAlbumCrates({ invoke, lookup, play, back, toast, coverUrl, blankC
     void fanCovers.offsetWidth;
     fanState.order.forEach((entry, i) => {
       const c = fanState.els.get(entry.id);
-      c.style.transition = `transform .75s ${SPRING} ${i * 32}ms, opacity .4s ease ${i * 32}ms, box-shadow .3s`;
-      c.style.opacity = '1';
+      const delay = Math.min(i, 12) * 32;
+      c.style.transition = `--motion-transform .75s ${SPRING} ${delay}ms, --motion-opacity .4s ease ${delay}ms, box-shadow .3s`;
+      c.style.removeProperty('--motion-opacity');
     });
     layoutFan();
     if (rename) setTimeout(startRename, 300);
@@ -329,16 +353,21 @@ function createAlbumCrates({ invoke, lookup, play, back, toast, coverUrl, blankC
     st.order.forEach((entry, i) => {
       const c = st.els.get(entry.id);
       const o = originT(i, st.S);
-      c.style.transition = `transform .5s cubic-bezier(.5,0,.2,1) ${(n - 1 - i) * 18}ms, opacity .35s ease ${(n - 1 - i) * 18 + 150}ms`;
+      const delay = Math.min(n - 1 - i, 12) * 18;
+      c.style.transition = `--motion-transform .5s cubic-bezier(.5,0,.2,1) ${delay}ms, --motion-opacity .35s ease ${delay + 150}ms`;
       c.style.zIndex = String(100 - i);
       setT(c, o.x, o.y, o.r, o.s);
-      if (i > 3) c.style.opacity = '0';
+      if (i > 3) c.style.setProperty('--motion-opacity', '0');
     });
     fan.classList.add('closing');
     page.classList.remove('fanned');
-    await wait(520 + Math.min(n, 12) * 18);
+    await finishFanMotion(st);
     if (fanState !== st) return;
     closeFan();
+  }
+  function finishFanMotion(st) {
+    const moving = [el('fanFoot'), ...st.els.values()].flatMap(node => node.getAnimations());
+    return Promise.allSettled(moving.map(animation => animation.finished));
   }
   function closeFan() {
     shelf.querySelectorAll('.lifted-away').forEach(n => n.classList.remove('lifted-away'));
@@ -369,7 +398,7 @@ function createAlbumCrates({ invoke, lookup, play, back, toast, coverUrl, blankC
       if (Math.hypot(e.clientX - g.sx, e.clientY - g.sy) < 5) return;
       g.moved = true;
       g.c.classList.add('lifted');
-      g.c.style.transition = 'box-shadow .25s, opacity .3s';
+      g.c.style.transition = 'box-shadow .25s, --motion-opacity .3s';
       fanCovers.classList.add('sorting');
     }
     const S = fanState.S;
@@ -421,9 +450,9 @@ function createAlbumCrates({ invoke, lookup, play, back, toast, coverUrl, blankC
     }
     if (g.out && e.type === 'pointerup') {
       const m = new DOMMatrixReadOnly(getComputedStyle(g.c).transform);
-      g.c.style.transition = 'transform .6s cubic-bezier(.4,0,.8,.4), opacity .5s ease';
+      g.c.style.transition = '--motion-transform .6s cubic-bezier(.4,0,.8,.4), --motion-opacity .5s ease';
       setT(g.c, m.m41 + g.rot * 6, window.innerHeight + 40, g.rot * 3 + 18, 0.9);
-      g.c.style.opacity = '0';
+      g.c.style.setProperty('--motion-opacity', '0');
       st.order = st.order.filter(x => x.id !== g.id);
       st.els.delete(g.id);
       setTimeout(() => g.c.remove(), 650);
@@ -443,7 +472,7 @@ function createAlbumCrates({ invoke, lookup, play, back, toast, coverUrl, blankC
     else el('fanHint').textContent = st.order.length > 1 ? 'Drag to reorder · drag down to take out' : 'Drag down to take out';
   }
   function restoreSprings() {
-    for (const c of fanState.els.values()) c.style.transition = `transform .6s ${SPRING}, opacity .4s ease, box-shadow .3s`;
+    for (const c of fanState.els.values()) c.style.transition = `--motion-transform .6s ${SPRING}, --motion-opacity .4s ease, box-shadow .3s`;
   }
   async function saveFan(saving) {
     try { await saving; } catch { return; }
@@ -520,13 +549,14 @@ function createAlbumCrates({ invoke, lookup, play, back, toast, coverUrl, blankC
     st.order.forEach((entry, i) => {
       const c = st.els.get(entry.id);
       const m = new DOMMatrixReadOnly(getComputedStyle(c).transform);
-      c.style.transition = `transform .7s cubic-bezier(.45,0,.9,.5) ${i * 30}ms, opacity .6s ease ${i * 30}ms`;
+      const delay = Math.min(i, 12) * 30;
+      c.style.transition = `--motion-transform .7s cubic-bezier(.45,0,.9,.5) ${delay}ms, --motion-opacity .6s ease ${delay}ms`;
       setT(c, m.m41 + (i % 2 ? 30 : -30), window.innerHeight + 60, (i % 2 ? 1 : -1) * (14 + i * 2), 0.92);
-      c.style.opacity = '0';
+      c.style.setProperty('--motion-opacity', '0');
     });
     fan.classList.add('closing');
     page.classList.remove('fanned');
-    await wait(560 + Math.min(st.order.length, 12) * 30);
+    await finishFanMotion(st);
     if (fanState !== st) return;
     closeFan();
     renderShelf();
@@ -539,6 +569,6 @@ function createAlbumCrates({ invoke, lookup, play, back, toast, coverUrl, blankC
 
   return {
     load: () => update(null).catch(() => {}),
-    begin, drag, end, open, close, isOpen, escape,
+    begin, drag, end, bindFilingSleeve, open, close, isOpen, escape,
   };
 }

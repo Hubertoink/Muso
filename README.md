@@ -20,7 +20,7 @@ The **•••** menu in the article footer lets you delete the saved text or c
 
 | Where | Action |
 | --- | --- |
-| Library | Scroll, swipe, drag or use ← → to flip through records. PgUp/PgDn jumps 10, Home/End jumps to the ends. |
+| Library | Swipe left on the touchscreen to move the covers right, or swipe right to move them left. Choose **Settings → Touch → Library swipe direction** to make the covers follow your finger. You can also scroll, drag with the mouse or use ← →. PgUp/PgDn jumps 10, Home/End jumps to the ends. |
 | Library | Click **Artist** at the left of the alphabet to switch to **Album** and browse by title. Click a letter to jump to its first match. In Artist order, “The Beatles” appears under B. Muso remembers the order and selected album on launch. |
 | Compilations | Album order shows one sleeve for tracks with the same album title in the same release folder, including numbered CD or disc subfolders. Open it to play all artists in disc and track order. Artist order keeps the individual artist entries. |
 | Library | Click the centred sleeve or press Enter to put the record on. |
@@ -61,6 +61,8 @@ npm run dev                      # run with hot reload of the UI
 npx tauri build --no-bundle      # release binary in src-tauri/target/release/
 npx tauri build                  # installers / packages
 ```
+
+To run the library touch regression tests, install the headless test browser once with `npx playwright-core install chromium --only-shell`, then run `npm test`. To use an existing Chromium installation, set `CHROMIUM_PATH` to its executable.
 
 ### Windows
 
