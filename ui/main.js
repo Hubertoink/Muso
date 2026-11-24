@@ -346,13 +346,14 @@ function updateCaption(force) {
 }
 
 let animating = false;
+let dragFollow = 0.45, settleEase = 0.16;
 function tick() {
   const diff = state.target - state.pos;
   if (Math.abs(diff) < 0.0015 && !dragging) {
     state.pos = state.target;
     animating = false;
   } else {
-    state.pos += diff * (dragging ? 0.45 : 0.16);
+    state.pos += diff * (dragging ? dragFollow : settleEase);
   }
   render();
   updateCaption();
@@ -361,13 +362,14 @@ function tick() {
 function kick() {
   if (!animating) { animating = true; requestAnimationFrame(tick); }
 }
-function go(index) {
+function go(index, ease = 0.16) {
   const n = state.albums.length;
   if (!n) return;
   const t = clamp(Math.round(index), 0, n - 1);
   // Long jumps (search) start just before the destination so we don't stream thousands of sleeves.
   if (Math.abs(t - state.pos) > 24) state.pos = t - Math.sign(t - state.pos) * 6;
   state.target = t;
+  settleEase = ease;
   rememberPosition();
   kick();
 }
@@ -382,6 +384,7 @@ crate.addEventListener('wheel', (e) => {
   const d = e.deltaMode === 1 ? raw * 40 : raw;
   wheelAcc += d;
   const step = 70;
+  settleEase = 0.16;
   while (Math.abs(wheelAcc) >= step) {
     const dir = Math.sign(wheelAcc);
     state.target = clamp(state.target + dir, 0, state.albums.length - 1);
@@ -412,22 +415,43 @@ function leaveCrates() {
   showLibrary();
 }
 let dragPointer = null, startY = 0, filingAlbum = false, downAlbum = null;
-let dragging = false, moved = false, startX = 0, startTarget = 0, downSleeve = null;
+let dragging = false, moved = false, startX = 0, startTarget = 0, downSleeve = null, caughtGlide = false;
 let velocitySamples = [];
-function swipeVelocity(now) {
-  while (velocitySamples.length > 2 && velocitySamples[1].t < now - 100) velocitySamples.shift();
-  const first = velocitySamples[0];
+const albumWidth = () => state.size * 0.32;
+function addVelocitySample(x, t) {
+  velocitySamples.push({ x, t });
+  while (velocitySamples.length > 2 && velocitySamples[0].t < t - 150) velocitySamples.shift();
+}
+// Pixels per millisecond over the last 100 ms of movement; zero when the finger rested before lifting.
+function releaseVelocity(now) {
   const last = velocitySamples[velocitySamples.length - 1];
-  if (!first || !last || now - last.t > 100) return 0;
+  if (!last || now - last.t > 180) return 0;
+  const first = velocitySamples.find(s => s.t >= last.t - 100);
   const elapsed = last.t - first.t;
-  return elapsed > 0 ? (last.x - first.x) / elapsed : 0;
+  return elapsed >= 8 ? (last.x - first.x) / elapsed : 0;
+}
+// Where a released swipe comes to rest. It follows the swipe instead of snapping back to the nearest sleeve.
+function flickTarget(target, start, velocity) {
+  const travelled = target - start;
+  const projected = target + velocity * 325;
+  const dir = Math.abs(velocity) > 0.0008 ? Math.sign(velocity) : Math.sign(travelled);
+  let end = dir > 0 ? Math.ceil(projected - 0.35) : dir < 0 ? Math.floor(projected + 0.35) : Math.round(projected);
+  const from = Math.round(start);
+  if (dir > 0 && travelled > 0.15) end = Math.max(end, from + 1);
+  if (dir < 0 && travelled < -0.15) end = Math.min(end, from - 1);
+  return clamp(end, Math.round(target) - 20, Math.round(target) + 20);
 }
 crate.addEventListener('pointerdown', (e) => {
   if (e.button !== 0 || !e.isPrimary || dragging) return;
   dragPointer = e.pointerId; startY = e.clientY; filingAlbum = false;
   dragging = true; moved = false;
+  dragFollow = e.pointerType === 'touch' ? 1 : 0.45;
+  // Touching a gliding crate stops it where it is.
+  caughtGlide = Math.abs(state.target - state.pos) > 0.05;
+  if (caughtGlide) state.target = state.pos;
   startX = e.clientX;
-  velocitySamples = [{ x: e.clientX, t: performance.now() }];
+  velocitySamples = [];
+  addVelocitySample(e.clientX, e.timeStamp);
   startTarget = state.target;
   downSleeve = e.target.closest('.sleeve');
   downAlbum = downSleeve && state.albums[Number(downSleeve.dataset.index)];
@@ -445,10 +469,9 @@ crate.addEventListener('pointermove', (e) => {
   if (!moved && Math.abs(dx) < Math.abs(dy)) return;
   if (Math.abs(dx) > 6) { moved = true; crate.classList.add('dragging'); }
   if (!moved) return;
-  const now = performance.now();
-  velocitySamples.push({ x: e.clientX, t: now });
-  while (velocitySamples.length > 2 && velocitySamples[0].t < now - 140) velocitySamples.shift();
-  state.target = clamp(startTarget - dx / (state.size * 0.32), 0, state.albums.length - 1);
+  const samples = e.getCoalescedEvents?.() ?? [];
+  for (const s of samples.length ? samples : [e]) addVelocitySample(s.clientX, s.timeStamp || e.timeStamp);
+  state.target = clamp(startTarget - dx / albumWidth(), 0, state.albums.length - 1);
   kick();
 });
 function endDrag(e) {
@@ -460,12 +483,16 @@ function endDrag(e) {
     filingAlbum = false;
     return;
   }
-  if (e.type !== 'pointerup' || (!moved && Math.abs(e.clientY - startY) > 10)) return;
   if (moved) {
-    const velocity = swipeVelocity(performance.now());
-    const distancePerAlbum = state.size * 0.32;
-    const momentum = clamp(-velocity * 220 / distancePerAlbum, -5, 5);
-    go(state.target + momentum);
+    // Finger to the left moves forward through the crate.
+    const velocity = -releaseVelocity(e.timeStamp) / albumWidth();
+    const end = flickTarget(state.target, startTarget, velocity);
+    // Start the glide at the finger's speed and let it decelerate into the sleeve.
+    const frameSpeed = Math.abs(velocity) * 16.7;
+    const distance = Math.abs(end - state.pos);
+    go(end, distance > 0.01 && frameSpeed > 0 ? clamp(frameSpeed / distance, 0.06, 0.2) : 0.16);
+  } else if (caughtGlide || e.type !== 'pointerup' || Math.abs(e.clientY - startY) > 10) {
+    go(state.target);
   } else if (downSleeve) {
     const i = Number(downSleeve.dataset.index);
     if (i === Math.round(state.target)) openAlbum(state.albums[i]);
