@@ -40,6 +40,7 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
             file TEXT NOT NULL,
             PRIMARY KEY(album_id, style, idx));
          CREATE TABLE IF NOT EXISTS album_notes(album_id TEXT PRIMARY KEY, body TEXT NOT NULL);
+         CREATE TABLE IF NOT EXISTS album_research(album_id TEXT PRIMARY KEY, brief TEXT NOT NULL);
          CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);",
     )?;
     // Libraries created before online cover search have only the original art cache.
@@ -69,8 +70,16 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
     if !has_credit {
         tx.execute("ALTER TABLE tracks ADD COLUMN has_album_artist INTEGER", [])?;
     }
-    if !has_source || !has_credit {
+    let has_arrivals: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master
+        WHERE type='table' AND name='album_arrivals')", [], |r| r.get(0))?;
+    if !has_arrivals {
+        tx.execute("CREATE TABLE album_arrivals(id TEXT PRIMARY KEY, first_seen INTEGER NOT NULL)", [])?;
+    }
+    if !has_source || !has_credit || !has_arrivals {
         crate::releases::rebuild(&tx)?;
+    }
+    if !has_arrivals {
+        tx.execute("UPDATE album_arrivals SET first_seen=0", [])?;
     }
     tx.commit()?;
     c.execute_batch("CREATE TEMP VIEW resolved_albums AS SELECT a.id,a.artist,a.title,a.year,a.genre,
@@ -120,6 +129,7 @@ pub fn remove_folder(c: &Connection, path: &str) -> rusqlite::Result<()> {
 
 #[derive(Serialize)]
 pub struct LibraryAlbum {
+    pub first_seen: i64,
     #[serde(flatten)]
     pub album: Album,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -140,11 +150,12 @@ pub fn albums(c: &Connection) -> rusqlite::Result<Vec<LibraryAlbum>> {
     let mut rows = links.query([])?;
     while let Some(r) = rows.next()? { members.entry(r.get(0)?).or_default().push(r.get(1)?); }
     let mut st = c.prepare(
-        "SELECT id, artist, title, year, genre, has_art, cover_file FROM resolved_albums ORDER BY sort_key,id",
+        "SELECT id, artist, title, year, genre, has_art, cover_file, COALESCE(first_seen,0)
+         FROM resolved_albums LEFT JOIN album_arrivals USING(id) ORDER BY sort_key,id",
     )?;
     let rows = st.query_map([], |r| {
         let album = read_album(r)?;
-        Ok(LibraryAlbum { members: members.remove(&album.id).unwrap_or_default(), album })
+        Ok(LibraryAlbum { members: members.remove(&album.id).unwrap_or_default(), album, first_seen: r.get(7)? })
     })?;
     rows.collect()
 }
@@ -186,6 +197,10 @@ pub fn get_setting(c: &Connection, key: &str) -> rusqlite::Result<Option<String>
         .optional()
 }
 
+pub fn research(c: &Connection, id: &str) -> rusqlite::Result<Option<String>> {
+    c.query_row("SELECT brief FROM album_research WHERE album_id=?1", [id], |r| r.get(0)).optional()
+}
+
 pub fn note(c: &Connection, id: &str) -> rusqlite::Result<Option<String>> {
     c.query_row("SELECT body FROM album_notes WHERE album_id=?1", [id], |r| r.get(0)).optional()
 }
@@ -197,6 +212,11 @@ pub fn set_setting(c: &Connection, key: &str, value: &str) -> rusqlite::Result<(
         params![key, value],
     )?;
     Ok(())
+}
+
+pub fn has_atmospheres(c: &Connection, album_id: &str) -> rusqlite::Result<bool> {
+    c.query_row("SELECT EXISTS(SELECT 1 FROM atmospheres WHERE album_id=?1)
+        OR EXISTS(SELECT 1 FROM atmosphere_variants WHERE album_id=?1)", [album_id], |r| r.get(0))
 }
 
 pub fn atmospheres(c: &Connection, album_id: &str, style: &str) -> rusqlite::Result<Vec<String>> {
@@ -223,6 +243,29 @@ pub fn replace_atmospheres(c: &Connection, album_id: &str, style: &str, files: &
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn existing_releases_stay_old_when_a_guest_track_is_added() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("collection.db");
+        let c = open(&path).unwrap();
+        c.execute_batch("DROP TABLE album_arrivals;
+            INSERT INTO albums(id,artist,title,sort_key) VALUES('a','A','Score','a');
+            INSERT INTO tracks(path,album_id,title,mtime) VALUES('Score/one.mp3','a','One',0);").unwrap();
+        drop(c);
+        let mut c = open(&path).unwrap();
+        assert_eq!(albums(&c).unwrap()[0].first_seen, 0);
+        let tx = c.transaction().unwrap();
+        tx.execute_batch("INSERT INTO albums(id,artist,title,sort_key) VALUES('b','B','Score','b'),('c','C','New','c');
+            INSERT INTO tracks(path,album_id,title,mtime) VALUES('Score/guest.mp3','b','Guest',0),('New/new.mp3','c','New',0);").unwrap();
+        crate::releases::rebuild(&tx).unwrap();
+        let records = albums(&tx).unwrap();
+        assert_eq!(records.iter().find(|a| a.members.len()==2).unwrap().first_seen, 0);
+        assert!(records.iter().find(|a| a.album.id=="c").unwrap().first_seen > 0);
+        tx.execute("UPDATE album_arrivals SET first_seen=123 WHERE id='c'", []).unwrap();
+        crate::releases::rebuild(&tx).unwrap();
+        assert_eq!(albums(&tx).unwrap().iter().find(|a| a.album.id=="c").unwrap().first_seen, 123);
+    }
 
     #[test]
     fn compilation_projection_keeps_artist_tracks_and_separate_releases() {
@@ -291,6 +334,16 @@ mod tests {
         tx.execute("DELETE FROM tracks WHERE album_id='Guest'", []).unwrap();
         crate::releases::rebuild(&tx).unwrap();
         assert_eq!(album(&tx, &release.id).unwrap().unwrap().artist, "Composer");
+    }
+
+    #[test]
+    fn automatic_painting_checks_legacy_and_styled_sets_for_this_album() {
+        let c = open(Path::new(":memory:")).unwrap();
+        c.execute("INSERT INTO atmospheres VALUES('old',0,'first.jpg')", []).unwrap();
+        replace_atmospheres(&c, "styled", "cel", &["cel.jpg".into()]).unwrap();
+        assert!(has_atmospheres(&c, "old").unwrap());
+        assert!(has_atmospheres(&c, "styled").unwrap());
+        assert!(!has_atmospheres(&c, "empty").unwrap());
     }
 
     #[test]

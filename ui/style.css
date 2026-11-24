@@ -87,6 +87,9 @@ input { font: inherit; color: inherit; }
 }
 :where(.can-hover) #indexMode:hover, #indexMode:focus-visible { color: var(--ink); }
 #indexLetters { flex: 1; min-width: 0; display: flex; }
+#newAlbums { height: 30px; padding: 0 10px 0 2px; border-right: 1px solid var(--ink-faint); }
+#newAlbums:disabled { color: var(--ink-faint); opacity: .6; cursor: default; }
+#newAlbums[aria-pressed="true"] { color: var(--accent); }
 #indexLetters button { flex: 1; min-width: 0; height: 32px; border-radius: 4px; }
 #indexLetters button span {
   display: inline-block; pointer-events: none;
@@ -437,6 +440,18 @@ body:has(> .modal:not(.hidden, .from-player))::before { background-color: rgb(0 
 #album[data-preview=tape] { --atmos-filter: saturate(1.35) contrast(1.14) hue-rotate(-14deg); }
 #album[data-preview=tape] .atmos::after { content: ''; position: absolute; inset: 0; background: repeating-linear-gradient(0deg, transparent 0 2px, #303030 3px) no-repeat; opacity: .24; }
 #album[data-preview=photogram] { --atmos-filter: grayscale(1) contrast(1.45); }
+#album[data-preview=cel] { --atmos-filter: saturate(1.18) contrast(1.08); }
+#album[data-preview=ukiyoe] { --atmos-filter: sepia(.23) saturate(.83); }
+#album[data-preview=dither] { --atmos-filter: contrast(1.18) saturate(.8); }
+#album[data-preview=nouveau] { --atmos-filter: sepia(.28) saturate(.95); }
+#album[data-preview=bauhaus] { --atmos-filter: saturate(1.22) contrast(1.12); }
+#album[data-preview=sumi] { --atmos-filter: grayscale(.95) contrast(1.14); }
+#album[data-preview=raytrace] { --atmos-filter: contrast(1.12) saturate(1.14); }
+#album[data-preview=futurism] { --atmos-filter: contrast(1.15) saturate(1.1); }
+#album[data-preview=risograph] { --atmos-filter: saturate(1.28) contrast(.94); }
+#album[data-preview=symbolism] { --atmos-filter: sepia(.18) saturate(.82) brightness(.92); }
+#album[data-preview=biomechanical] { --atmos-filter: sepia(.38) saturate(.86) contrast(1.12) brightness(.90); }
+#album[data-preview=streetart] { --atmos-filter: saturate(1.18) contrast(1.12); }
 .popover svg { width: 17px; height: 17px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.65; stroke-linecap: round; stroke-linejoin: round; }
 .popover .check-icon { width: 14px; height: 14px; margin-left: auto; }
 .popover [aria-pressed=false] .check-icon { visibility: hidden; }
@@ -527,7 +542,8 @@ body:has(> .modal:not(.hidden, .from-player))::before { background-color: rgb(0 
   animation: rise .25s var(--ease);
 }
 .popover button { display: flex; align-items: center; gap: 11px; width: 100%; padding: 10px 14px; font-size: 13px; color: var(--ink-dim); border-radius: 6px; text-align: left; }
-:where(.can-hover) .popover button:hover { color: var(--ink); background: rgba(255,255,255,0.05); }
+:where(.can-hover) .popover button:enabled:hover { color: var(--ink); background: rgba(255,255,255,0.05); }
+#showAtmosBtn:disabled { color: var(--ink-faint); cursor: default; }
 .style-field { display: flex; align-items: center; justify-content: space-between; gap: 14px; color: var(--ink-dim); font-size: 13px; }
 .modal .style-field { margin-top: 16px; }
 .popover .style-field { justify-content: flex-start; gap: 11px; border-top: 1px solid rgba(255,255,255,.08); margin-top: 4px; padding: 12px 14px 5px; }

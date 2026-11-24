@@ -22,6 +22,7 @@
     <div id="crate"></div>
     <nav id="libraryIndex" aria-label="Browse the library by initial">
       <button id="indexMode" type="button"><span id="indexModeLabel">Artist</span><span aria-hidden="true">⇄</span></button>
+      <button id="newAlbums" type="button" aria-pressed="false" title="Albums added in the last 28 days" disabled>NEU</button>
       <div id="indexLetters" role="group" aria-label="Artist initials"></div>
     </nav>
     <div id="caption">
@@ -174,15 +175,18 @@
     <div class="modal-card">
       <div class="modal-scroll">
         <h2>Visual Atmospheres</h2>
-        <p class="muted">Muso creates up to three images from the album metadata, track titles and loudness measurements from short local excerpts. Only text and measurements go to OpenAI. The images are saved on this computer.</p>
+        <p class="muted">Muso creates images from the album metadata, track titles and loudness measurements from short local excerpts. Only text and measurements go to OpenAI. The images are saved on this computer.</p>
         <h3>OpenAI API key</h3>
         <button class="link setting-action openai-keys">Open my OpenAI API keys ↗</button>
         <input id="keyInput2" type="password" aria-label="OpenAI API key" placeholder="Paste API key" spellcheck="false" autocomplete="off" />
         <label class="check"><input id="atmosToggle" type="checkbox" /> Show atmospheres during playback</label>
+        <label class="check"><input id="generateOnPlay" type="checkbox" /> Generate on playback for albums without atmospheres</label>
+        <label class="style-field">Images per album <select id="playImageCount" disabled><option>3</option><option>4</option><option>5</option></select></label>
+        <p class="muted">Each new set uses your OpenAI API key and incurs API charges.</p>
         <label class="check"><input id="autoStyle" type="checkbox" /> Let AI choose a visual style for each album</label>
         <label class="style-field">Atmosphere style <select id="aiStyle"></select></label>
         <label class="check"><input id="researchToggle" type="checkbox" /> Research the artist and album before generating</label>
-        <p class="muted">One web search looks for album descriptions, genre influences and listening notes. These guide the scenes and palette. API charges apply.</p>
+        <p class="muted">With research on, Muso looks up the album once and writes a missing article when generating images. Future sets reuse the saved research. A saved article also guides images when research is off. Web searches and new articles incur API charges.</p>
         <div class="modal-actions">
           <button id="aiGenerateBtn" class="link">Generate for the focused album</button>
           <button class="pill close">Done</button>
@@ -226,7 +230,7 @@
     <div id="albumMenu" class="popover hidden">
       <button id="fullscreenBtn"><svg aria-hidden="true"><use class="fullscreen-icon" href="icons/lucide.svg#maximize"/></svg><span class="fullscreen-label">Enter fullscreen</span></button>
       <button id="albumEQ"><svg aria-hidden="true"><use href="icons/lucide.svg#audio-lines"/></svg>EQ Settings</button>
-      <button id="showAtmosBtn" aria-pressed="false"><svg aria-hidden="true"><use href="icons/lucide.svg#gallery-vertical-end"/></svg>Show Visual Atmospheres<svg class="check-icon" aria-hidden="true"><use href="icons/lucide.svg#check"/></svg></button>
+      <button id="showAtmosBtn" aria-pressed="false" disabled><svg aria-hidden="true"><use href="icons/lucide.svg#gallery-vertical-end"/></svg>Show Visual Atmospheres<svg class="check-icon" aria-hidden="true"><use href="icons/lucide.svg#check"/></svg></button>
       <button id="findAlbumCover"><svg aria-hidden="true"><use href="icons/lucide.svg#scan-search"/></svg>Find a higher-resolution cover</button>
       <label class="style-field"><svg aria-hidden="true"><use href="icons/lucide.svg#swatch-book"/></svg>Atmosphere style <select id="albumStyle"></select></label>
       <button id="genBtn"><svg aria-hidden="true"><use href="icons/lucide.svg#sparkles"/></svg><span id="genLabel">Generate Visual Atmospheres</span></button>

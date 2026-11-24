@@ -10,7 +10,7 @@ Built with Rust, Tauri 2, SQLite, Symphonia/Rodio and the `image` crate. Local p
 
 Click the version number at the bottom of the side menu to check for a release. When an update is available, click **Install** to download the signed package for your installation.
 
-Pause on a sleeve to see the beginning of its article. **Read album article** opens the full text. **Write album article with AI** requests an original German music feature for that album with GPT-6.1 Terra and stores it in the local database. Browsing reads from the local collection. The optional research switch in AI Features adds one billed web search to new articles.
+Pause on a sleeve to see the beginning of its article. **Read album article** opens the full text. **Write album article with AI** requests an original German music feature for that album with GPT-6.1 Terra and stores it in the local database. With research enabled, generating atmospheres also writes a missing article. Muso saves the research locally and includes it in collection archives so later sets can reuse it. Explicitly rewriting an article with research enabled requests a fresh search.
 
 In **Settings → Collection archive**, export a ZIP containing local articles, covers, generated paintings and their styles. On another computer, first scan the same music, then import the ZIP. The importer keeps existing articles and style sets, fills missing covers and accepts higher-resolution covers. It reports unmatched albums, so you can scan additional folders and import again. Music files, folder paths and credentials stay on their original computer.
 
@@ -25,6 +25,7 @@ The **•••** menu in the article footer lets you delete the saved text or c
 | Albums with guests | Both browsing modes keep the complete release under its tagged album artist when the available album-artist credits agree. Without those tags, an artist credited on more than two thirds of the tracks leads the release. Guest performers remain visible in the track row. |
 | Compilations | Album order groups tracks with the same album title and release folder, including numbered disc subfolders. Compilations without a principal artist retain their individual artist entries in Artist order. |
 | Library | Click the centred sleeve or press Enter to put the record on. |
+| New arrivals | Select **NEU** before **#** to browse albums first found in the past 28 days, newest first. Select it again to return to your previous sleeve, or choose a letter to jump into the full collection. Albums already indexed when upgrading count as existing records. |
 | Crates | Pull a sleeve downward and your crates rise from the bottom edge as cover stacks. Drop the sleeve on a stack, or on **New crate** to start another. In the player, drag the current cover onto a crate on the left to file it during playback. Open **Menu → Crates** to see all crates on a shelf. Click a stack to spread it out: drag covers to change the order, drag one down to take it out, click a cover to play from there, and use the icons to play, rename or delete the crate. |
 | Library | Just start typing to search, or use Ctrl+F. |
 | Corner ● | Opens Search · Settings · Refresh Library · AI Features. |
@@ -38,11 +39,13 @@ Supported formats are FLAC, MP3, AAC/M4A (including ALAC), OGG Vorbis, WAV and A
 
 **Settings → Open my OpenAI API keys** opens the OpenAI Platform in your browser. Sign in with your existing account and paste a project API key into Muso for Visual Atmospheres. Muso can also use an existing `OPENAI_API_KEY` environment variable. Image generation uses OpenAI API billing. Cover searches are independent of OpenAI.
 
-**AI Features → Research the artist and album before generating** adds one OpenAI web search for the way artists, labels and critics describe the album and its genre influences. These descriptions and the library genre tag guide the palette, setting and materials shared by all three images. Details of the recording and dynamics measured from short excerpts of up to three local tracks give each scene its own composition. Audio stays on the device. The selected style determines the medium. **Show Visual Atmospheres** in the album menu displays the saved images across the player window. Select it again to return to the cover.
+**AI Features → Research the artist and album before generating** uses one OpenAI web search when an album has no saved research. The brief captures how artists, labels and critics describe the recording and its genre influences. The scene planner uses this brief and the album article for the palette, setting, materials and differences between tracks. With research off, it can still draw on a saved article. Short local excerpts from up to three tracks provide loudness measurements. Audio stays on the device. The selected style determines the medium. **Show Visual Atmospheres** in the album menu displays the saved images across the player window. Select it again to return to the cover.
 
-Each track opens with its cover for the first ten seconds of playback. When an atmosphere is ready, the cover dissolves into it. Moving the pointer brings back the track details and controls. In **Album ⋯ → Atmosphere style**, choose Cinematic, Dreamscape, Ambient Drift, Tape Decay or Silver Photogram. Muso previews the look on available images and remembers the choice per album. Generating creates a set in the selected style and replaces any previous set in that style. Older atmospheres are available under Cinematic.
+Each track opens with its cover for the first ten seconds of playback. When an atmosphere is ready, the cover dissolves into it. Moving the pointer brings back the track details and controls. In **Album ⋯ → Atmosphere style**, choose from 17 visual styles, including Modern Street Art, Midnight Cel, Ukiyo-e Woodcut and Biomechanical. Modern Street Art paints one continuous mural. Bauhaus Study is the preset for cut-paper compositions. Muso previews the look on available images and remembers the choice per album. Generating creates a set in the selected style and replaces any previous set in that style. Older atmospheres are available under Cinematic.
 
 The first finished painting fades in as soon as the track’s cover intro has ended. The remaining paintings join the rotation as they are saved. Each JPEG includes the album title, visual style and sequence number in its filename. **Album ⋯ → Open image folder** opens the generated images in your file manager. On Windows, Explorer selects an image from the current album when one is available.
+
+In **AI Features**, enable **Generate on playback for albums without atmospheres** and choose 3, 4 or 5 images. This is off by default. When playback starts, Muso checks for saved images across all styles before using your API key. The chosen style and research settings apply to the new set.
 
 In **AI Features**, turn on **Let AI choose a visual style for each album** to let the scene planner choose a medium from the music, genre and optional research. The next generation saves its images as a separate set and shows the chosen style by name. Turn the option off to use your manual style selections again.
 
@@ -96,7 +99,7 @@ src-tauri/src/
   db.rs              SQLite schema + queries (folders, albums, tracks, atmospheres, settings)
   scanner.rs         Incremental recursive scan (mtime based), tags via lofty, artwork → JPEG cache
   audio.rs           Dedicated audio thread (rodio + symphonia), emits track-ended
-  ai.rs              OpenAI: gpt-4o-mini writes 3 scene prompts → gpt-image-2.5-flare paints them
+  ai.rs              OpenAI: gpt-4o-mini writes the scene prompts → gpt-image-2.5-flare paints them
 ```
 
 The crate only renders about 19 sleeves around the focused record, so scrolling stays smooth with more than 10,000 albums.

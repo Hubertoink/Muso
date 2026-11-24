@@ -64,10 +64,14 @@ pub fn rebuild(tx: &Transaction<'_>) -> rusqlite::Result<()> {
         ON CONFLICT(id) DO UPDATE SET artist=excluded.artist,title=excluded.title,year=excluded.year,
         genre=excluded.genre,sort_key=excluded.sort_key,art_source=excluded.art_source")?;
     let mut insert_track = tx.prepare("INSERT INTO release_tracks(release_id,path,disc_no) VALUES(?1,?2,?3)")?;
+    tx.execute("INSERT OR IGNORE INTO album_arrivals SELECT id,unixepoch() FROM albums WHERE art_source IS NULL", [])?;
+    let mut arrival = tx.prepare("INSERT OR IGNORE INTO album_arrivals VALUES(?1,unixepoch())")?;
     for (key, parts) in &groups {
         let source = &parts[0].member;
-        if !participating.contains(source.as_str()) { continue; }
         let id = format!("release-{}", crate::scanner::fnv(key));
+        // Remember the physical release even before a guest track makes it a grouped album.
+        arrival.execute([&id])?;
+        if !participating.contains(source.as_str()) { continue; }
         let lead = lead_member(parts);
         let artist = if lead.is_none() { Some("Various Artists") } else { None };
         insert_album.execute(params![id, artist, lead.unwrap_or(source), source])?;

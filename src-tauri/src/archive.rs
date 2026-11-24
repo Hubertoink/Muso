@@ -29,6 +29,7 @@ struct Entry {
     title: String,
     members: Vec<String>,
     note: Option<String>,
+    research: Option<String>,
     cover: Option<usize>,
     paintings: BTreeMap<String, Vec<usize>>,
     auto_style: Option<String>,
@@ -80,19 +81,17 @@ pub fn export(c: &mut Connection, dir: &Path, dest: &Path) -> R<Summary> {
         version: 1,
         albums: Vec::new(),
     };
+    let mut saved_styles = tx.prepare("SELECT style FROM atmosphere_variants WHERE album_id=?1
+        UNION SELECT 'cinematic' FROM atmospheres WHERE album_id=?1").map_err(err)?;
     for record in db::albums(&tx).map_err(err)? {
         let a = record.album;
         let note = db::note(&tx, &a.id).map_err(err)?;
+        let research = db::research(&tx, &a.id).map_err(err)?;
         let mut paintings = BTreeMap::new();
-        for style in [
-            "cinematic",
-            "dreamscape",
-            "ambient",
-            "tape",
-            "photogram",
-            "auto",
-        ] {
-            let files = db::atmospheres(&tx, &a.id, style).map_err(err)?;
+        let styles = saved_styles.query_map([&a.id], |row| row.get::<_, String>(0)).map_err(err)?;
+        for style in styles {
+            let style = style.map_err(err)?;
+            let files = db::atmospheres(&tx, &a.id, &style).map_err(err)?;
             if files.is_empty() {
                 continue;
             }
@@ -119,7 +118,7 @@ pub fn export(c: &mut Connection, dir: &Path, dest: &Path) -> R<Summary> {
         } else {
             None
         };
-        if note.is_none() && cover.is_none() && paintings.is_empty() {
+        if note.is_none() && research.is_none() && cover.is_none() && paintings.is_empty() {
             continue;
         }
         summary.notes += usize::from(note.is_some());
@@ -131,6 +130,7 @@ pub fn export(c: &mut Connection, dir: &Path, dest: &Path) -> R<Summary> {
             title: a.title,
             members: record.members,
             note,
+            research,
             cover,
             paintings,
             auto_style,
@@ -191,12 +191,14 @@ mod tests {
         c.execute("UPDATE albums SET has_art=1 WHERE id='artist1'", [])
             .unwrap();
         db::replace_atmospheres(&c, &id, "auto", &["atmos/painting.jpg".into()]).unwrap();
+        db::replace_atmospheres(&c, &id, "cel", &["atmos/painting.jpg".into()]).unwrap();
         db::set_setting(&c, &format!("atmos_auto_style.{id}"), "Ink").unwrap();
         db::set_setting(&c, "openai_key", "secret-test-marker").unwrap();
         c.execute("INSERT INTO album_notes VALUES(?1,'An article')", [&id])
             .unwrap();
         let path = folder.path().join("collection.zip");
-        assert_eq!(export(&mut c, &source, &path).unwrap().images, 2);
+        c.execute("INSERT INTO album_research VALUES(?1,'Label notes')", [&id]).unwrap();
+        assert_eq!(export(&mut c, &source, &path).unwrap().images, 3);
         assert!(!fs::read(&path)
             .unwrap()
             .windows(18)
@@ -204,7 +206,9 @@ mod tests {
         let (mut other, new_id) = catalog("Other/Drive");
         assert_ne!(id, new_id);
         let s = import(&mut other, &destination, &path).unwrap();
-        assert_eq!((s.notes, s.images, s.skipped), (1, 2, 0));
+        assert_eq!((s.notes, s.images, s.skipped), (1, 3, 0));
+        assert_eq!(db::research(&other, &new_id).unwrap().as_deref(), Some("Label notes"));
+        assert!(db::atmospheres(&other, &new_id, "cel").unwrap()[0].contains("Midnight Cel"));
         assert_eq!(
             db::note(&other, &new_id).unwrap().as_deref(),
             Some("An article")
@@ -307,6 +311,9 @@ pub fn import(c: &mut Connection, dir: &Path, src: &Path) -> R<Summary> {
         };
         let a = &record.album;
         let id = &a.id;
+        if let Some(brief) = e.research.filter(|s| !s.trim().is_empty()) {
+            tx.execute("INSERT OR IGNORE INTO album_research(album_id,brief) VALUES(?1,?2)", (id, brief)).map_err(err)?;
+        }
         if let Some(note) = e.note.filter(|n| !n.trim().is_empty()) {
             summary.notes += tx
                 .execute(

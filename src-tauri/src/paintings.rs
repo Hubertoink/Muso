@@ -8,6 +8,18 @@ pub fn style_label(style: &str) -> Option<&'static str> {
         "ambient" => "Ambient Drift",
         "tape" => "Tape Decay",
         "photogram" => "Silver Photogram",
+        "cel" => "Midnight Cel",
+        "ukiyoe" => "Ukiyo-e Woodcut",
+        "dither" => "Dithered Worlds",
+        "nouveau" => "Art Nouveau",
+        "bauhaus" => "Bauhaus Study",
+        "streetart" => "Modern Street Art",
+        "sumi" => "Sumi-e Ink",
+        "raytrace" => "Early Raytracing",
+        "futurism" => "Futurist Motion",
+        "risograph" => "Risograph Layers",
+        "symbolism" => "Symbolist Nocturne",
+        "biomechanical" => "Biomechanical",
         _ => return None,
     })
 }

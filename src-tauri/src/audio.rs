@@ -60,6 +60,7 @@ impl Player {
                                     s.append(source);
                                     sink = Some(s);
                                     cover_intro = Some(playback_id);
+                                    let _ = app.emit("track-started", playback_id);
                                 }
                                 (Err(e), _) => {
                                     let _ = app.emit("playback-error", (Some(playback_id), e));

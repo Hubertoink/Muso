@@ -138,11 +138,9 @@ async fn delete_album_note(state: State<'_, AppState>, album_id: String) -> R<()
 
 #[tauri::command]
 async fn generate_album_note(app: AppHandle, state: State<'_, AppState>, album_id: String, research: bool, replace: Option<bool>) -> R<String> {
-    let replace = replace.unwrap_or(false);
-    let _guard = state.note_generation.lock().await;
     let (album, tracks, key) = {
         let c = state.db.lock().map_err(err)?;
-        if !replace {
+        if !replace.unwrap_or(false) {
             if let Some(note) = db::note(&c,&album_id).map_err(err)? { return Ok(note); }
         }
         (db::album(&c,&album_id).map_err(err)?.ok_or("Album not found")?,
@@ -152,12 +150,55 @@ async fn generate_album_note(app: AppHandle, state: State<'_, AppState>, album_i
     let progress = |stage: &str| {
         let _ = app.emit("article-progress", (&album_id, stage));
     };
-    let note = ai::album_note(&key,&album,&tracks,research,&progress).await?;
-    progress("Saving");
-    let c = state.db.lock().map_err(err)?;
-    c.execute("INSERT INTO album_notes(album_id,body) VALUES(?1,?2)
-        ON CONFLICT(album_id) DO UPDATE SET body=excluded.body WHERE ?3", rusqlite::params![album_id, note, replace]).map_err(err)?;
-    db::note(&c,&album_id).map_err(err)?.ok_or("Could not save album note".into())
+    let purpose = if replace.unwrap_or(false) { ContextFor::Rewrite } else { ContextFor::Article };
+    album_context(&app, &state, &key, &album, &tracks, research, purpose, progress).await?
+        .article.ok_or("Could not save album article".into())
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum ContextFor { Article, Rewrite, Images }
+
+async fn album_context(app: &AppHandle, state: &AppState, key: &str, album: &db::Album,
+    tracks: &[db::Track], research: bool, purpose: ContextFor, progress: impl Fn(&str)) -> R<ai::AlbumContext> {
+    let _guard = state.note_generation.lock().await;
+    let id = &album.id;
+    let article = db::note(&*state.db.lock().map_err(err)?, id).map_err(err)?;
+    let mut context = ai::AlbumContext { article, ..Default::default() };
+    if (purpose == ContextFor::Article && context.article.is_some()) || (purpose == ContextFor::Images && !research) {
+        return Ok(context);
+    }
+    if research {
+        let cached = db::research(&*state.db.lock().map_err(err)?, id).map_err(err)?;
+        context.research = match cached.filter(|_| purpose != ContextFor::Rewrite) {
+            Some(brief) => brief,
+            None => {
+                progress("Researching");
+                let brief = ai::research_album(key, album, tracks).await?;
+                state.db.lock().map_err(err)?.execute("INSERT INTO album_research(album_id,brief) VALUES(?1,?2)
+                    ON CONFLICT(album_id) DO UPDATE SET brief=excluded.brief", (id, &brief)).map_err(err)?;
+                brief
+            }
+        };
+    }
+    if context.article.is_none() || purpose == ContextFor::Rewrite {
+        progress("Writing");
+        match ai::album_note(key, album, tracks, &context.research).await {
+            Ok(article) => {
+                progress("Saving");
+                let c = state.db.lock().map_err(err)?;
+                c.execute("INSERT INTO album_notes(album_id,body) VALUES(?1,?2)
+                    ON CONFLICT(album_id) DO UPDATE SET body=excluded.body WHERE ?3",
+                    rusqlite::params![id, article, purpose == ContextFor::Rewrite]).map_err(err)?;
+                context.article = db::note(&c,id).map_err(err)?;
+                let _ = app.emit("article-saved", id);
+            }
+            Err(error) if purpose == ContextFor::Images => {
+                let _ = app.emit("atmos-article-warning", format!("{} · Article could not be written: {error}. Continuing with the album research.", album.title));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(context)
 }
 
 #[tauri::command]
@@ -250,22 +291,43 @@ fn open_image_folder(state: State<'_, AppState>, album_id: String) -> R<()> {
 }
 
 #[tauri::command]
-async fn generate_atmospheres(app: AppHandle, state: State<'_, AppState>, album_id: String, research: Option<bool>, style: Option<String>) -> R<Vec<String>> {
+async fn generate_atmospheres(app: AppHandle, state: State<'_, AppState>, album_id: String, research: Option<bool>, style: Option<String>, count: Option<usize>, only_if_empty: Option<bool>) -> R<Vec<String>> {
+    let count = count.unwrap_or(3);
+    if !(3..=5).contains(&count) { return Err("Choose 3 to 5 images.".into()); }
+    let only_if_empty = only_if_empty.unwrap_or(false);
+    // A process-owned lock also protects against a second running instance before the first image is saved.
+    let locks = state.data_dir.join("generation-locks");
+    std::fs::create_dir_all(&locks).map_err(err)?;
+    let lock = std::fs::File::options().read(true).write(true).create(true).truncate(false)
+        .open(locks.join(scanner::fnv(&album_id))).map_err(err)?;
+    match lock.try_lock() {
+        Ok(()) => {}
+        Err(std::fs::TryLockError::WouldBlock) if only_if_empty => return Ok(Vec::new()),
+        Err(e) => return Err(format!("Could not start atmosphere generation: {e}")),
+    }
     let style = style.as_deref().unwrap_or("cinematic");
     let direction = if style == "auto" { None } else {
         Some(ai::style_direction(style).ok_or("Unknown atmosphere style")?)
     };
     let (key, album, tracks) = {
         let conn = state.db.lock().map_err(err)?;
+        if only_if_empty && db::has_atmospheres(&conn, &album_id).map_err(err)? { return Ok(Vec::new()); }
         let key = openai_key(&conn)?.ok_or("No OpenAI API key set")?;
         let album = db::album(&conn, &album_id).map_err(err)?.ok_or("Album not found")?;
         let tracks = db::tracks(&conn, &album_id).map_err(err)?;
         (key, album, tracks)
     };
-    ai::generate(&app, &key, &album, &tracks, &state.data_dir, research.unwrap_or(false), direction, |files, name| {
+    let context = album_context(&app, &state, &key, &album, &tracks, research.unwrap_or(false), ContextFor::Images, |stage| {
+        let message = match stage { "Researching" => "Researching the album", "Writing" => "Writing the album article", _ => "Saving the album article" };
+        let _ = app.emit("atmos-progress", ai::AtmosProgress { album_id: album_id.clone(), step: 0, total: count + 1, message: message.into() });
+    }).await?;
+    ai::generate(&app, &key, &album, &tracks, &state.data_dir, &context, direction, count, |files, name| {
         let mut conn = state.db.lock().map_err(err)?;
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(err)?;
         let old = db::atmospheres(&tx, &album_id, style).map_err(err)?;
+        if only_if_empty && files.len() == 1 && db::has_atmospheres(&tx, &album_id).map_err(err)? {
+            return Err("This album already has saved atmospheres.".into());
+        }
         if files.len() > 1 && old != files[..files.len() - 1] {
             return Err("Another generation replaced these paintings.".into());
         }

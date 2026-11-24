@@ -16,6 +16,7 @@ beforeEach(async () => {
     localStorage.setItem('muso.libraryPosition', JSON.stringify({ index: 20, id: albums[20].id }));
     const events = new Map();
     window.emitPlayback = (name, payload) => events.get(name)({ payload });
+    window.dateAlbum = (index, timestamp) => { albums[index].first_seen = timestamp; };
     window.refreshLibrary = () => {
       albums[19].title = 'Updated record';
       return events.get('scan-done')({ payload: {} });
@@ -48,6 +49,10 @@ beforeEach(async () => {
         }
         if (command === 'get_tracks') return window.testTracks ?? [{ path: 'test', title: 'Track' }];
         if (command === 'get_atmospheres') return window.testPaintings ?? [];
+        if (command === 'generate_atmospheres') {
+          (window.generationRequests ??= []).push(args);
+          return [];
+        }
       } },
       event: { listen: async (name, fn) => events.set(name, fn) },
       app: { getVersion: async () => 'test' },
@@ -78,6 +83,31 @@ async function settled() {
   await page.waitForFunction(() => state.pos === state.target && Number.isInteger(state.pos));
   return position();
 }
+
+test('NEU shows recent releases newest first, restores the bookmark and expires automatically', async () => {
+  const button = page.locator('#newAlbums');
+  assert.ok(await button.isDisabled());
+  await page.clock.install();
+  await page.evaluate(async () => {
+    const cutoff = Math.floor(Date.now() / 1000) - 28 * 86400;
+    dateAlbum(3, cutoff + 60);
+    dateAlbum(5, cutoff + 90);
+    dateAlbum(7, cutoff);
+    await loadAlbums();
+  });
+  await button.click();
+  assert.deepEqual(await page.evaluate(() => state.albums.map(a => a.title)), ['Record 5', 'Record 3']);
+  await button.click();
+  assert.equal(await page.evaluate(() => focused().title), 'Record 20');
+  await button.click();
+  await page.locator('#indexLetters button:enabled').first().click();
+  assert.equal(await button.getAttribute('aria-pressed'), 'false');
+  assert.equal(await page.evaluate(() => state.albums.length), 80);
+  await button.click();
+  await page.clock.fastForward(100000);
+  assert.ok(await button.isDisabled());
+  assert.equal(await page.evaluate(() => state.albums.length), 80);
+});
 
 test('a left swipe moves the sleeve right and a library refresh preserves its position', async () => {
   await down();
@@ -266,6 +296,17 @@ test('an environment key enables the write action at startup and after the saved
   await setApiKey('ai', 'fixture-key');
   await setApiKey('settings', '');
   assert.equal(await write.isVisible(), true);
+});
+
+test('an article saved during painting becomes readable on the focused sleeve', async () => {
+  await page.waitForFunction(() => visibleNote?.album);
+  await page.evaluate(() => {
+    const id = focused().id;
+    sessionStorage.setItem('note.' + id, 'From the shared research');
+    window.emitPlayback('article-saved', id);
+  });
+  await page.getByRole('button', { name: 'Read album article' }).click();
+  assert.equal(await page.locator('#articleBody').textContent(), 'From the shared research');
 });
 
 test('the touch preference works immediately and survives a reload', async () => {
@@ -545,6 +586,52 @@ test('accepting the sleeve behind the playing album keeps its image at the hando
   assert.equal(await page.evaluate(() => window.offeredImage === document.querySelector('#coverImg')), true);
 });
 
+test('automatic painting is opt-in, persists its count and checks only once per playing album', async () => {
+  assert.ok(await page.locator('#playImageCount').isDisabled());
+  await page.evaluate(() => {
+    sessionStorage.setItem('test.envKey', 'yes');
+    document.querySelector('#generateOnPlay').click();
+    const select = document.querySelector('#playImageCount');
+    select.value = '5';
+    select.dispatchEvent(new Event('change'));
+  });
+  await page.reload();
+  await page.locator('#crate .sleeve[data-index="20"]').waitFor();
+  assert.equal(await page.locator('#playImageCount').inputValue(), '5');
+  await down(); await up();
+  await page.locator('#alTrack button').waitFor();
+  const calls = await page.evaluate(() => {
+    const id = state.playing.playbackId;
+    window.emitPlayback('track-started', id - 1);
+    window.emitPlayback('track-started', id);
+    window.emitPlayback('track-started', id);
+    return window.generationRequests;
+  });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].onlyIfEmpty, true);
+  assert.equal(calls[0].count, 5);
+});
+
+test('the atmosphere toggle reflects saved images even with display turned off', async () => {
+  await page.evaluate(() => localStorage.setItem('muso.atmos', '0'));
+  await down(); await up();
+  await page.locator('#albumMenuBtn').click();
+  const toggle = page.locator('#showAtmosBtn');
+  assert.ok(await toggle.isDisabled());
+  await page.evaluate(() => window.emitPlayback('atmos-image-ready', {
+    albumId: state.viewAlbum.id, style: 'ambient', files: ['atmos/first.jpg'],
+  }));
+  assert.ok(await toggle.isEnabled());
+  assert.equal(await toggle.getAttribute('aria-pressed'), 'false');
+  await page.evaluate(async () => {
+    window.testPaintings = ['atmos/saved.jpg'];
+    await startAtmospheres(state.viewAlbum.id);
+  });
+  assert.ok(await toggle.isEnabled());
+  await page.evaluate(async () => { window.testPaintings = []; await startAtmospheres(state.viewAlbum.id); });
+  assert.ok(await toggle.isDisabled());
+});
+
 test('the cover stays up until the current atmosphere has decoded', async () => {
   // Use the HTTP form of Muso's image protocol so Playwright can serve a real image.
   await page.addInitScript(() => Object.defineProperty(navigator, 'userAgent', { value: 'Windows' }));
@@ -578,6 +665,7 @@ test('the cover stays up until the current atmosphere has decoded', async () => 
   await page.evaluate(() => window.decodes[1]());
   const painting = page.locator('#album.showing-atmos #atmosPictures img.on');
   await painting.waitFor();
+  assert.ok(await page.locator('#showAtmosBtn').isEnabled());
   assert.match(await painting.getAttribute('src'), /replacement\.svg$/);
 });
 

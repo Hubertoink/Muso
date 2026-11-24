@@ -66,6 +66,9 @@ let indexMode = localStorage.getItem('muso.indexMode') === 'album' ? 'album' : '
 let artistAlbums = [], titleAlbums = [];
 let preferredMember;
 let currentLetter;
+const newButton = $('newAlbums');
+const recentWindow = 28 * 24 * 60 * 60 * 1000;
+let browsingNew = false, recentAlbums = [], expiryTimer;
 
 function albumInitial(album) {
   const name = indexMode === 'album' ? album.title.trim() : album.artist.trim().replace(/^the /i, '').trimStart();
@@ -81,6 +84,8 @@ for (const letter of letters) {
   button.tabIndex = -1;
   button.disabled = true;
   button.addEventListener('click', e => {
+    if (drag) return;
+    if (browsingNew) leaveNew();
     go(Number(button.dataset.index));
     if (e.detail) button.blur();
   });
@@ -129,6 +134,7 @@ const positionKey = 'muso.libraryPosition';
 let savedPosition;
 try { savedPosition = JSON.parse(localStorage.getItem(positionKey)); } catch { /* No readable bookmark. */ }
 function rememberPosition() {
+  if (browsingNew) return;
   const index = Math.round(state.target);
   const id = state.albums[index]?.id;
   if (!id || (savedPosition?.id === id && savedPosition.index === index)) return;
@@ -241,6 +247,11 @@ listen('article-progress', ({ payload: [id, stage] }) => {
   pendingArticles.set(id, stage);
   if (visibleNote?.album.id === id) renderNote();
 });
+listen('article-saved', ({ payload: id }) => {
+  const album = focused();
+  if (album?.id === id && !pendingArticles.has(id)) prepareNote(album);
+});
+listen('atmos-article-warning', ({ payload }) => toast(payload, 6000));
 function prepareNote(album) {
   const request = ++noteRequest;
   clearTimeout(noteTimer);
@@ -345,16 +356,19 @@ function updateCaption(force) {
   lastCaption = i;
   const a = state.albums[i];
   prepareNote(a);
-  if (currentLetter !== a.initial) {
+  const initial = browsingNew ? null : a.initial;
+  if (currentLetter !== initial) {
     const previous = letterButtons.get(currentLetter);
     if (previous) {
       previous.removeAttribute('aria-current');
       previous.tabIndex = -1;
     }
-    const button = letterButtons.get(a.initial);
-    button.setAttribute('aria-current', 'true');
-    button.tabIndex = 0;
-    currentLetter = a.initial;
+    const button = letterButtons.get(initial);
+    if (button) button.setAttribute('aria-current', 'true');
+    const tabStop = button || [...letterButtons.values()].find(b => !b.disabled);
+    indexLetters.querySelector('button[tabindex="0"]')?.setAttribute('tabindex', '-1');
+    if (tabStop) tabStop.tabIndex = 0;
+    currentLetter = initial;
   }
   $('capArtist').textContent = a.artist;
   const title = $('capTitle');
@@ -593,13 +607,45 @@ async function loadAlbums() {
     return !groupedMembers.has(a.id) || compilationMembers.has(a.id);
   });
   titleAlbums = albums.filter(a => !represented.has(a.id));
+  refreshRecent();
   applyLibraryOrder();
 }
-function applyLibraryOrder() {
-  const previous = focused();
+function refreshRecent() {
+  clearTimeout(expiryTimer);
+  const now = Date.now();
+  recentAlbums = titleAlbums.filter(a => a.first_seen * 1000 + recentWindow > now)
+    .sort((a, b) => b.first_seen - a.first_seen || titleOrder.compare(a.title, b.title));
+  newButton.disabled = !recentAlbums.length;
+  if (recentAlbums.length) {
+    const delay = recentAlbums.at(-1).first_seen * 1000 + recentWindow - now;
+    expiryTimer = setTimeout(expireRecent, Math.min(delay, 2147483647));
+  }
+}
+function expireRecent() {
+  if (drag) { expiryTimer = setTimeout(expireRecent, 500); return; }
+  refreshRecent();
+  if (browsingNew) applyLibraryOrder();
+}
+function leaveNew() {
+  browsingNew = false;
+  applyLibraryOrder(albumsById.get(savedPosition?.id) ?? null, savedPosition?.index);
+}
+newButton.addEventListener('click', () => {
+  if (drag) return;
+  closeSearch();
+  if (browsingNew) return leaveNew();
+  refreshRecent();
+  if (!recentAlbums.length) return;
+  rememberPosition();
+  browsingNew = true;
+  applyLibraryOrder(recentAlbums[0]);
+});
+function applyLibraryOrder(previous = focused(), fallback = state.albums.length ? Math.round(state.target) : savedPosition?.index) {
+  if (browsingNew && !recentAlbums.length) return leaveNew();
   const keepId = previous?.id ?? savedPosition?.id;
-  const fallback = state.albums.length ? Math.round(state.target) : savedPosition?.index;
-  state.albums = indexAlbums(indexMode === 'album' ? titleAlbums : artistAlbums);
+  const ordered = indexAlbums(indexMode === 'album' ? titleAlbums : artistAlbums);
+  state.albums = browsingNew ? recentAlbums : ordered;
+  newButton.setAttribute('aria-pressed', String(browsingNew));
   clearCrate();
   lastCaption = -1;
   let idx = keepId ? state.albums.findIndex((a) => a.id === keepId) : -1;
@@ -617,6 +663,7 @@ function applyLibraryOrder() {
 $('indexMode').addEventListener('click', () => {
   if (drag) return;
   closeSearch();
+  if (browsingNew) leaveNew();
   if (indexMode === 'artist') preferredMember = focused()?.id;
   indexMode = indexMode === 'artist' ? 'album' : 'artist';
   localStorage.setItem('muso.indexMode', indexMode);
@@ -1013,7 +1060,7 @@ $('findCovers').addEventListener('click', () => {
     $('findCovers').disabled = true;
     $('findCovers').textContent = 'Stopping…';
   } else {
-    findCovers(state.albums.slice());
+    findCovers((indexMode === 'album' ? titleAlbums : artistAlbums).slice());
   }
 });
 $('findAlbumCover').addEventListener('click', () => {
@@ -1031,6 +1078,18 @@ const styleNames = {
   ambient: 'Ambient Drift',
   tape: 'Tape Decay',
   photogram: 'Silver Photogram',
+  cel: 'Midnight Cel',
+  ukiyoe: 'Ukiyo-e Woodcut',
+  dither: 'Dithered Worlds',
+  nouveau: 'Art Nouveau',
+  bauhaus: 'Bauhaus Study',
+  sumi: 'Sumi-e Ink',
+  raytrace: 'Early Raytracing',
+  futurism: 'Futurist Motion',
+  risograph: 'Risograph Layers',
+  symbolism: 'Symbolist Nocturne',
+  biomechanical: 'Biomechanical',
+  streetart: 'Modern Street Art',
 };
 function albumStyle(id) {
   if ($('autoStyle').checked) return 'auto';
@@ -1074,6 +1133,16 @@ $('autoStyle').addEventListener('change', () => {
   showStyle((state.viewAlbum || focused())?.id);
   if (state.viewAlbum) startAtmospheres(state.viewAlbum.id);
 });
+const generateOnPlay = $('generateOnPlay'), playImageCount = $('playImageCount');
+generateOnPlay.checked = localStorage.getItem('muso.generateOnPlay') === '1';
+const savedCount = localStorage.getItem('muso.playImageCount');
+playImageCount.value = ['3', '4', '5'].includes(savedCount) ? savedCount : '3';
+playImageCount.disabled = !generateOnPlay.checked;
+generateOnPlay.addEventListener('change', () => {
+  localStorage.setItem('muso.generateOnPlay', generateOnPlay.checked ? '1' : '0');
+  playImageCount.disabled = !generateOnPlay.checked;
+});
+playImageCount.addEventListener('change', () => localStorage.setItem('muso.playImageCount', playImageCount.value));
 function prepareAi() {
   $('atmosToggle').checked = atmosEnabled();
   $('researchToggle').checked = researchEnabled();
@@ -1084,7 +1153,7 @@ $('researchToggle').addEventListener('change', (e) => localStorage.setItem('muso
 function setAtmosEnabled(enabled) {
   localStorage.setItem('muso.atmos', enabled ? '1' : '0');
   $('atmosToggle').checked = enabled;
-  if (state.viewAlbum) startAtmospheres(state.viewAlbum.id, true);
+  if (state.viewAlbum) startAtmospheres(state.viewAlbum.id, enabled);
 }
 $('atmosToggle').addEventListener('change', (e) => setAtmosEnabled(e.target.checked));
 $('aiGenerateBtn').addEventListener('click', () => {
@@ -1139,6 +1208,12 @@ const prev = () => state.playing && playIndex(state.playing.index - 1);
 
 listen('track-ended', ({ payload }) => {
   if (state.playing?.playbackId === payload && !state.playing.ended) next();
+});
+listen('track-started', ({ payload }) => {
+  const p = state.playing;
+  if (!p || p.playbackId !== payload || p.autoGenerationChecked || !generateOnPlay.checked || !hasOpenAIKey) return;
+  p.autoGenerationChecked = true;
+  generate(p.album, true);
 });
 listen('cover-intro-ended', ({ payload }) => {
   const p = state.playing;
@@ -1638,7 +1713,6 @@ function updateAtmosView() {
 async function startAtmospheres(albumId, announce = false) {
   stopAtmospheres();
   const token = ++atmosToken;
-  if (!atmosEnabled()) return;
   const style = albumStyle(albumId);
   try {
     // Preview the chosen look on a saved set until this album has images in that style.
@@ -1646,7 +1720,8 @@ async function startAtmospheres(albumId, announce = false) {
       const files = await invoke('get_atmospheres', { albumId, style: candidate });
       if (token !== atmosToken) return;
       if (files.length) {
-        setPaintings(albumId, candidate, files);
+        if (atmosEnabled()) setPaintings(albumId, candidate, files);
+        else $('showAtmosBtn').disabled = false;
         return;
       }
     }
@@ -1705,6 +1780,7 @@ async function loadPainting(set, file) {
   img.classList.add('on');
   other.classList.remove('on');
   updateAtmosView();
+  $('showAtmosBtn').disabled = false;
   $('showAtmosBtn').setAttribute('aria-pressed', 'true');
   schedulePainting();
 }
@@ -1715,6 +1791,7 @@ function stopAtmospheres() {
   atmosTimer = null;
   readyAlbum = null;
   updateAtmosView();
+  $('showAtmosBtn').disabled = true;
   $('showAtmosBtn').setAttribute('aria-pressed', 'false');
   for (const id of ['atmosA', 'atmosB']) {
     const img = $(id);
@@ -1725,7 +1802,10 @@ function stopAtmospheres() {
 
 const generating = new Set();
 function paintingReady({ albumId, style, files }) {
-  if (state.viewAlbum?.id === albumId && atmosEnabled() && albumStyle(albumId) === style) {
+  if (state.viewAlbum?.id !== albumId || !files.length) return;
+  if (!atmosEnabled()) {
+    $('showAtmosBtn').disabled = false;
+  } else if (albumStyle(albumId) === style || !playlist) {
     setPaintings(albumId, style, files);
   }
 }
@@ -1733,8 +1813,8 @@ listen('atmos-image-ready', ({ payload }) => {
   paintingReady(payload);
   if (payload.files.length === 1 && styleAlbum === payload.albumId) showStyle(payload.albumId);
 });
-async function generate(a) {
-  if (!(await invoke('has_openai_key'))) {
+async function generate(a, automatic = false) {
+  if (!automatic && !(await invoke('has_openai_key'))) {
     await loadKey();
     prepareAi();
     show($('ai'));
@@ -1743,10 +1823,12 @@ async function generate(a) {
   }
   if (generating.has(a.id)) return;
   generating.add(a.id);
-  toast(`Composing atmospheres for ${a.title}…`);
+  if (!automatic) toast(`Composing atmospheres for ${a.title}…`);
   try {
     const style = albumStyle(a.id);
-    const files = await invoke('generate_atmospheres', { albumId: a.id, research: researchEnabled(), style });
+    const files = await invoke('generate_atmospheres', { albumId: a.id, research: researchEnabled(), style,
+      onlyIfEmpty: automatic, count: automatic ? Number(playImageCount.value) : 3 });
+    if (!files.length) return;
     paintingReady({ albumId: a.id, style, files });
     toast(`${files.length} atmosphere image(s) saved · ${a.title}`);
   } catch (e) {

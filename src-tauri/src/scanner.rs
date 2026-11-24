@@ -234,6 +234,7 @@ fn repair_unknown_albums(tx: &rusqlite::Transaction<'_>, roots: &[String]) -> ru
         .collect::<rusqlite::Result<Vec<_>>>()?;
     for (old, new) in pairs {
         tx.execute("UPDATE OR IGNORE album_notes SET album_id=?2 WHERE album_id=?1", [&old,&new])?;
+        tx.execute("UPDATE OR IGNORE album_research SET album_id=?2 WHERE album_id=?1", [&old,&new])?;
         tx.execute("UPDATE atmospheres SET album_id=?2 WHERE album_id=?1 AND NOT EXISTS
             (SELECT 1 FROM atmospheres WHERE album_id=?2) AND NOT EXISTS
             (SELECT 1 FROM atmosphere_variants WHERE album_id=?2 AND style='cinematic')", [&old,&new])?;
