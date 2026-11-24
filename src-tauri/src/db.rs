@@ -40,9 +40,11 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
             file TEXT NOT NULL,
             PRIMARY KEY(album_id, style, idx));
          CREATE TABLE IF NOT EXISTS album_notes(album_id TEXT PRIMARY KEY, body TEXT NOT NULL);
+         CREATE TABLE IF NOT EXISTS painting_prompts(file TEXT PRIMARY KEY, prompt TEXT NOT NULL);
          CREATE TABLE IF NOT EXISTS album_research(album_id TEXT PRIMARY KEY, brief TEXT NOT NULL);
          CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);",
     )?;
+    crate::genres::schema(&c)?;
     // Libraries created before online cover search have only the original art cache.
     let has_cover_file: bool = c.query_row(
         "SELECT EXISTS(SELECT 1 FROM pragma_table_info('albums') WHERE name='cover_file')",

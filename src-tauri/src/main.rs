@@ -6,12 +6,14 @@ mod audio;
 mod covers;
 mod crates;
 mod db;
+mod genres;
 mod paintings;
 mod releases;
 mod scanner;
 #[cfg(any(windows, target_os = "linux"))]
 mod screen;
 mod spectrum;
+mod visual_context;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -164,7 +166,11 @@ async fn album_context(app: &AppHandle, state: &AppState, key: &str, album: &db:
     let id = &album.id;
     let article = db::note(&*state.db.lock().map_err(err)?, id).map_err(err)?;
     let mut context = ai::AlbumContext { article, ..Default::default() };
-    if (purpose == ContextFor::Article && context.article.is_some()) || (purpose == ContextFor::Images && !research) {
+    if purpose == ContextFor::Images && !research {
+        context.research = db::research(&*state.db.lock().map_err(err)?, id).map_err(err)?.unwrap_or_default();
+        return Ok(context);
+    }
+    if purpose == ContextFor::Article && context.article.is_some() {
         return Ok(context);
     }
     if research {
@@ -309,19 +315,22 @@ async fn generate_atmospheres(app: AppHandle, state: State<'_, AppState>, album_
     let direction = if style == "auto" { None } else {
         Some(ai::style_direction(style).ok_or("Unknown atmosphere style")?)
     };
-    let (key, album, tracks) = {
+    let (key, album, tracks, assigned_genre, references) = {
         let conn = state.db.lock().map_err(err)?;
         if only_if_empty && db::has_atmospheres(&conn, &album_id).map_err(err)? { return Ok(Vec::new()); }
         let key = openai_key(&conn)?.ok_or("No OpenAI API key set")?;
         let album = db::album(&conn, &album_id).map_err(err)?.ok_or("Album not found")?;
         let tracks = db::tracks(&conn, &album_id).map_err(err)?;
-        (key, album, tracks)
+        let genres = genres::Book::load(&conn).map_err(err)?;
+        let assigned = genres::Library::load(&conn).map_err(err)?.assigned(&genres, &album.id).and_then(|a| a.genre);
+        let references = visual_context::References::load(&conn, &album).map_err(err)?;
+        (key, album, tracks, assigned, references)
     };
     let context = album_context(&app, &state, &key, &album, &tracks, research.unwrap_or(false), ContextFor::Images, |stage| {
         let message = match stage { "Researching" => "Researching the album", "Writing" => "Writing the album article", _ => "Saving the album article" };
         let _ = app.emit("atmos-progress", ai::AtmosProgress { album_id: album_id.clone(), step: 0, total: count + 1, message: message.into() });
     }).await?;
-    ai::generate(&app, &key, &album, &tracks, &state.data_dir, &context, direction, count, |files, name| {
+    ai::generate(&app, &key, &album, &tracks, &state.data_dir, &context, assigned_genre.as_deref(), references, direction, count, |files, name, prompt| {
         let mut conn = state.db.lock().map_err(err)?;
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(err)?;
         let old = db::atmospheres(&tx, &album_id, style).map_err(err)?;
@@ -332,6 +341,12 @@ async fn generate_atmospheres(app: AppHandle, state: State<'_, AppState>, album_
             return Err("Another generation replaced these paintings.".into());
         }
         db::replace_atmospheres(&tx, &album_id, style, files).map_err(err)?;
+        if files.len() == 1 {
+            for previous in &old {
+                tx.execute("DELETE FROM painting_prompts WHERE file=?1", [previous]).map_err(err)?;
+            }
+        }
+        tx.execute("INSERT INTO painting_prompts(file,prompt) VALUES(?1,?2)", (files.last().unwrap(), prompt)).map_err(err)?;
         if files.len() == 1 && style == "auto" {
             db::set_setting(&tx, &format!("atmos_auto_style.{album_id}"), name).map_err(err)?;
         }
@@ -403,6 +418,15 @@ fn main() {
             scan_library,
             get_albums,
             crates::library_crates,
+            genres::genre_state,
+            genres::genre_inventory,
+            genres::genre_save,
+            genres::set_album_genre,
+            genres::genre_suggestions,
+            genres::genre_review,
+            genres::genre_propose,
+            genres::genre_classify,
+            genres::genre_cancel,
             get_album_note,
             generate_album_note,
             delete_album_note,

@@ -24,6 +24,8 @@
       <button id="indexMode" type="button"><span id="indexModeLabel">Artist</span><span aria-hidden="true">⇄</span></button>
       <button id="newAlbums" type="button" aria-pressed="false" title="Albums added in the last 28 days" disabled>NEU</button>
       <div id="indexLetters" role="group" aria-label="Artist initials"></div>
+      <div id="indexGenres" class="hidden" role="group" aria-label="Genres"></div>
+      <div id="indexSubs" class="hidden" role="group" aria-label="Subgenres"></div>
     </nav>
     <div id="caption">
       <div id="capArtist"></div>
@@ -40,6 +42,7 @@
       <span id="npBars" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>
     </button>
     <div id="libStatus" class="status"></div>
+    <button id="genreHint" class="hidden" type="button"></button>
   </section>
 
   <!-- Crates page -->
@@ -64,6 +67,73 @@
         </div>
         <div id="fanHint" class="status"></div>
       </div>
+    </div>
+  </section>
+
+  <!-- Genres page -->
+  <section id="genresPage" class="screen hidden" aria-label="Genres">
+    <button id="genresBack" class="chrome corner-left" aria-label="Back to the library">
+      <svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7" /></svg>
+    </button>
+    <header id="genresHead">
+      <div class="al-artist">Genres</div>
+      <nav id="genreTabs" role="tablist" aria-label="Steps">
+        <button role="tab" data-tab="tags" aria-selected="true"><b>1</b> Tidy tags</button>
+        <button role="tab" data-tab="sort" aria-selected="false"><b>2</b> Sort albums</button>
+        <button role="tab" data-tab="review" aria-selected="false"><b>3</b> Review <span id="reviewCount"></span></button>
+      </nav>
+      <p class="muted genre-note">Muso keeps its own genre list. Genre tags in your music files are only read, never changed.</p>
+      <div id="genreStatus" class="status" role="status"></div>
+    </header>
+    <div class="genre-pane" data-pane="tags">
+      <div class="genre-bar">
+        <p id="tagSummary" class="muted"></p>
+        <div class="genre-actions">
+          <button id="genreSort" class="link sort-toggle" type="button" title="Change the order of the chips">Most albums</button>
+          <button id="addGenre" class="link" type="button">+ New genre</button>
+          <button id="discardGenres" class="link hidden" type="button">Discard changes</button>
+          <button id="proposeGenres" class="pill" type="button"><svg aria-hidden="true"><use href="icons/lucide.svg#sparkles"/></svg>Suggest genres with AI</button>
+          <button id="saveGenres" class="pill strong hidden" type="button">Save genres</button>
+        </div>
+      </div>
+      <div id="genreBoard"></div>
+      <div id="genrePop" class="hidden" role="dialog" aria-label="Edit genre">
+        <input id="popName" type="text" maxlength="60" aria-label="Genre name" spellcheck="false" autocomplete="off" />
+        <select id="popLevel" aria-label="Position in the genre list"></select>
+        <div class="pop-label">File tags in this genre</div>
+        <ul id="popTags"></ul>
+        <button id="popDissolve" class="link" type="button">Dissolve genre – tags go back</button>
+      </div>
+    </div>
+    <div class="genre-pane hidden" data-pane="sort">
+      <div class="genre-scroll">
+        <p id="sortMissing" class="muted hidden">Save a genre list in step 1 to start sorting albums.</p>
+        <div id="sortSetup">
+          <p class="muted">Pick the genres to look at album by album – typically broad store categories and albums without a genre. Albums you set yourself are left alone.</p>
+          <div id="sortBuckets"></div>
+          <label class="sort-instructions" for="genreInstructions">Genre sorting instructions <small>optional</small></label>
+          <textarea id="genreInstructions" rows="3" placeholder="How should Muso distinguish genres in your library?">Classify ambient albums as Ambient, including electronic ambient. If Ambient is missing, suggest it as a separate top-level genre.</textarea>
+          <label class="check"><input id="sortResearch" type="checkbox" /> Look up uncertain albums on the web (more accurate, extra cost)</label>
+          <p class="muted">Muso sends artist, album, year, tag, track titles and saved album notes to OpenAI. Suggestions wait for your review.</p>
+          <p id="sortEstimate" class="status"></p>
+          <div class="genre-actions">
+            <button id="startSort" class="pill strong" type="button"><svg aria-hidden="true"><use href="icons/lucide.svg#sparkles"/></svg>Sort with AI</button>
+            <button id="cancelSort" class="link hidden" type="button">Stop</button>
+          </div>
+          <div id="sortProgress" class="hidden"><div class="bar"><i></i></div><span id="sortProgressText" class="status"></span></div>
+        </div>
+      </div>
+    </div>
+    <div class="genre-pane hidden" data-pane="review">
+      <div class="genre-bar">
+        <p id="reviewSummary" class="muted"></p>
+        <div class="genre-actions">
+          <button id="rejectAll" class="link" type="button">Reject all</button>
+          <button id="acceptAll" class="link" type="button">Accept all</button>
+          <button id="acceptSure" class="pill strong" type="button">Accept all at 80 % or more</button>
+        </div>
+      </div>
+      <ol id="reviewList"></ol>
     </div>
   </section>
 
@@ -112,7 +182,7 @@
         <button id="findCovers" class="link setting-action">Find better covers</button>
         <p id="coverProgress" class="muted" role="status"></p>
         <h3>Collection archive</h3>
-        <p class="muted">Transfer album articles, covers and atmosphere images. On the other computer, scan your music folders before importing.</p>
+        <p class="muted">Transfer album articles, covers, atmosphere images and your genres. On the other computer, scan your music folders before importing.</p>
         <button class="link setting-action" id="exportArchive">Export archive…</button>
         <button class="link setting-action" id="importArchive">Import archive…</button>
         <p id="archiveStatus" role="status" class="muted"></p>
@@ -175,7 +245,7 @@
     <div class="modal-card">
       <div class="modal-scroll">
         <h2>Visual Atmospheres</h2>
-        <p class="muted">Muso creates images from the album metadata, track titles and loudness measurements from short local excerpts. Only text and measurements go to OpenAI. The images are saved on this computer.</p>
+        <p class="muted">Muso sends album descriptions, genre, track titles, a small cover preview and a visual sample of up to six previous paintings to OpenAI to plan each set. Generated images are saved on this computer.</p>
         <h3>OpenAI API key</h3>
         <button class="link setting-action openai-keys">Open my OpenAI API keys ↗</button>
         <input id="keyInput2" type="password" aria-label="OpenAI API key" placeholder="Paste API key" spellcheck="false" autocomplete="off" />
@@ -186,7 +256,10 @@
         <label class="check"><input id="autoStyle" type="checkbox" /> Let AI choose a visual style for each album</label>
         <label class="style-field">Atmosphere style <select id="aiStyle"></select></label>
         <label class="check"><input id="researchToggle" type="checkbox" /> Research the artist and album before generating</label>
-        <p class="muted">With research on, Muso looks up the album once and writes a missing article when generating images. Future sets reuse the saved research. A saved article also guides images when research is off. Web searches and new articles incur API charges.</p>
+        <p class="muted">With research on, Muso looks up the album once and writes a missing article when generating images. Future sets reuse the saved research. Saved articles and existing research also guide images when web research is off. Web searches and new articles incur API charges.</p>
+        <h3>Genres</h3>
+        <p class="muted">Tidy up your genre tags, merge near-duplicates and let the AI sort albums from broad categories into finer genres. Muso stores the result itself and leaves your files untouched.</p>
+        <button id="openGenres" class="link setting-action" type="button">Organise genres…</button>
         <div class="modal-actions">
           <button id="aiGenerateBtn" class="link">Generate for the focused album</button>
           <button class="pill close">Done</button>
@@ -233,6 +306,8 @@
       <button id="showAtmosBtn" aria-pressed="false" disabled><svg aria-hidden="true"><use href="icons/lucide.svg#gallery-vertical-end"/></svg>Show Visual Atmospheres<svg class="check-icon" aria-hidden="true"><use href="icons/lucide.svg#check"/></svg></button>
       <button id="findAlbumCover"><svg aria-hidden="true"><use href="icons/lucide.svg#scan-search"/></svg>Find a higher-resolution cover</button>
       <label class="style-field"><svg aria-hidden="true"><use href="icons/lucide.svg#swatch-book"/></svg>Atmosphere style <select id="albumStyle"></select></label>
+      <label class="style-field"><svg aria-hidden="true"><use href="icons/lucide.svg#tag"/></svg>Genre <select id="albumGenre"></select></label>
+      <input id="albumGenreInput" class="hidden" type="text" maxlength="60" placeholder="New genre – Enter to save" aria-label="New genre" spellcheck="false" autocomplete="off" />
       <button id="genBtn"><svg aria-hidden="true"><use href="icons/lucide.svg#sparkles"/></svg><span id="genLabel">Generate Visual Atmospheres</span></button>
       <button id="openImageFolder"><svg aria-hidden="true"><use href="icons/lucide.svg#folder-open"/></svg>Open image folder</button>
     </div>
@@ -271,6 +346,7 @@
 
   <script src="spectrum.js"></script>
   <script src="crates.js"></script>
+  <script src="genres.js"></script>
   <script src="main.js"></script>
 </body>
 </html>

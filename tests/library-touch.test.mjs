@@ -29,6 +29,12 @@ beforeEach(async () => {
       core: { invoke: async (command, args) => {
         if (command === 'get_folders') { await window.folderGate; return ['test']; }
         if (command === 'get_albums') return structuredClone(albums);
+        if (command === 'genre_state') return {genres:[{name:'Electronic', parent:null}], albums:{}, suggestions:0};
+        if (command === 'genre_inventory') return {tags:[], broad:[], records:albums.length, untagged:albums.length};
+        if (command === 'genre_classify') {
+          window.sortRequest = args;
+          return window.sortResult ?? {suggestions:0, uncertain:0, attempted:0};
+        }
         if (command === 'get_setting') return sessionStorage.getItem(args.key);
         if (command === 'set_setting') return sessionStorage.setItem(args.key, args.value.trim());
         if (command === 'has_environment_key') return sessionStorage.getItem('test.envKey') === 'yes';
@@ -83,6 +89,40 @@ async function settled() {
   await page.waitForFunction(() => state.pos === state.target && Number.isInteger(state.pos));
   return position();
 }
+
+test('genre sorting remembers custom instructions, including an empty preference', async () => {
+  const field = page.getByLabel('Genre sorting instructions', {exact:false});
+  await page.evaluate(() => openGenres({tab:'sort'}));
+  assert.match(await field.inputValue(), /Ambient/);
+  const rule = 'Ambient als eigenes Genre vorschlagen.';
+  await field.fill(rule);
+  await page.reload();
+  await page.evaluate(() => openGenres({tab:'sort'}));
+  assert.equal(await field.inputValue(), rule);
+  await page.locator('#sortResearch').check();
+  await page.locator('#startSort').click();
+  const request = await page.evaluate(() => window.sortRequest);
+  assert.equal(request.instructions, rule);
+  assert.equal(request.research, true);
+  await field.fill('');
+  await page.reload();
+  assert.equal(await field.inputValue(), '');
+});
+
+test('genre research shows the uncertain count and uses the lookup total for progress', async () => {
+  await page.evaluate(() => {
+    window.sortResult = new Promise(resolve => { window.finishSort = resolve; });
+    return openGenres({tab:'sort'});
+  });
+  await page.locator('#sortResearch').check();
+  await page.locator('#startSort').click();
+  await page.evaluate(() => window.emitPlayback('genre-progress', {stage:'Sorting', done:75, total:80, uncertain:51}));
+  assert.match(await page.locator('#sortProgressText').textContent(), /51 uncertain so far/);
+  await page.evaluate(() => window.emitPlayback('genre-progress', {stage:'Researching', done:1, total:52, uncertain:52}));
+  assert.equal(await page.locator('#sortProgressText').textContent(), 'Looking up uncertain album 2 of 52');
+  await page.evaluate(() => window.finishSort({suggestions:0, uncertain:52, attempted:2}));
+  await page.waitForFunction(() => document.getElementById('genreStatus').textContent.includes('2 of 52'));
+});
 
 test('NEU shows recent releases newest first, restores the bookmark and expires automatically', async () => {
   const button = page.locator('#newAlbums');

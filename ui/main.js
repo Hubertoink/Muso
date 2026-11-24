@@ -62,7 +62,12 @@ const indexLetters = $('indexLetters');
 const letters = '#ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 const letterButtons = new Map();
 const titleOrder = new Intl.Collator(undefined, { sensitivity: 'base', numeric: true });
-let indexMode = localStorage.getItem('muso.indexMode') === 'album' ? 'album' : 'artist';
+const savedMode = localStorage.getItem('muso.indexMode');
+let indexMode = ['album', 'genre'].includes(savedMode) ? savedMode : 'artist';
+const UNSORTED = 'Unsorted';
+let genreInfo = { genres: [], albums: {}, suggestions: 0 };
+const indexGenres = $('indexGenres'), indexSubs = $('indexSubs');
+let genreMarks = [], currentGroup, currentSub;
 let artistAlbums = [], titleAlbums = [];
 let preferredMember;
 let currentLetter;
@@ -105,12 +110,181 @@ indexLetters.addEventListener('keydown', e => {
   enabled[i].click();
 });
 
+const modeLabels = { artist: 'Artist', album: 'Album', genre: 'Genre' };
+const nextMode = { artist: 'album', album: 'genre', genre: 'artist' };
+const modeAlbums = () => indexMode === 'artist' ? artistAlbums : titleAlbums;
+
+const genreKey = s => s.toLowerCase().replace(/&/g, ' and ').split(/[\s\-_.]+/).filter(Boolean).join(' ');
+function annotateGenres(albums) {
+  const parents = new Map(genreInfo.genres.map(g => [g.name.toLowerCase(), g.parent]));
+  // Before a genre list exists, spelling variants of the same raw tag share one entry.
+  const spelling = new Map();
+  for (const a of albums) {
+    const g = genreInfo.albums[a.id];
+    let name = g?.genre || null;
+    if (name && g.origin === 'tag') {
+      const key = genreKey(name);
+      if (!spelling.has(key)) spelling.set(key, name);
+      name = spelling.get(key);
+    }
+    a.genreName = name;
+    a.genreOrigin = g?.origin || 'none';
+    a.genreTag = g?.tag ?? a.genre ?? null;
+    const parent = a.genreName ? parents.get(a.genreName.toLowerCase()) : null;
+    a.genreGroup = parent || a.genreName || UNSORTED;
+    a.genreSub = parent ? a.genreName : null;
+  }
+}
+
+// Genre order follows the saved genre list; raw tags (before tidying) are alphabetical.
+function indexByGenre(albums) {
+  const rank = new Map(genreInfo.genres.map((g, i) => [g.name.toLowerCase(), i]));
+  const place = name => name === UNSORTED ? Infinity : rank.get(name.toLowerCase()) ?? 1e6;
+  const groups = new Map();
+  for (const a of albums) {
+    a.initial = undefined;
+    if (!groups.has(a.genreGroup)) groups.set(a.genreGroup, []);
+    groups.get(a.genreGroup).push(a);
+  }
+  const names = [...groups.keys()].sort((x, y) => place(x) - place(y) || titleOrder.compare(x, y));
+  const out = [];
+  genreMarks = names.map(name => {
+    const group = groups.get(name);
+    const subPlace = a => a.genreSub ? place(a.genreSub) : -1;
+    group.sort((a, b) => subPlace(a) - subPlace(b) || (a.genreSub && b.genreSub ? titleOrder.compare(a.genreSub, b.genreSub) : 0));
+    const start = out.length;
+    const subs = [];
+    group.forEach((a, i) => { if (a.genreSub && subs.at(-1)?.name !== a.genreSub) subs.push({ name: a.genreSub, index: start + i, count: 0 }); if (a.genreSub) subs.at(-1).count++; });
+    out.push(...group);
+    return { name, index: start, count: group.length, subs };
+  });
+  indexGenres.replaceChildren(...genreMarks.map(m => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = m.name;
+    b.dataset.index = m.index;
+    b.dataset.name = m.name;
+    b.title = m.count + (m.count === 1 ? ' album' : ' albums') + (m.subs.length ? ' · click again for subgenres' : '');
+    if (m.name === UNSORTED) b.classList.add('unsorted');
+    return b;
+  }));
+  currentGroup = currentSub = undefined;
+  show(indexSubs, false);
+  return out;
+}
+function markGenre(a) {
+  if (indexMode !== 'genre' || browsingNew) return;
+  if (a.genreGroup !== currentGroup) {
+    currentGroup = a.genreGroup;
+    let active;
+    for (const b of indexGenres.children) {
+      const on = b.dataset.name === currentGroup;
+      b.toggleAttribute('aria-current', on);
+      if (on) active = b;
+    }
+    if (active) indexGenres.scrollTo({ left: active.offsetLeft - indexGenres.clientWidth / 2 + active.offsetWidth / 2, behavior: 'smooth' });
+    if (!indexSubs.classList.contains('hidden')) renderSubs();
+  }
+  if (a.genreSub !== currentSub) {
+    currentSub = a.genreSub;
+    for (const b of indexSubs.children) b.toggleAttribute('aria-current', b.dataset.name === (currentSub ?? ''));
+  }
+}
+function renderSubs() {
+  const m = genreMarks.find(x => x.name === currentGroup);
+  if (!m?.subs.length) { show(indexSubs, false); return; }
+  const all = document.createElement('button');
+  all.type = 'button';
+  all.textContent = 'All ' + m.name;
+  all.dataset.index = m.index;
+  all.dataset.name = '';
+  indexSubs.replaceChildren(all, ...m.subs.map(s => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = s.name;
+    b.title = s.count + (s.count === 1 ? ' album' : ' albums');
+    b.dataset.index = s.index;
+    b.dataset.name = s.name;
+    return b;
+  }));
+  for (const b of indexSubs.children) b.toggleAttribute('aria-current', b.dataset.name === (currentSub ?? ''));
+  show(indexSubs);
+}
+// The genre bar scrolls with the wheel and can be dragged sideways; a drag never counts as a click.
+let barDrag = null, barGlide = 0;
+function glideBar(v) {
+  cancelAnimationFrame(barGlide);
+  const step = () => {
+    if (Math.abs(v) < .3) return;
+    indexGenres.scrollLeft -= v;
+    v *= .92;
+    barGlide = requestAnimationFrame(step);
+  };
+  barGlide = requestAnimationFrame(step);
+}
+indexGenres.addEventListener('wheel', e => {
+  e.preventDefault();
+  e.stopPropagation();
+  cancelAnimationFrame(barGlide);
+  const d = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+  indexGenres.scrollLeft += e.deltaMode === 1 ? d * 30 : d;
+}, { passive: false });
+indexGenres.addEventListener('pointerdown', e => {
+  if (e.button !== 0) return;
+  cancelAnimationFrame(barGlide);
+  barDrag = { x: e.clientX, left: indexGenres.scrollLeft, last: e.clientX, v: 0, moved: false, id: e.pointerId };
+});
+indexGenres.addEventListener('pointermove', e => {
+  if (!barDrag || e.pointerId !== barDrag.id) return;
+  const dx = e.clientX - barDrag.x;
+  if (!barDrag.moved && Math.abs(dx) < 5) return;
+  if (!barDrag.moved) { barDrag.moved = true; indexGenres.setPointerCapture(e.pointerId); indexGenres.classList.add('dragging'); }
+  barDrag.v = e.clientX - barDrag.last;
+  barDrag.last = e.clientX;
+  indexGenres.scrollLeft = barDrag.left - dx;
+});
+function endBarDrag(e) {
+  if (!barDrag || e.pointerId !== barDrag.id) return;
+  const d = barDrag;
+  barDrag = null;
+  indexGenres.classList.remove('dragging');
+  if (!d.moved) return;
+  glideBar(d.v);
+  barDraggedAt = performance.now();
+}
+let barDraggedAt = 0;
+indexGenres.addEventListener('pointerup', endBarDrag);
+indexGenres.addEventListener('pointercancel', endBarDrag);
+indexGenres.addEventListener('click', e => {
+  if (performance.now() - barDraggedAt < 250) return;
+  const b = e.target.closest('button');
+  if (!b || drag) return;
+  if (browsingNew) leaveNew();
+  if (b.dataset.name === currentGroup && genreMarks.find(m => m.name === currentGroup)?.subs.length) {
+    if (indexSubs.classList.contains('hidden')) renderSubs(); else show(indexSubs, false);
+    return;
+  }
+  show(indexSubs, false);
+  go(Number(b.dataset.index));
+  if (e.detail) b.blur();
+});
+indexSubs.addEventListener('click', e => {
+  const b = e.target.closest('button');
+  if (!b || drag) return;
+  go(Number(b.dataset.index));
+  if (e.detail) b.blur();
+});
+
 function indexAlbums(albums) {
-  const byTitle = indexMode === 'album';
-  const label = byTitle ? 'Album' : 'Artist';
+  const label = modeLabels[indexMode];
   $('indexModeLabel').textContent = label;
-  $('indexMode').title = byTitle ? 'Switch to artist order' : 'Switch to album title order';
+  $('indexMode').title = 'Switch to ' + modeLabels[nextMode[indexMode]].toLowerCase() + ' order';
   $('indexMode').setAttribute('aria-label', label + ' order. ' + $('indexMode').title);
+  show(indexLetters, indexMode !== 'genre');
+  show(indexGenres, indexMode === 'genre');
+  if (indexMode !== 'genre') show(indexSubs, false);
+  if (indexMode === 'genre') return indexByGenre(albums);
+  const byTitle = indexMode === 'album';
   indexLetters.setAttribute('aria-label', label + ' initials');
   const groups = new Map([...letters].map(letter => [letter, []]));
   for (const a of albums) {
@@ -342,7 +516,7 @@ for (const [button, importing] of [['exportArchive',false],['importArchive',true
     $('archiveStatus').textContent = importing ? 'Importing…' : 'Exporting…';
     try {
       const result = await invoke('transfer_library_art', {importing});
-      $('archiveStatus').textContent = result ? (importing ? 'Imported' : 'Exported') + ' · ' + result.notes + ' articles · ' + result.images + ' images' + (result.skipped ? ' · ' + result.skipped + ' unmatched albums' : '') : '';
+      $('archiveStatus').textContent = result ? (importing ? 'Imported' : 'Exported') + ' · ' + result.notes + ' articles · ' + result.images + ' images' + (result.genres ? ' · ' + result.genres + ' album genres' : '') + (result.skipped ? ' · ' + result.skipped + ' unmatched albums' : '') : '';
       if (result && importing) await loadAlbums();
     } catch(e) { $('archiveStatus').textContent = String(e); }
     finally { $('exportArchive').disabled = $('importArchive').disabled = false; }
@@ -373,11 +547,14 @@ function updateCaption(force) {
   $('capArtist').textContent = a.artist;
   const title = $('capTitle');
   title.textContent = a.title;
-  const details = [a.year, a.genre?.trim()].filter(Boolean);
+  markGenre(a);
+  const genre = a.genreName ?? a.genre?.trim();
+  const details = [a.year, genre].filter(Boolean);
   if (details.length) {
     const meta = document.createElement('span');
     meta.className = 'album-meta';
     meta.textContent = details.join(' · ');
+    if (a.genreTag && genre && a.genreTag.trim().toLowerCase() !== genre.toLowerCase()) meta.title = 'Tag in the file: ' + a.genreTag;
     title.append(' ', meta);
   }
   $('counter').textContent = `${String(i + 1).padStart(4, '0')} / ${String(n).padStart(4, '0')}`;
@@ -579,12 +756,17 @@ crate.addEventListener('lostpointercapture', endDrag);
 let libraryRequest = 0;
 async function loadAlbums() {
   const request = ++libraryRequest;
-  const albums = await invoke('get_albums');
+  const [albums, genres] = await Promise.all([
+    invoke('get_albums'),
+    invoke('genre_state').catch(e => { console.warn('Muso genres', e); return null; }),
+  ]);
   // Replacing sleeves during a drag or glide would round the live position and detach the grabbed cover.
   if (drag || state.pos !== state.target) {
     await new Promise(resolve => crate.addEventListener('librarysettled', resolve, { once: true }));
   }
   if (request !== libraryRequest) return;
+  if (genres) genreInfo = genres;
+  annotateGenres(albums);
   const byId = new Map(albums.map(a => [a.id, a]));
   albumsById = byId;
   const represented = new Set();
@@ -643,7 +825,7 @@ newButton.addEventListener('click', () => {
 function applyLibraryOrder(previous = focused(), fallback = state.albums.length ? Math.round(state.target) : savedPosition?.index) {
   if (browsingNew && !recentAlbums.length) return leaveNew();
   const keepId = previous?.id ?? savedPosition?.id;
-  const ordered = indexAlbums(indexMode === 'album' ? titleAlbums : artistAlbums);
+  const ordered = indexAlbums(modeAlbums());
   state.albums = browsingNew ? recentAlbums : ordered;
   newButton.setAttribute('aria-pressed', String(browsingNew));
   clearCrate();
@@ -665,9 +847,86 @@ $('indexMode').addEventListener('click', () => {
   closeSearch();
   if (browsingNew) leaveNew();
   if (indexMode === 'artist') preferredMember = focused()?.id;
-  indexMode = indexMode === 'artist' ? 'album' : 'artist';
+  indexMode = nextMode[indexMode];
   localStorage.setItem('muso.indexMode', indexMode);
   applyLibraryOrder();
+});
+
+function applyGenreState(s) {
+  genreInfo = s;
+  annotateGenres([...albumsById.values()]);
+  if (state.view !== 'onboard') applyLibraryOrder();
+  if (state.viewAlbum) fillAlbumGenre(state.viewAlbum);
+}
+const genresView = createGenres({
+  invoke, listen, toast, coverUrl, blankColor,
+  lookup: id => albumsById.get(id),
+  records: () => titleAlbums,
+  onState: applyGenreState,
+  back: () => leaveGenres(),
+});
+function openGenres(opts) {
+  if (state.view !== 'library') return;
+  closeSearch();
+  show($('ai'), false);
+  show($('genreHint'), false);
+  state.view = 'genres';
+  show($('library'), false);
+  syncMini();
+  genresView.open(opts);
+}
+function leaveGenres() {
+  if (state.view !== 'genres') return;
+  genresView.close();
+  showLibrary();
+}
+$('openGenres').addEventListener('click', () => openGenres());
+$('genreHint').addEventListener('click', () => openGenres({ tab: 'sort', buckets: [UNSORTED] }));
+const unsortedIds = () => genreInfo.genres.length ? new Set(titleAlbums.filter(a => !a.genreName).map(a => a.id)) : new Set();
+function announceUnsorted(before) {
+  const fresh = [...unsortedIds()].filter(id => !before.has(id)).length;
+  if (!fresh) return;
+  $('genreHint').textContent = `${fresh} new album${fresh === 1 ? '' : 's'} without a genre · Sort`;
+  show($('genreHint'));
+}
+
+// Album menu: your own genre for this record.
+function fillAlbumGenre(a) {
+  const select = $('albumGenre');
+  const g = genreInfo.albums[a.id];
+  const own = g?.origin === 'user' ? g.genre : '';
+  select.replaceChildren(new Option(own ? 'Automatic (tags & AI)' : 'Automatic · ' + (g?.genre || 'unsorted'), ''));
+  const tops = genreInfo.genres.filter(x => !x.parent);
+  for (const t of tops) {
+    select.append(new Option(t.name, t.name, false, t.name === own));
+    for (const k of genreInfo.genres.filter(x => x.parent === t.name)) select.append(new Option('\u2003' + k.name, k.name, false, k.name === own));
+  }
+  if (own && !genreInfo.genres.some(x => x.name === own)) select.append(new Option(own, own, false, true));
+  select.append(new Option('New genre…', '__new'));
+  select.value = own;
+  show($('albumGenreInput'), false);
+}
+async function chooseAlbumGenre(genre) {
+  const a = state.viewAlbum;
+  if (!a) return;
+  try {
+    applyGenreState(await invoke('set_album_genre', { albumId: a.id, genre: genre || null }));
+    toast(genre ? 'Genre set to ' + genre : 'Genre follows tags and AI again');
+  } catch (e) { toast(String(e), 5000); fillAlbumGenre(a); }
+}
+$('albumGenre').addEventListener('change', e => {
+  if (e.target.value === '__new') {
+    const input = $('albumGenreInput');
+    input.value = '';
+    show(input);
+    input.focus();
+    return;
+  }
+  chooseAlbumGenre(e.target.value);
+});
+$('albumGenreInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && e.target.value.trim()) { e.preventDefault(); chooseAlbumGenre(e.target.value.trim()); }
+  else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); if (state.viewAlbum) fillAlbumGenre(state.viewAlbum); }
 });
 
 async function boot() {
@@ -718,7 +977,9 @@ listen('scan-progress', ({ payload }) => {
 listen('scan-done', async ({ payload }) => {
   $('libStatus').textContent = '';
   if (payload.error) toast(payload.error, 5000);
+  const unsortedBefore = unsortedIds();
   await loadAlbums();
+  announceUnsorted(unsortedBefore);
   if (state.albums.length) {
     if (state.view === 'onboard') showLibrary();
   } else if (state.view !== 'album') {
@@ -1060,7 +1321,7 @@ $('findCovers').addEventListener('click', () => {
     $('findCovers').disabled = true;
     $('findCovers').textContent = 'Stopping…';
   } else {
-    findCovers((indexMode === 'album' ? titleAlbums : artistAlbums).slice());
+    findCovers(modeAlbums().slice());
   }
 });
 $('findAlbumCover').addEventListener('click', () => {
@@ -1637,7 +1898,9 @@ async function toggleFullscreen() {
   } catch (e) { toast(String(e)); }
 }
 $('albumMenuBtn').addEventListener('click', async () => {
-  show($('albumMenu'), $('albumMenu').classList.contains('hidden'));
+  const opening = $('albumMenu').classList.contains('hidden');
+  if (opening && state.viewAlbum) fillAlbumGenre(state.viewAlbum);
+  show($('albumMenu'), opening);
   showFullscreenAction(await playerWindow.isFullscreen());
 });
 $('fullscreenBtn').addEventListener('click', () => { show($('albumMenu'), false); toggleFullscreen(); });
@@ -1857,13 +2120,14 @@ window.addEventListener('keydown', (e) => {
     $('eq').querySelector('.close').click();
     return;
   }
-  if (e.target.matches('input, select')) return;
+  if (e.target.matches('input, select, textarea')) return;
   if (e.key === 'Escape') {
     if (coverPull) { resetCoverPull(); updateAtmosView(); return; }
     if (modalOpen) document.querySelectorAll('.modal').forEach((m) => show(m, false));
     else if (!$('menu').classList.contains('hidden')) closeMenu();
     else if (!$('search').classList.contains('hidden')) closeSearch();
     else if (state.view === 'crates') albumCrates.escape();
+    else if (state.view === 'genres') genresView.escape();
     else if (state.view === 'album') closeAlbum();
     return;
   }
@@ -1875,7 +2139,10 @@ window.addEventListener('keydown', (e) => {
     e.preventDefault();
     return;
   }
-  if (e.key === ' ') { togglePlay(); e.preventDefault(); return; }
+  if (e.key === ' ') {
+    if (state.view === 'genres' && e.target.closest?.('#genresPage button')) return;
+    togglePlay(); e.preventDefault(); return;
+  }
 
   if (state.view === 'album') {
     if (e.key === 'ArrowRight') next();
