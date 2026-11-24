@@ -22,12 +22,13 @@ The **•••** menu in the article footer lets you delete the saved text or c
 | --- | --- |
 | Library | Swipe left on the touchscreen to move the covers right, or swipe right to move them left. Choose **Settings → Touch → Library swipe direction** to make the covers follow your finger. You can also scroll, drag with the mouse or use ← →. PgUp/PgDn jumps 10, Home/End jumps to the ends. |
 | Library | Click **Artist** at the left of the alphabet to switch to **Album** and browse by title. Click a letter to jump to its first match. In Artist order, “The Beatles” appears under B. Muso remembers the order and selected album on launch. |
-| Compilations | Album order shows one sleeve for tracks with the same album title in the same release folder, including numbered CD or disc subfolders. Open it to play all artists in disc and track order. Artist order keeps the individual artist entries. |
+| Albums with guests | Both browsing modes keep the complete release under its tagged album artist when the available album-artist credits agree. Without those tags, an artist credited on more than two thirds of the tracks leads the release. Guest performers remain visible in the track row. |
+| Compilations | Album order groups tracks with the same album title and release folder, including numbered disc subfolders. Compilations without a principal artist retain their individual artist entries in Artist order. |
 | Library | Click the centred sleeve or press Enter to put the record on. |
-| Crates | Pull a sleeve downward and your crates rise from the bottom edge as cover stacks. Drop the sleeve on a stack, or on **New crate** to start another. Open **Menu → Crates** to see all crates on a shelf. Click a stack to spread it out: drag covers to change the order, drag one down to take it out, click a cover to play from there, and use the icons to play, rename or delete the crate. |
+| Crates | Pull a sleeve downward and your crates rise from the bottom edge as cover stacks. Drop the sleeve on a stack, or on **New crate** to start another. In the player, drag the current cover onto a crate on the left to file it during playback. Open **Menu → Crates** to see all crates on a shelf. Click a stack to spread it out: drag covers to change the order, drag one down to take it out, click a cover to play from there, and use the icons to play, rename or delete the crate. |
 | Library | Just start typing to search, or use Ctrl+F. |
 | Corner ● | Opens Search · Settings · Refresh Library · AI Features. |
-| Album | Space plays or pauses, ← → change tracks, F or F11 toggles fullscreen, Esc goes back. |
+| Album | Space plays or pauses, ← → change tracks, F or F11 toggles fullscreen, Esc goes back. Visible fullscreen keeps the display awake until you minimize Muso or leave fullscreen. |
 | Album track row | Swipe, drag or scroll through the album. Click a title to play it. The playing track is centered with earlier tracks to the left and later tracks to the right. |
 | Album ⋯ | Enter or exit fullscreen, show saved Visual Atmospheres, generate new images or find a higher-resolution cover. |
 

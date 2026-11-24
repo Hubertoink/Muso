@@ -40,7 +40,9 @@ beforeEach(async () => {
         if (command === 'delete_album_note') return sessionStorage.removeItem('note.' + args.albumId);
         if (command === 'library_crates') {
           if (args.change?.type === 'add') {
-            crates.lists.push({ id: 1, name: 'Filed records', albums: [{ id: args.change.album }] });
+            const list = crates.lists.find(c => c.id === args.change.id);
+            if (list) list.albums.push({id: args.change.album});
+            else crates.lists.push({ id: crates.lists.length + 1, name: 'Filed records', albums: [{ id: args.change.album }] });
           }
           return structuredClone(crates);
         }
@@ -318,6 +320,41 @@ test('the menu keeps its backdrop while Settings loads and the scrollbar clears 
   assert.equal(await page.locator('#spectrumToggle').evaluate(el => el === document.activeElement), true);
 });
 
+for (const device of ['touch', 'mouse']) {
+  test(device + ' can file the playing record in the left tray without changing playback', async () => {
+    if (device === 'mouse') await page.evaluate(async () => { window.fillCrate(1); await albumCrates.load(); });
+    await down(); await up();
+    await page.locator('#album:not(.hidden) #cover').waitFor();
+    const playing = () => page.evaluate(() => [state.view, state.playing.album.id, state.playing.playbackId, state.playing.paused]);
+    const before = await playing();
+    if (device === 'touch') { await down(); await move(520, 32); }
+    else { await page.mouse.move(600, 350); await page.mouse.down(); await page.mouse.move(520, 350); }
+    const targetY = device === 'touch' ? 400 : 330;
+    await page.waitForFunction(({ y, id }) => document.elementFromPoint(80, y)?.closest('.tray-crate')?.dataset.id === id,
+      { y: targetY, id: device === 'touch' ? '' : '1' });
+    const point = x => device === 'touch' ? move(x, 32, targetY) : page.mouse.move(x, targetY);
+    await point(265);
+    await page.waitForFunction(() => {
+      const opacity = +getComputedStyle(document.querySelector('.crate-ghost')).opacity;
+      return opacity > .4 && opacity < .99;
+    });
+    await point(80);
+    await page.waitForFunction(() => {
+      const style = getComputedStyle(document.querySelector('.crate-ghost'));
+      return +style.opacity < .4 && parseFloat(style.filter.slice(5)) > 5;
+    });
+    await point(520);
+    await page.waitForFunction(() => +getComputedStyle(document.querySelector('.crate-ghost')).opacity > .99);
+    await point(80);
+    if (device === 'touch') await up(); else await page.mouse.up();
+    await page.locator('#crateTray.side .tray-crate.landed').waitFor();
+    const crates = await page.evaluate(() => invoke('library_crates', {}));
+    assert.equal(crates.lists.length, 1);
+    assert.equal(crates.lists[0].albums.at(-1).id, before[1]);
+    assert.deepEqual(await playing(), before);
+  });
+}
+
 test('an interrupted return cannot brighten the source of the next pull', async () => {
   await down();
   await move(600, 32, 450);
@@ -342,10 +379,10 @@ test('filing keeps the source dim until the copy lands, including through a scan
   await move(600, 32, 730);
   await up();
   const copy = page.locator('.crate-ghost');
-  await copy.evaluate(el => el.getAnimations()[0].pause());
+  await copy.evaluate(el => el.getAnimations().find(a => !(a instanceof CSSTransition)).pause());
   await page.evaluate(() => window.refreshLibrary());
   assert.equal(await page.locator('.sleeve.filing').getAttribute('data-index'), '20');
-  await copy.evaluate(el => el.getAnimations()[0].finish());
+  await copy.evaluate(el => el.getAnimations().find(a => !(a instanceof CSSTransition)).finish());
   await page.locator('.tray-crate.landed').waitFor();
   assert.equal(await page.locator('.sleeve.filing').count(), 0);
   assert.equal(await copy.count(), 0);

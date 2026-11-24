@@ -9,6 +9,8 @@ mod db;
 mod paintings;
 mod releases;
 mod scanner;
+#[cfg(any(windows, target_os = "linux"))]
+mod screen;
 mod spectrum;
 
 use std::path::PathBuf;
@@ -310,6 +312,10 @@ fn main() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .register_uri_scheme_protocol("muso", |ctx, req| serve(ctx.app_handle(), req))
         .setup(|app| {
+            #[cfg(any(windows, target_os = "linux"))]
+            if let Some(window) = app.get_webview_window("main") {
+                screen::watch(window)?;
+            }
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
             let db_path = data_dir.join("muso.db");

@@ -2666,9 +2666,10 @@ checksum = "743fb55ba31b18fb1ecef6bdc9aa2743314978ac084044301a7eee33fb99a20d"
 
 [[package]]
 name = "muso"
-version = "0.1.23"
+version = "0.1.24"
 dependencies = [
  "base64 0.22.1",
+ "gtk",
  "image",
  "lofty",
  "open",
@@ -2687,6 +2688,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "walkdir",
+ "windows-sys 0.61.2",
  "zip",
 ]
 

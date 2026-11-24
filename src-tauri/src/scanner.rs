@@ -42,6 +42,7 @@ struct TrackInfo {
     title: String,
     artist: Option<String>,
     album_artist: String,
+    has_album_artist: bool,
     album: String,
     year: Option<u32>,
     genre: Option<String>,
@@ -80,13 +81,14 @@ fn read_track(p: &Path) -> TrackInfo {
     let artist = tag.and_then(|t| clean(t.artist())).or_else(|| {
         tf.as_ref()?.tags().iter().find_map(|t| clean(t.artist()))
     });
-    let album_artist = tag
+    let tagged_album_artist = tag
         .and_then(|t| t.get_string(&ItemKey::AlbumArtist))
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .or_else(|| tf.as_ref()?.tags().iter().find_map(|t|
-            t.get_string(&ItemKey::AlbumArtist).map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned)))
-        .or_else(|| artist.clone())
+            t.get_string(&ItemKey::AlbumArtist).map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned)));
+    let has_album_artist = tagged_album_artist.is_some();
+    let album_artist = tagged_album_artist.or_else(|| artist.clone())
         .unwrap_or_else(|| "Unknown Artist".into());
 
     let picture = tag.and_then(|t| {
@@ -101,6 +103,7 @@ fn read_track(p: &Path) -> TrackInfo {
         title: tag.and_then(|t| clean(t.title())).unwrap_or(stem),
         artist,
         album_artist,
+        has_album_artist,
         album: tag.and_then(|t| clean(t.album())).unwrap_or(dir_name),
         year: tag.and_then(|t| t.year()),
         genre: tag.and_then(|t| clean(t.genre())),
@@ -127,7 +130,9 @@ fn recover_mp3_tags(path: &Path, info: &mut TrackInfo) -> Option<()> {
     let text = |key| revision.tags().iter().filter(|tag| tag.std_key == Some(key))
         .map(|tag| tag.value.to_string().trim_matches(['\0', ' ']).to_owned()).find(|s| !s.is_empty());
     info.artist = text(Key::Artist).or_else(|| info.artist.take());
-    if let Some(artist) = text(Key::AlbumArtist).or_else(|| info.artist.clone()) { info.album_artist = artist; }
+    let album_artist = text(Key::AlbumArtist);
+    info.has_album_artist = album_artist.is_some();
+    if let Some(artist) = album_artist.or_else(|| info.artist.clone()) { info.album_artist = artist; }
     if let Some(album) = text(Key::Album) { info.album = album; }
     if let Some(title) = text(Key::TrackTitle) { info.title = title; }
     let number = |key| text(key)?.split('/').next()?.trim().parse::<u32>().ok();
@@ -330,8 +335,8 @@ pub fn scan(db_path: &Path, data_dir: &Path, progress: impl Fn(Progress)) -> Res
             )
             .map_err(e2s)?;
             tx.execute(
-                "INSERT OR REPLACE INTO tracks(path, album_id, title, artist, track_no, disc_no, duration, mtime)
-                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                "INSERT OR REPLACE INTO tracks(path, album_id, title, artist, track_no, disc_no, duration, mtime,has_album_artist)
+                 VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![
                     path_str,
                     album_id,
@@ -340,7 +345,8 @@ pub fn scan(db_path: &Path, data_dir: &Path, progress: impl Fn(Progress)) -> Res
                     info.track_no,
                     info.disc_no,
                     info.duration,
-                    mtime
+                    mtime,
+                    info.has_album_artist
                 ],
             )
             .map_err(e2s)?;

@@ -581,7 +581,17 @@ async function loadAlbums() {
     });
     a.search = [a.artist, a.title, a.year, ...artists].join(' ').toLowerCase();
   }
-  artistAlbums = albums.filter(a => !a.members?.length);
+  // Show guest tracks on their principal artist's complete release in both browsing modes.
+  // Keep individual artist entries for compilations without a principal artist.
+  const led = albums.filter(a => a.members?.length > 1 && !['various artists', 'unknown artist'].includes(a.artist.toLowerCase()));
+  const ledIds = new Set(led.map(a => a.id));
+  const groupedMembers = new Set(led.flatMap(a => a.members));
+  const compilationMembers = new Set(albums.filter(a => a.members?.length > 1 && !ledIds.has(a.id)).flatMap(a => a.members));
+  artistAlbums = albums.filter(a => {
+    if (ledIds.has(a.id)) return true;
+    if (a.members?.length) return a.members.length === 1 && groupedMembers.has(a.members[0]) && !compilationMembers.has(a.members[0]);
+    return !groupedMembers.has(a.id) || compilationMembers.has(a.id);
+  });
   titleAlbums = albums.filter(a => !represented.has(a.id));
   applyLibraryOrder();
 }
@@ -1165,7 +1175,8 @@ function updateTrackRail(p) {
       const number = document.createElement('span');
       number.className = 'n';
       number.textContent = String(track.trackNo ?? index + 1).padStart(2, '0');
-      const label = p.album.members?.length > 1 && track.artist ? track.artist + ' — ' + track.title : track.title;
+      const showCredit = track.artist && (p.album.members?.length > 1 || track.artist !== p.album.artist);
+      const label = showCredit ? track.artist + ' — ' + track.title : track.title;
       button.append(number, document.createTextNode(label));
       button.addEventListener('click', () => playIndex(index));
       return button;
@@ -1335,6 +1346,39 @@ proposedCover.addEventListener('click', e => {
   if (e.detail === 0 && proposal && !proposal.busy) startAlbum(proposal.album);
 });
 
+const playerCover = $('cover');
+let coverPull = null;
+function resetCoverPull() {
+  const pull = coverPull;
+  coverPull = null;
+  if (pull && playerCover.hasPointerCapture(pull.id)) playerCover.releasePointerCapture(pull.id);
+  albumCrates.dismissPlayerTray();
+}
+playerCover.addEventListener('pointerdown', e => {
+  if (!e.isPrimary || e.button !== 0 || coverPull || !state.viewAlbum) return;
+  coverPull = { id: e.pointerId, x: e.clientX, y: e.clientY, album: state.viewAlbum, filing: false };
+  playerCover.setPointerCapture(e.pointerId);
+  poke();
+});
+playerCover.addEventListener('pointermove', e => {
+  if (coverPull?.id !== e.pointerId) return;
+  if (!coverPull.filing) {
+    if (Math.hypot(e.clientX - coverPull.x, e.clientY - coverPull.y) < 8) return;
+    coverPull.filing = true;
+    albumCrates.begin(coverPull.album, playerCover, coverPull.x, coverPull.y, true);
+  }
+  albumCrates.drag(e.clientX, e.clientY);
+});
+for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) {
+  playerCover.addEventListener(type, e => {
+    if (coverPull?.id !== e.pointerId) return;
+    const filing = coverPull.filing;
+    coverPull = null;
+    if (filing) albumCrates.end(e.clientX, e.clientY, type !== 'pointerup');
+    updateAtmosView();
+    poke();
+  });
+}
 let crateRequest;
 function clearCrateTransition() {
   const view = $('album');
@@ -1428,6 +1472,7 @@ async function startAlbum(a, remaining = [], advancing = false) {
 }
 
 function displayAlbum(a, advancing = false) {
+  resetCoverPull();
   clearCrateTransition();
   const outgoing = advancing && state.viewAlbum?.id !== a.id && !reducedMotion.matches && !document.hidden && animateCrateChange();
   closeSearch();
@@ -1467,6 +1512,7 @@ function displayAlbum(a, advancing = false) {
 }
 
 function closeAlbum() {
+  resetCoverPull();
   // Leaving the player can cancel a manual selection, but a crate keeps playing in the library.
   if (crateRequest !== albumRequest) ++albumRequest;
   clearProposal();
@@ -1495,7 +1541,7 @@ function poke() {
   $('album').classList.remove('idle');
   clearTimeout(idleTimer);
   idleTimer = setTimeout(() => {
-    if (state.view === 'album' && !proposal && $('albumMenu').classList.contains('hidden')) $('album').classList.add('idle');
+    if (state.view === 'album' && !proposal && !coverPull && $('albumMenu').classList.contains('hidden')) $('album').classList.add('idle');
   }, 3500);
 }
 $('album').addEventListener('mousemove', poke);
@@ -1584,7 +1630,7 @@ let readyAlbum = null;
 let playlist = null;
 function updateAtmosView() {
   const p = state.playing;
-  const reveal = !proposal && p?.introDone && readyAlbum === p.album.id && state.viewAlbum?.id === readyAlbum;
+  const reveal = !coverPull && !proposal && p?.introDone && readyAlbum === p.album.id && state.viewAlbum?.id === readyAlbum;
   $('album').classList.toggle('showing-atmos', !!reveal);
   spectrum.setPlayback(!!reveal && !p.paused, p?.playbackId);
   if (!reveal) stopWave();
@@ -1731,6 +1777,7 @@ window.addEventListener('keydown', (e) => {
   }
   if (e.target.matches('input, select')) return;
   if (e.key === 'Escape') {
+    if (coverPull) { resetCoverPull(); updateAtmosView(); return; }
     if (modalOpen) document.querySelectorAll('.modal').forEach((m) => show(m, false));
     else if (!$('menu').classList.contains('hidden')) closeMenu();
     else if (!$('search').classList.contains('hidden')) closeSearch();

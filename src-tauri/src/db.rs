@@ -63,6 +63,13 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
         WHERE name='art_source')", [], |r| r.get(0))?;
     if !has_source {
         tx.execute("ALTER TABLE albums ADD COLUMN art_source TEXT", [])?;
+    }
+    let has_credit: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('tracks')
+        WHERE name='has_album_artist')", [], |r| r.get(0))?;
+    if !has_credit {
+        tx.execute("ALTER TABLE tracks ADD COLUMN has_album_artist INTEGER", [])?;
+    }
+    if !has_source || !has_credit {
         crate::releases::rebuild(&tx)?;
     }
     tx.commit()?;
@@ -253,6 +260,37 @@ mod tests {
         tx.commit().unwrap();
         assert!(album(&c, &comp.album.id).unwrap().is_none());
         assert_eq!(tracks(&c,"a").unwrap().len(), 3);
+    }
+
+    #[test]
+    fn guest_tracks_follow_the_album_credit_and_keep_their_performers() {
+        let mut db = open(Path::new(":memory:")).unwrap();
+        for id in ["Composer", "Guest", "DJ"] {
+            db.execute("INSERT INTO albums(id,artist,title,sort_key) VALUES(?1,?1,'Score',?1)", [id]).unwrap();
+        }
+        for (num, member, performer, tagged) in [
+            (1, "DJ", "DJ", false), (2, "Composer", "Composer", true),
+            (3, "Composer", "Composer", true), (4, "Guest", "Guest", false),
+            (5, "Composer", "DJ", true),
+        ] {
+            db.execute("INSERT INTO tracks(path,album_id,title,artist,track_no,mtime,has_album_artist)
+                VALUES(?1,?2,'Piece',?3,?4,0,?5)", params![format!("Score/{num}.mp3"),member,performer,num,tagged]).unwrap();
+        }
+        let tx = db.transaction().unwrap();
+        crate::releases::rebuild(&tx).unwrap();
+        let release = albums(&tx).unwrap().into_iter().find(|a| a.members.len()==3).unwrap().album;
+        assert_eq!(release.artist, "Composer");
+        let tracks = tracks(&tx, &release.id).unwrap();
+        assert_eq!(tracks.iter().filter_map(|t| t.artist.as_deref()).collect::<Vec<_>>(), ["DJ","Composer","Composer","Guest","DJ"]);
+        tx.execute("UPDATE tracks SET has_album_artist=1 WHERE album_id='Guest'", []).unwrap();
+        crate::releases::rebuild(&tx).unwrap();
+        assert_eq!(album(&tx, &release.id).unwrap().unwrap().artist, "Various Artists");
+        tx.execute("UPDATE tracks SET has_album_artist=0", []).unwrap();
+        crate::releases::rebuild(&tx).unwrap();
+        assert_eq!(album(&tx, &release.id).unwrap().unwrap().artist, "Various Artists");
+        tx.execute("DELETE FROM tracks WHERE album_id='Guest'", []).unwrap();
+        crate::releases::rebuild(&tx).unwrap();
+        assert_eq!(album(&tx, &release.id).unwrap().unwrap().artist, "Composer");
     }
 
     #[test]

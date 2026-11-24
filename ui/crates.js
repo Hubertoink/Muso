@@ -61,17 +61,18 @@ function createAlbumCrates({ invoke, lookup, play, back, toast, coverUrl, blankC
     return n === 1 ? '1 record' : n + ' records';
   }
 
-  /* ---------------- tray: appears only while a cover is pulled down ---------------- */
+  /* ---------------- filing tray ---------------- */
 
   let ghost = null, drop = null;
-  let trayLists, trayWidth;
-  function renderTray() {
-    if (trayLists === data.lists && trayWidth === window.innerWidth) return;
-    trayLists = data.lists;
-    trayWidth = window.innerWidth;
-    const box = el('trayCrates');
+  let trayLists, traySize, scrollFrame = 0;
+  function renderTray(side) {
     const count = data.lists.length + 1;
-    const size = Math.round(clamp(window.innerWidth / count - 46, 52, 92));
+    const size = Math.round(side ? clamp(window.innerHeight / count - 52, 48, 76)
+      : clamp(window.innerWidth / count - 46, 52, 92));
+    if (trayLists === data.lists && traySize === size) return;
+    trayLists = data.lists;
+    traySize = size;
+    const box = el('trayCrates');
     const items = data.lists.map(list => trayItem(list, list.name, size));
     items.push(trayItem(null, 'New crate', size));
     box.replaceChildren(...items);
@@ -96,50 +97,98 @@ function createAlbumCrates({ invoke, lookup, play, back, toast, coverUrl, blankC
   }
   // A scan or cover upgrade can replace the source element during the landing.
   function bindFilingSleeve(album, sleeve) {
-    if (ghost?.el.isConnected && ghost.album.id === album.id) {
+    if (ghost?.el.isConnected && !ghost.side && ghost.album.id === album.id) {
       ghost.sleeve = sleeve;
       sleeve.classList.add('filing');
     }
   }
-  function begin(album, sleeve, x, y) {
+  function begin(album, sleeve, x, y, side = false) {
     if (ghost) removeGhost(ghost);
-    renderTray();
+    tray.classList.toggle('side', side);
+    renderTray(side);
+    el('trayCrates').scrollTop = 0;
     tray.querySelectorAll('.landed, .reject, .over').forEach(item => item.classList.remove('landed', 'reject', 'over'));
     drop = null;
     tray.classList.add('open');
     const r = sleeve.getBoundingClientRect();
     const size = Math.min(r.width, r.height);
     const g = sleeve.cloneNode(true);
-    g.classList.replace('sleeve', 'crate-ghost');
+    g.classList.remove('cover', 'sleeve', 'filing');
+    g.classList.add('crate-ghost');
+    g.removeAttribute('id');
+    g.setAttribute('aria-hidden', 'true');
     g.removeAttribute('style');
     g.style.setProperty('--blank', blankColor(album.id));
     g.style.width = g.style.height = size + 'px';
     const img = g.querySelector('img');
-    if (img) img.decoding = 'sync';
+    if (img) { img.removeAttribute('id'); img.decoding = 'sync'; }
     const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
     ghost = { el: g, album, sleeve, size, home: { x: cx, y: cy }, grab: { x: x - cx, y: y - cy },
-      startY: y, lastX: x, rot: 0, trayTop: window.innerHeight - tray.offsetHeight };
+      side, startX: x, startY: y, lastX: x, rot: 0, trayTop: window.innerHeight - tray.offsetHeight };
     place(x, y);
     sleeve.classList.add('filing');
     document.body.appendChild(g);
   }
   function place(x, y) {
-    const p = clamp((y - ghost.startY) / Math.max(80, ghost.trayTop - ghost.startY), 0, 1);
+    const progress = ghost.side ? (ghost.startX - x) / Math.max(80, ghost.startX - tray.offsetWidth / 2)
+      : (y - ghost.startY) / Math.max(80, ghost.trayTop - ghost.startY);
+    const p = clamp(progress, 0, 1);
     const scale = 1 - p * 0.62;
     ghost.rot = ghost.rot * 0.8 + clamp((x - ghost.lastX) * 0.9, -16, 16) * 0.2;
     ghost.lastX = x;
+    ghost.lastY = y;
     const cx = x - ghost.grab.x * scale, cy = y - ghost.grab.y * scale;
     ghost.el.style.setProperty('--motion-transform', `translate3d(${cx - ghost.size / 2}px,${cy - ghost.size / 2}px,0) scale(${scale}) rotate(${ghost.rot.toFixed(2)}deg)`);
   }
-  function drag(x, y) {
-    if (!ghost) return;
-    place(x, y);
+  function highlight(x, y) {
+    // Fade the dragged sleeve as it approaches a drop area, including between stacks.
+    const reach = clamp(ghost.size * .42, 110, 220);
+    let distance = reach;
+    for (const item of el('trayCrates').children) {
+      const r = item.getBoundingClientRect();
+      const dx = Math.max(r.left - x, x - r.right, 0);
+      const dy = Math.max(r.top - y, y - r.bottom, 0);
+      distance = Math.min(distance, Math.hypot(dx, dy));
+    }
+    const proximity = 1 - distance / reach;
+    ghost.el.style.setProperty('--crate-proximity', proximity.toFixed(3));
     const t = targetAt(x, y);
     if (t !== drop) {
       drop?.classList.remove('over');
       t?.classList.add('over');
       drop = t;
     }
+  }
+  function drag(x, y) {
+    if (!ghost) return;
+    place(x, y);
+    highlight(x, y);
+    cancelAnimationFrame(scrollFrame);
+    if (!ghost.side || x > tray.getBoundingClientRect().right) return;
+    const box = el('trayCrates');
+    const edge = 56;
+    const speed = clamp((y - (window.innerHeight - edge)) / edge, 0, 1) - clamp((edge - y) / edge, 0, 1);
+    if (!speed || box.scrollHeight <= box.clientHeight) return;
+    function scroll() {
+      const before = box.scrollTop;
+      box.scrollTop += Math.sign(speed) * Math.ceil(Math.abs(speed) * 10);
+      highlight(x, y);
+      if (box.scrollTop !== before) scrollFrame = requestAnimationFrame(scroll);
+    }
+    scrollFrame = requestAnimationFrame(scroll);
+  }
+  tray.addEventListener('transitionend', e => {
+    if (e.target === tray && ghost && !ghost.flight && tray.classList.contains('open')) {
+      highlight(ghost.lastX, ghost.lastY);
+    }
+  });
+  function dismissPlayerTray() {
+    if (!ghost?.side) return;
+    cancelAnimationFrame(scrollFrame);
+    removeGhost(ghost);
+    ghost = null;
+    drop = null;
+    tray.classList.remove('open');
   }
   function flyGhost(g, x, y, scale, rot) {
     const transform = `translate3d(${x - g.size / 2}px,${y - g.size / 2}px,0) scale(${scale}) rotate(${rot}deg)`;
@@ -152,12 +201,14 @@ function createAlbumCrates({ invoke, lookup, play, back, toast, coverUrl, blankC
   }
   async function end(x, y, cancelled) {
     if (!ghost) return;
+    cancelAnimationFrame(scrollFrame);
     const g = ghost, target = cancelled ? null : targetAt(x, y);
     drop?.classList.remove('over');
     drop = null;
     const id = target?.dataset.id ? Number(target.dataset.id) : null;
     const duplicate = id !== null && listById(id)?.albums.some(e => e.id === g.album.id);
     if (!target || duplicate) {
+      g.el.style.removeProperty('--crate-proximity');
       if (duplicate) {
         target.classList.add('reject');
         toast('Already in ' + listById(id).name);
@@ -569,6 +620,6 @@ function createAlbumCrates({ invoke, lookup, play, back, toast, coverUrl, blankC
 
   return {
     load: () => update(null).catch(() => {}),
-    begin, drag, end, bindFilingSleeve, open, close, isOpen, escape,
+    begin, drag, end, dismissPlayerTray, bindFilingSleeve, open, close, isOpen, escape,
   };
 }

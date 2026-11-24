@@ -463,6 +463,10 @@ body:has(> .modal:not(.hidden, .from-player))::before { background-color: rgb(0 
   flex: none;
 }
 .cover img { width: 100%; height: 100%; object-fit: cover; display: block; animation: cover-zoom 9s ease-in-out infinite; }
+#cover { touch-action: none; cursor: grab; }
+#cover img { pointer-events: none; }
+#cover.filing { cursor: grabbing; }
+#cover.filing::after { content: ''; position: absolute; inset: 0; background: rgba(22,22,21,.83); }
 #proposedCover {
   transform: var(--motion-transform);
   position: absolute; inset: 0; width: 100%; height: 100%; overflow: hidden; border-radius: 4px; background: var(--blank);
@@ -570,6 +574,21 @@ body:has(> .modal:not(.hidden, .from-player))::before { background-color: rgb(0 
 }
 #crateTray.open { bottom: 0; transition: bottom .6s var(--spring); pointer-events: auto; }
 #trayCrates { height: 100%; display: flex; justify-content: center; align-items: flex-end; gap: 34px; padding: 0 30px 22px; }
+#crateTray.side {
+  inset: 0 auto 0 0; width: clamp(140px, 18vw, 205px); height: auto;
+  background: linear-gradient(to right, rgba(9,9,8,.96) 45%, transparent);
+  transform: translateX(-100%); transition: transform .32s ease-in;
+}
+#crateTray.side.open { transform: translateX(0); transition: transform .4s var(--ease); }
+#crateTray.side #trayCrates {
+  flex-direction: column; justify-content: safe center; align-items: stretch;
+  gap: 12px; padding: 32px 30px 32px 14px; overflow: hidden auto; scrollbar-width: none;
+}
+#crateTray.side .tray-crate { flex: none; gap: 8px; padding: 10px 0; }
+#crateTray.side .tray-crate.over .stack { --motion-transform: translateX(7px) scale(1.07); }
+@media (prefers-reduced-motion: reduce) {
+  #crateTray.side, #crateTray.side.open { transition: none; }
+}
 .tray-crate { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 14px 8px 0; min-width: 0; }
 .tray-crate .stack { transform: var(--motion-transform); transition: --motion-transform .45s var(--spring); }
 .tray-name { font-family: var(--mono); font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--ink-dim);
@@ -584,6 +603,9 @@ body:has(> .modal:not(.hidden, .from-player))::before { background-color: rgb(0 
 @keyframes shake { 20%, 60% { --motion-transform: translateX(-7px) rotate(-2deg); } 40%, 80% { --motion-transform: translateX(7px) rotate(2deg); } }
 
 .crate-ghost {
+  opacity: calc(1 - .65 * var(--crate-proximity, 0));
+  filter: blur(calc(6px * var(--crate-proximity, 0)));
+  transition: opacity .12s ease-out, filter .12s ease-out;
   transform: var(--motion-transform);
   position: fixed; left: 0; top: 0; z-index: 45; pointer-events: none;
   border-radius: 3px; overflow: hidden; background: var(--blank, #302f2d);

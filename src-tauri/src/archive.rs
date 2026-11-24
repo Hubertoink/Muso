@@ -296,7 +296,7 @@ pub fn import(c: &mut Connection, dir: &Path, src: &Path) -> R<Summary> {
             let mut matches = library.iter().filter(|a| {
                 a.members == e.members
                     && a.album.title.eq_ignore_ascii_case(&e.title)
-                    && a.album.artist.eq_ignore_ascii_case(&e.artist)
+                    && (a.album.artist.eq_ignore_ascii_case(&e.artist) || e.artist.eq_ignore_ascii_case("Various Artists"))
             });
             let first = matches.next()?;
             matches.next().is_none().then_some(first)
