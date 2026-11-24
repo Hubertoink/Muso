@@ -31,7 +31,8 @@ beforeEach(async () => {
         if (command === 'get_albums') return structuredClone(albums);
         if (command === 'upgrade_cover') {
           window.coverRequest = args;
-          return window.coverResult;
+          (window.coverSteps ??= []).push(args.step);
+          return window.coverReplies?.[args.step.type] ?? window.coverResult;
         }
         if (command === 'genre_state') return {genres:[{name:'Electronic', parent:null}], albums:{}, suggestions:0};
         if (command === 'genre_inventory') return {tags:[], broad:[], records:albums.length, untagged:albums.length};
@@ -100,12 +101,107 @@ test('cover lookup distinguishes missing artwork and reserves AI offers for an i
     await findCovers([focused()], true);
   });
   assert.equal(await page.locator('#toast').textContent(), 'Release found, but no front cover was available');
-  assert.equal(await page.evaluate(() => window.coverRequest.offerAi), true);
+  assert.equal(await page.evaluate(() => window.coverRequest.step.offer_ai), true);
   await page.evaluate(async () => {
     window.coverResult = {status: 'no_match'};
     await findCovers([focused()]);
   });
-  assert.equal(await page.evaluate(() => window.coverRequest.offerAi), false);
+  assert.equal(await page.evaluate(() => window.coverRequest.step.offer_ai), false);
+});
+
+test('cover research and using its match each require confirmation in the player', async () => {
+  await page.route('https://coverartarchive.org/**', route => route.request().url().endsWith('/front')
+    ? route.fulfill({ contentType:'image/svg+xml', body:'<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="900"/>' })
+    : route.fulfill({ status: 404 }));
+  await page.evaluate(() => {
+    window.coverReplies = {
+      lookup: {status: 'offer_research'},
+      research: {status: 'review_covers', choices: [{label: 'Test Artist — Test Album', location: {provider: 'music_brainz', id: 'confirmed-group'}}]},
+      use_release: {status: 'already_large_enough'},
+    };
+  });
+  await down(); await up();
+  const start = async () => {
+    await page.locator('#albumMenuBtn').click();
+    await page.locator('#findAlbumCover').click();
+  };
+  const ask = page.getByRole('dialog', {name: 'Identify album with AI?'});
+  const review = page.getByRole('dialog', {name: 'Use this release?'});
+  await start();
+  assert.match(await ask.innerText(), /one paid web search/);
+  await ask.getByRole('button', {name: 'Cancel'}).click();
+  assert.deepEqual(await page.evaluate(() => window.coverSteps.map(s => s.type)), ['lookup']);
+  await start();
+  await ask.getByRole('button', {name: 'Search with AI'}).click();
+  assert.match(await review.innerText(), /Test Artist — Test Album/);
+  await page.waitForFunction(() => document.querySelector('#coverPreview img')?.naturalWidth === 1000);
+  const artwork = review.locator('#coverPreview img');
+  assert.equal(await review.evaluate(el => getComputedStyle(el).backgroundColor), 'rgba(0, 0, 0, 0)');
+  assert.equal(await review.locator('#coverBackdrop').getAttribute('src'), await artwork.getAttribute('src'));
+  assert.ok((await artwork.boundingBox()).width >= 400);
+  assert.equal(await artwork.evaluate(el => getComputedStyle(el).objectFit), 'contain');
+  await page.setViewportSize({width: 390, height: 660});
+  assert.ok((await artwork.boundingBox()).width >= 280);
+  assert.ok(await review.evaluate(el => el.scrollWidth <= el.clientWidth));
+  await page.keyboard.press('Escape');
+  await review.waitFor({state:'hidden'});
+  assert.deepEqual(await page.evaluate(() => window.coverSteps.map(s => s.type)), ['lookup', 'lookup', 'research']);
+  await start();
+  await ask.getByRole('button', {name: 'Search with AI'}).click();
+  await review.getByRole('button', {name: 'Use cover'}).click();
+  await page.waitForFunction(() => window.coverRequest.step.type === 'use_release');
+  assert.equal(await page.evaluate(() => window.coverRequest.step.location.id), 'confirmed-group');
+});
+
+test('the player keeps cover research progress visible until it finishes and retains the checked sources', async () => {
+  await down(); await up();
+  await page.evaluate(() => {
+    window.coverResult = new Promise(resolve => { window.finishCoverLookup = resolve; });
+  });
+  await page.locator('#albumMenuBtn').click();
+  await page.locator('#findAlbumCover').click();
+  const progress = page.locator('#coverSearchStatus');
+  for (const source of ['MusicBrainz', 'TheAudioDB']) {
+    await page.evaluate(source => window.emitPlayback('cover-search-progress', {
+      albumId: state.viewAlbum.id, source, message: 'Checking ' + source,
+    }), source);
+    assert.equal(await progress.innerText(), 'Checking ' + source);
+  }
+  await page.clock.install();
+  await page.clock.fastForward(10000);
+  assert.ok(await progress.isVisible());
+  await page.evaluate(() => window.finishCoverLookup({status:'no_front_cover'}));
+  await progress.waitFor({state:'hidden'});
+  await page.clock.fastForward(10000);
+  await page.locator('#albumMenuBtn').click();
+  assert.match(await page.locator('#coverSearchResult').innerText(), /no front cover.*MusicBrainz, TheAudioDB/i);
+});
+
+test('choosing among cover editions uses the selected provider without a paid search', async () => {
+  await page.route('https://r2.theaudiodb.com/**', route => route.request().url().endsWith('/2.jpg')
+    ? route.fulfill({ contentType:'image/svg+xml', body:'<svg xmlns="http://www.w3.org/2000/svg" width="800" height="800"/>' })
+    : route.fulfill({ status: 404 }));
+  await page.evaluate(() => {
+    const choices = ['2001', '2020'].map((year, i) => ({
+      label: 'Album · ' + year,
+      location: {provider:'the_audio_db', id:String(i+1), image:`https://r2.theaudiodb.com/images/media/album/thumb/${i+1}.jpg`},
+    }));
+    window.coverReplies = { lookup:{status:'review_covers', choices}, use_release:{status:'already_large_enough'} };
+  });
+  await down(); await up();
+  await page.locator('#albumMenuBtn').click();
+  await page.locator('#findAlbumCover').click();
+  const dialog = page.getByRole('dialog', {name:'Choose a front cover'});
+  const use = dialog.getByRole('button', {name:'Use cover'});
+  assert.ok(await use.isDisabled());
+  await dialog.getByText('Cover preview unavailable').waitFor();
+  await dialog.getByRole('radio', {name:/2020/}).check();
+  await page.waitForFunction(() => document.querySelector('#coverPreview img')?.naturalWidth === 800);
+  assert.equal(await dialog.locator('#coverPreview img').getAttribute('alt'), 'Album · 2020');
+  await use.click();
+  await page.waitForFunction(() => window.coverRequest.step.type === 'use_release');
+  assert.deepEqual(await page.evaluate(() => window.coverSteps.map(step => step.type)), ['lookup','use_release']);
+  assert.equal(await page.evaluate(() => window.coverRequest.step.location.id), '2');
 });
 
 test('genre sorting remembers custom instructions, including an empty preference', async () => {

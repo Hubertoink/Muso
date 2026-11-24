@@ -16,17 +16,140 @@ pub struct Search {
     client: Client,
     musicbrainz: Mutex<Instant>,
     archive: Mutex<Instant>,
+    audiodb: Mutex<Instant>,
 }
 
 #[derive(Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum Outcome {
-    Cancelled,
-    Updated { file: String },
+    OfferResearch { reason: Option<String> },
+    ReviewCovers { choices: Vec<Candidate> },
+    Ambiguous,
+    Updated { file: String, source: Origin },
     AlreadyLargeEnough,
     NoMatch,
     NoFrontCover,
     UnknownArtist,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Step {
+    Lookup { offer_ai: bool },
+    Research,
+    UseRelease { location: Location },
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "provider", rename_all = "snake_case")]
+pub enum Location {
+    MusicBrainz { id: String },
+    TheAudioDb { id: String, image: String },
+}
+
+#[derive(Serialize)]
+pub struct Candidate {
+    pub label: String,
+    pub location: Location,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct Origin {
+    pub provider: String,
+    pub album_url: String,
+}
+
+impl Location {
+    pub fn origin(&self) -> Origin {
+        match self {
+            Self::MusicBrainz { id } => Origin {
+                provider: "Cover Art Archive".into(),
+                album_url: format!("https://musicbrainz.org/release-group/{id}"),
+            },
+            Self::TheAudioDb { id, .. } => Origin {
+                provider: "TheAudioDB".into(),
+                album_url: format!("https://www.theaudiodb.com/album/{id}"),
+            },
+        }
+    }
+}
+
+pub enum Lookup {
+    Image(Vec<u8>, Origin),
+    Result(Outcome),
+}
+
+#[derive(Deserialize)]
+struct AudioDbAlbums {
+    album: Option<Vec<AudioDbAlbum>>,
+}
+
+#[derive(Deserialize)]
+struct AudioDbAlbum {
+    #[serde(rename = "idAlbum")]
+    id: String,
+    #[serde(rename = "strArtist")]
+    artist: String,
+    #[serde(rename = "strAlbum")]
+    title: String,
+    #[serde(rename = "intYearReleased")]
+    year: Option<String>,
+    #[serde(rename = "strAlbumThumbHQ")]
+    high_res: Option<String>,
+    #[serde(rename = "strAlbumThumb")]
+    cover: Option<String>,
+}
+
+fn valid_audio_image(url: &str) -> bool {
+    reqwest::Url::parse(url).is_ok_and(|u| {
+        u.scheme() == "https"
+            && u.port().is_none()
+            && u.username().is_empty()
+            && u.password().is_none()
+            && u.host_str()
+                .is_some_and(|host| host == "theaudiodb.com" || host.ends_with(".theaudiodb.com"))
+            && u.path().starts_with("/images/media/album/")
+    })
+}
+
+impl AudioDbAlbums {
+    fn matches(self, album: &db::Album) -> Vec<Candidate> {
+        let mut found = Vec::new();
+        let mut ids = std::collections::HashSet::new();
+        for row in self.album.unwrap_or_default() {
+            if normalized(&row.artist) != normalized(&album.artist)
+                || normalized(&row.title) != normalized(&album.title)
+            {
+                continue;
+            }
+            let Some(image) = row
+                .high_res
+                .into_iter()
+                .chain(row.cover)
+                .find(|u| valid_audio_image(u))
+            else {
+                continue;
+            };
+            if row.id.is_empty()
+                || !row.id.bytes().all(|c| c.is_ascii_digit())
+                || !ids.insert(row.id.clone())
+            {
+                continue;
+            }
+            found.push(Candidate {
+                label: format!(
+                    "{} — {} {}",
+                    row.artist,
+                    row.title,
+                    row.year.unwrap_or_default()
+                )
+                .trim_end()
+                .to_owned(),
+                location: Location::TheAudioDb { id: row.id, image },
+            });
+        }
+        found
+    }
 }
 
 #[derive(Deserialize)]
@@ -35,9 +158,9 @@ struct Results {
     groups: Vec<Group>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 pub struct Group {
-    id: String,
+    pub id: String,
     title: String,
     #[serde(rename = "artist-credit")]
     credit: Vec<Credit>,
@@ -45,7 +168,7 @@ pub struct Group {
     date: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 struct Credit {
     name: String,
     artist: Option<Artist>,
@@ -53,7 +176,7 @@ struct Credit {
     joinphrase: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 struct Artist {
     name: String,
 }
@@ -71,11 +194,11 @@ fn quoted(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
-fn match_group(groups: &[Group], album: &db::Album) -> Option<String> {
+fn matching_groups(groups: Vec<Group>, album: &db::Album) -> Vec<Group> {
     let title = normalized(&album.title);
     let artist = normalized(&album.artist);
     let matches: Vec<_> = groups
-        .iter()
+        .into_iter()
         .filter(|g| {
             normalized(&g.title) == title
                 && [false, true].iter().any(|canonical| {
@@ -95,21 +218,18 @@ fn match_group(groups: &[Group], album: &db::Album) -> Option<String> {
                 })
         })
         .collect();
-    let group = match matches.as_slice() {
-        [only] => only,
-        _ => {
-            let year = album.year?.to_string();
-            let mut dated = matches
-                .iter()
-                .filter(|g| g.date.split('-').next() == Some(&year));
-            let first = dated.next()?;
-            if dated.next().is_some() {
-                return None;
+    if let Some(year) = album.year {
+        let year = year.to_string();
+        let mut dated = matches
+            .iter()
+            .filter(|g| g.date.split('-').next() == Some(&year));
+        if let Some(group) = dated.next() {
+            if dated.next().is_none() {
+                return vec![group.clone()];
             }
-            first
         }
-    };
-    Some(group.id.clone())
+    }
+    matches
 }
 
 enum ReadError {
@@ -138,6 +258,7 @@ async fn bounded_bytes(mut response: Response, limit: usize) -> Result<Vec<u8>, 
 enum Service {
     MusicBrainz,
     Archive,
+    AudioDb,
 }
 
 impl Service {
@@ -145,6 +266,7 @@ impl Service {
         match self {
             Self::MusicBrainz => "MusicBrainz",
             Self::Archive => "Cover Art Archive",
+            Self::AudioDb => "TheAudioDB",
         }
     }
 }
@@ -199,6 +321,7 @@ impl Search {
                 .build()?,
             musicbrainz: Mutex::new(Instant::now()),
             archive: Mutex::new(Instant::now()),
+            audiodb: Mutex::new(Instant::now()),
         })
     }
 
@@ -207,12 +330,19 @@ impl Search {
         service: Service,
         build: impl Fn() -> RequestBuilder,
         limit: usize,
-        progress: &impl Fn(String),
+        progress: &impl Fn(&str, String),
     ) -> R<Option<Vec<u8>>> {
         let name = service.name();
+        let message = match service {
+            Service::MusicBrainz => "Looking up the release on MusicBrainz…",
+            Service::Archive => "Checking artwork in the Cover Art Archive…",
+            Service::AudioDb => "Checking TheAudioDB…",
+        };
+        progress(name, message.into());
         let schedule = match service {
             Service::MusicBrainz => &self.musicbrainz,
             Service::Archive => &self.archive,
+            Service::AudioDb => &self.audiodb,
         };
         let mut attempt = 0;
         loop {
@@ -227,6 +357,8 @@ impl Search {
             tokio::time::sleep_until(*next).await;
             if matches!(service, Service::MusicBrainz) {
                 *next = Instant::now() + Duration::from_millis(1100);
+            } else if matches!(service, Service::AudioDb) {
+                *next = Instant::now() + Duration::from_millis(2100);
             }
             let mut delay = Duration::from_secs(3 << attempt);
             let reason = match build().send().await {
@@ -244,7 +376,7 @@ impl Search {
                     }
                 },
                 Ok(r)
-                    if matches!(service, Service::Archive)
+                    if !matches!(service, Service::MusicBrainz)
                         && r.status() == StatusCode::NOT_FOUND =>
                 {
                     return Ok(None)
@@ -257,6 +389,10 @@ impl Search {
                         .and_then(retry_after)
                     {
                         delay = delay.max(retry);
+                    } else if matches!(service, Service::AudioDb)
+                        && r.status() == StatusCode::TOO_MANY_REQUESTS
+                    {
+                        delay = Duration::from_secs(60);
                     }
                     "is temporarily unavailable"
                 }
@@ -268,13 +404,13 @@ impl Search {
             // Keep the server's cooldown for subsequent album searches as well.
             *next = Instant::now() + delay.min(Duration::from_secs(86400));
             attempt += 1;
-            if attempt == 4 || delay > Duration::from_secs(30) {
+            if attempt == 2 || delay > Duration::from_secs(30) {
                 return Err(format!(
                     "{name} {reason}. Try again in {} seconds.",
                     delay.as_secs()
                 ));
             }
-            progress(format!(
+            progress(name, format!(
                 "{name} {reason}. Retrying in {} seconds…",
                 delay.as_secs()
             ));
@@ -285,7 +421,7 @@ impl Search {
         &self,
         path: &str,
         params: &[(&str, &str)],
-        progress: &impl Fn(String),
+        progress: &impl Fn(&str, String),
     ) -> R<T> {
         let bytes = self
             .fetch(
@@ -304,9 +440,9 @@ impl Search {
         serde_json::from_slice(&bytes).map_err(crate::err)
     }
 
-    pub async fn group(&self, album: &db::Album, progress: &impl Fn(String)) -> R<Option<Group>> {
+    async fn groups(&self, album: &db::Album, progress: &impl Fn(&str, String)) -> R<Vec<Group>> {
         if album.artist == "Unknown Artist" {
-            return Ok(None);
+            return Ok(Vec::new());
         }
         let by_title = format!("releasegroup:{}", quoted(&normalized(&album.title)));
         let by_both = format!(
@@ -321,14 +457,129 @@ impl Search {
                     progress,
                 )
                 .await?;
-            if let Some(id) = match_group(&results.groups, album) {
-                return Ok(results.groups.into_iter().find(|g| g.id == id));
+            let groups = matching_groups(results.groups, album);
+            if !groups.is_empty() {
+                return Ok(groups);
             }
         }
-        Ok(None)
+        Ok(Vec::new())
     }
 
-    async fn front(&self, kind: &str, id: &str, progress: &impl Fn(String)) -> R<Option<Vec<u8>>> {
+    async fn audio_candidates(
+        &self,
+        album: &db::Album,
+        progress: &impl Fn(&str, String),
+    ) -> R<Vec<Candidate>> {
+        let bytes = self
+            .fetch(
+                Service::AudioDb,
+                || {
+                    self.client
+                        .get("https://www.theaudiodb.com/api/v1/json/123/searchalbum.php")
+                        .query(&[("s", &album.artist), ("a", &album.title)])
+                },
+                2 * 1024 * 1024,
+                progress,
+            )
+            .await?;
+        let Some(bytes) = bytes else {
+            return Ok(vec![]);
+        };
+        Ok(serde_json::from_slice::<AudioDbAlbums>(&bytes)
+            .map_err(crate::err)?
+            .matches(album))
+    }
+
+    pub async fn download(
+        &self,
+        location: &Location,
+        progress: &impl Fn(&str, String),
+    ) -> R<Option<Vec<u8>>> {
+        match location {
+            Location::MusicBrainz { id } => self.artwork(id, progress).await,
+            Location::TheAudioDb { id, image } => {
+                if !valid_audio_image(image)
+                    || id.is_empty()
+                    || !id.bytes().all(|c| c.is_ascii_digit())
+                {
+                    return Err("Invalid TheAudioDB cover.".into());
+                }
+                self.fetch(
+                    Service::AudioDb,
+                    || self.client.get(image),
+                    MAX_BYTES,
+                    progress,
+                )
+                .await
+            }
+        }
+    }
+
+    pub async fn lookup(
+        &self,
+        album: &db::Album,
+        review: bool,
+        progress: &impl Fn(&str, String),
+    ) -> R<Lookup> {
+        if album.artist == "Unknown Artist" {
+            return Ok(Lookup::Result(Outcome::UnknownArtist));
+        }
+        let mut choices = Vec::new();
+        let mut error = None;
+        let mut missing = Outcome::NoMatch;
+        match self.groups(album, progress).await {
+            Ok(groups) => {
+                choices = groups
+                    .into_iter()
+                    .map(|g| Candidate {
+                        label: g.label(),
+                        location: Location::MusicBrainz { id: g.id },
+                    })
+                    .collect();
+                if choices.len() == 1 {
+                    let candidate = choices.pop().unwrap();
+                    match self.download(&candidate.location, progress).await {
+                        Ok(Some(bytes)) if !review => {
+                            return Ok(Lookup::Image(bytes, candidate.location.origin()))
+                        }
+                        Ok(Some(_)) => {
+                            return Ok(Lookup::Result(Outcome::ReviewCovers {
+                                choices: vec![candidate],
+                            }))
+                        }
+                        Ok(None) => missing = Outcome::NoFrontCover,
+                        Err(e) => error = Some(e),
+                    }
+                }
+            }
+            Err(e) => error = Some(e),
+        }
+        match self.audio_candidates(album, progress).await {
+            Ok(found) => choices.extend(found),
+            Err(e) => {
+                error = Some(match error {
+                    Some(first) => format!("{first} {e}"),
+                    None => e,
+                })
+            }
+        }
+        if !choices.is_empty() {
+            if review || choices.len() > 1 {
+                return Ok(Lookup::Result(Outcome::ReviewCovers { choices }));
+            }
+            let candidate = choices.pop().unwrap();
+            if let Some(bytes) = self.download(&candidate.location, progress).await? {
+                return Ok(Lookup::Image(bytes, candidate.location.origin()));
+            }
+            missing = Outcome::NoFrontCover;
+        }
+        match error {
+            Some(e) => Err(e),
+            None => Ok(Lookup::Result(missing)),
+        }
+    }
+
+    async fn front(&self, kind: &str, id: &str, progress: &impl Fn(&str, String)) -> R<Option<Vec<u8>>> {
         if !valid_id(id) {
             return Err("Invalid MusicBrainz identifier".into());
         }
@@ -344,14 +595,14 @@ impl Search {
         .await
     }
 
-    pub async fn artwork(&self, group: &Group, progress: &impl Fn(String)) -> R<Option<Vec<u8>>> {
-        if let Some(bytes) = self.front("release-group", &group.id, progress).await? {
+    pub async fn artwork(&self, group_id: &str, progress: &impl Fn(&str, String)) -> R<Option<Vec<u8>>> {
+        if let Some(bytes) = self.front("release-group", group_id, progress).await? {
             return Ok(Some(bytes));
         }
         let editions: Editions = self
             .catalog(
                 "release",
-                &[("release-group", &group.id), ("limit", "100")],
+                &[("release-group", group_id), ("limit", "100")],
                 progress,
             )
             .await?;
@@ -411,6 +662,7 @@ pub fn install(
     dir: &Path,
     id: &str,
     img: &DynamicImage,
+    source: &Origin,
 ) -> R<Option<String>> {
     // Recheck under the write lock in case a library scan completed during download.
     let tx = conn
@@ -438,6 +690,7 @@ pub fn install(
             [id, &file],
         )
         .map_err(crate::err)?;
+        source.save(&tx, &file).map_err(crate::err)?;
         tx.commit().map_err(crate::err)
     })();
     if let Err(e) = result {
@@ -452,9 +705,61 @@ pub fn install(
     Ok(Some(file))
 }
 
+impl Origin {
+    pub fn save(&self, conn: &rusqlite::Connection, file: &str) -> rusqlite::Result<()> {
+        conn.execute(
+            "INSERT OR REPLACE INTO cover_sources(file,provider,album_url) VALUES(?1,?2,?3)",
+            (file, &self.provider, &self.album_url),
+        )?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn audiodb_only_offers_distinct_album_covers_with_matching_credits() {
+        let base = serde_json::json!({"idAlbum":"123","strArtist":"The Beatles","strAlbum":"Abbey Road",
+            "strAlbumThumb":"https://r2.theaudiodb.com/images/media/album/thumb/test.jpg"});
+        let mut other_artist = base.clone();
+        other_artist["strArtist"] = "Tribute Band".into();
+        let mut bad_image = base.clone();
+        bad_image["strAlbumThumb"] = "https://example.org/cover.jpg".into();
+        let mut second = base.clone();
+        second["idAlbum"] = "456".into();
+        second["intYearReleased"] = "2019".into();
+        let rows: AudioDbAlbums = serde_json::from_value(
+            serde_json::json!({"album":[other_artist,bad_image,base,base,second]}),
+        )
+        .unwrap();
+        let matches = rows.matches(&album());
+        assert_eq!(matches.len(), 2);
+        assert!(matches[1].label.ends_with("2019"));
+        assert!(matches[0].location.origin().album_url.ends_with("/123"));
+    }
+
+    #[test]
+    #[ignore = "requires access to TheAudioDB"]
+    fn online_fallback_works_during_a_musicbrainz_cooldown() {
+        tauri::async_runtime::block_on(async {
+            let search = Search::new().unwrap();
+            *search.musicbrainz.lock().await = Instant::now() + Duration::from_secs(600);
+            let album = db::Album {
+                artist: "David Sylvian".into(),
+                title: "Brilliant Trees".into(),
+                ..album()
+            };
+            let Lookup::Image(bytes, source) = search.lookup(&album, false, &|_, _| {}).await.unwrap()
+            else {
+                panic!("Expected a front cover from TheAudioDB");
+            };
+            assert_eq!(source.provider, "TheAudioDB");
+            assert_eq!(source.album_url, "https://www.theaudiodb.com/album/2152383");
+            assert!(decode(&bytes).unwrap().width() > 0);
+        });
+    }
 
     fn album() -> db::Album {
         db::Album {
@@ -481,10 +786,10 @@ mod tests {
         album.title = "It's Hard For Me To Say I’m Sorry".into();
         for artist in ["Christian Fennesz & Jim O'Rourke", "Fennesz & Jim O'Rourke"] {
             album.artist = artist.into();
-            assert_eq!(match_group(&results.groups, &album).as_deref(), Some("f"));
+            assert_eq!(matching_groups(results.groups.clone(), &album)[0].id, "f");
         }
         album.artist = "Jim O'Rourke".into();
-        assert_eq!(match_group(&results.groups, &album), None);
+        assert!(matching_groups(results.groups, &album).is_empty());
     }
 
     #[test]
@@ -509,19 +814,19 @@ mod tests {
             let get = || search.client.get(&url);
             let attempts = std::cell::Cell::new(0);
             let result = search
-                .fetch(Service::Archive, get, 8, &|_| {
-                    attempts.set(attempts.get() + 1)
+                .fetch(Service::Archive, get, 8, &|_, message| {
+                    if message.contains("Retrying") { attempts.set(attempts.get() + 1); }
                 })
                 .await;
             assert_eq!(result.unwrap().as_deref(), Some(b"art".as_slice()));
             assert_eq!(attempts.get(), 1);
             assert!(search
-                .fetch(Service::MusicBrainz, get, 8, &|_| {})
+                .fetch(Service::MusicBrainz, get, 8, &|_, _| {})
                 .await
                 .unwrap_err()
                 .contains("600 seconds"));
             assert!(search
-                .fetch(Service::MusicBrainz, get, 8, &|_| {})
+                .fetch(Service::MusicBrainz, get, 8, &|_, _| {})
                 .await
                 .unwrap_err()
                 .contains("busy"));
@@ -537,9 +842,9 @@ mod tests {
           {"id":"c","title":"Abbey Road","artist-credit":[{"name":"Other"}],"first-release-date":"1969"}
         ]}"#).unwrap();
         let mut album = album();
-        assert_eq!(match_group(&results.groups, &album).as_deref(), Some("a"));
+        assert_eq!(matching_groups(results.groups.clone(), &album)[0].id, "a");
         album.year = None;
-        assert_eq!(match_group(&results.groups, &album), None);
+        assert_eq!(matching_groups(results.groups, &album).len(), 2);
     }
 
     #[test]
@@ -560,16 +865,27 @@ mod tests {
         let mut conn = db::open(&db_path).unwrap();
         let old = dir.join("art/abcd.jpg");
         scanner::save_jpeg(&DynamicImage::new_rgb8(100, 100), 1400, &old).unwrap();
+        let source = Location::MusicBrainz { id: "test".into() }.origin();
         for (w, h) in [(100, 100), (98, 120), (80, 80)] {
-            assert!(
-                install(&mut conn, &dir, "abcd", &DynamicImage::new_rgb8(w, h))
-                    .unwrap()
-                    .is_none()
-            );
-        }
-        let file = install(&mut conn, &dir, "abcd", &DynamicImage::new_rgb8(640, 640))
+            assert!(install(
+                &mut conn,
+                &dir,
+                "abcd",
+                &DynamicImage::new_rgb8(w, h),
+                &source
+            )
             .unwrap()
-            .unwrap();
+            .is_none());
+        }
+        let file = install(
+            &mut conn,
+            &dir,
+            "abcd",
+            &DynamicImage::new_rgb8(640, 640),
+            &source,
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(
             image::image_dimensions(dir.join("art").join(&file)).unwrap(),
             (640, 640)
@@ -599,12 +915,13 @@ mod tests {
             album.year = Some(2016);
             let search = Search::new().unwrap();
             let g = search
-                .group(&album, &|s| println!("{s}"))
+                .groups(&album, &|_, s| println!("{s}"))
                 .await
                 .unwrap()
+                .pop()
                 .unwrap();
             assert_eq!(g.id, "421969db-0492-430e-a8d2-3ef8fce42d01");
-            search.artwork(&g, &|_| {}).await.unwrap().unwrap()
+            search.artwork(&g.id, &|_, _| {}).await.unwrap().unwrap()
         });
         let size = decode(&bytes).unwrap().dimensions();
         println!("Verified front cover: {} × {}", size.0, size.1);

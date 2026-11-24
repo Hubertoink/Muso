@@ -46,6 +46,8 @@ struct Entry {
     note: Option<String>,
     research: Option<String>,
     cover: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cover_source: Option<crate::covers::Origin>,
     paintings: BTreeMap<String, Vec<usize>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     prompts: BTreeMap<usize, String>,
@@ -141,16 +143,18 @@ pub fn export(c: &mut Connection, dir: &Path, dest: &Path) -> R<Summary> {
                 r.get(0)
             })
             .map_err(err)?;
-        let cover = if own_art {
+        let (cover, cover_source) = if own_art {
             let file = a.cover_file.unwrap_or_else(|| format!("{}.jpg", a.id));
-            Some(add_image(
+            let source = tx.query_row("SELECT provider,album_url FROM cover_sources WHERE file=?1", [&file],
+                |r| Ok(crate::covers::Origin { provider: r.get(0)?, album_url: r.get(1)? })).optional().map_err(err)?;
+            (Some(add_image(
                 &mut zip,
                 dir,
                 &format!("art/{file}"),
                 &mut summary,
-            )?)
+            )?), source)
         } else {
-            None
+            (None, None)
         };
         let genre = choices
             .query_row([&a.id], |r| Ok(GenreChoice { genre: r.get(0)?, source: r.get(1)? }))
@@ -171,6 +175,7 @@ pub fn export(c: &mut Connection, dir: &Path, dest: &Path) -> R<Summary> {
             note,
             research,
             cover,
+            cover_source,
             paintings,
             prompts,
             auto_style,
@@ -229,6 +234,8 @@ mod tests {
         let jpg = image::DynamicImage::new_rgb8(60, 40);
         jpg.save(source.join("atmos/painting.jpg")).unwrap();
         jpg.save(source.join("art/artist1.jpg")).unwrap();
+        crate::covers::Origin { provider: "TheAudioDB".into(), album_url: "https://www.theaudiodb.com/album/123".into() }
+            .save(&c, "artist1.jpg").unwrap();
         c.execute("UPDATE albums SET has_art=1 WHERE id='artist1'", [])
             .unwrap();
         db::replace_atmospheres(&c, &id, "auto", &["atmos/painting.jpg".into()]).unwrap();
@@ -252,6 +259,10 @@ mod tests {
         assert_ne!(id, new_id);
         let s = import(&mut other, &destination, &path).unwrap();
         assert_eq!((s.notes, s.images, s.skipped, s.genres), (1, 3, 0, 1));
+        let imported_source: (String, String) = other.query_row("SELECT provider,album_url FROM cover_sources
+            JOIN albums ON albums.cover_file=cover_sources.file WHERE albums.id='artist1'", [],
+            |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!(imported_source, ("TheAudioDB".into(), "https://www.theaudiodb.com/album/123".into()));
         let book = genres::Book::load(&other).unwrap();
         assert_eq!(book.map.get("dance and dj").map(String::as_str), Some("Electronic"));
         let chosen: (String, String) = other.query_row("SELECT genre, source FROM album_genre WHERE album_id=?1",
@@ -447,6 +458,7 @@ pub fn import(c: &mut Connection, dir: &Path, src: &Path) -> R<Summary> {
                     [id, &name],
                 )
                 .map_err(err)?;
+                if let Some(source) = e.cover_source { source.save(&tx, &name).map_err(err)?; }
                 summary.images += 1;
             }
         }

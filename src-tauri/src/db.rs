@@ -39,6 +39,7 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
             idx INTEGER NOT NULL,
             file TEXT NOT NULL,
             PRIMARY KEY(album_id, style, idx));
+         CREATE TABLE IF NOT EXISTS cover_sources(file TEXT PRIMARY KEY, provider TEXT NOT NULL, album_url TEXT NOT NULL);
          CREATE TABLE IF NOT EXISTS album_notes(album_id TEXT PRIMARY KEY, body TEXT NOT NULL);
          CREATE TABLE IF NOT EXISTS painting_prompts(file TEXT PRIMARY KEY, prompt TEXT NOT NULL);
          CREATE TABLE IF NOT EXISTS album_research(album_id TEXT PRIMARY KEY, brief TEXT NOT NULL);

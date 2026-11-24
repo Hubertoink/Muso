@@ -1167,10 +1167,23 @@ $('addFolderBtn').addEventListener('click', async () => {
 let coverSearchRunning = false;
 let stopCoverSearch = false;
 let currentCoverSearch = null;
+const coverSearchResults = new Map();
+function renderCoverSearchStatus() {
+  const id = state.viewAlbum?.id;
+  const pending = currentCoverSearch?.single && currentCoverSearch.id === id;
+  const live = $('coverSearchStatus');
+  live.hidden = !pending;
+  live.textContent = pending ? currentCoverSearch.message : '';
+  const result = $('coverSearchResult');
+  result.textContent = coverSearchResults.get(id) || '';
+  result.hidden = pending || !result.textContent;
+}
 listen('cover-search-progress', ({ payload }) => {
   if (currentCoverSearch?.id !== payload.albumId) return;
+  if (payload.source) currentCoverSearch.sources.add(payload.source);
+  currentCoverSearch.message = payload.message;
   $('coverProgress').textContent = currentCoverSearch.label + ' · ' + payload.message;
-  if (currentCoverSearch.single && state.viewAlbum?.id === payload.albumId) toast(payload.message, 5000);
+  renderCoverSearchStatus();
 });
 
 function applyCover(id, file) {
@@ -1194,6 +1207,105 @@ function applyCover(id, file) {
   }
 }
 
+function confirmCover(album, title, text, action, choices = []) {
+  const dialog = $('coverConfirm');
+  $('coverConfirmTitle').textContent = title;
+  $('coverConfirmAlbum').textContent = [album.artist, album.title].filter(Boolean).join(' — ');
+  $('coverConfirmText').textContent = text;
+  $('coverConfirmAction').textContent = action;
+  $('coverConfirmCancel').textContent = choices.length && album.art ? 'Keep current cover' : 'Cancel';
+  const backdrop = $('coverBackdrop');
+  backdrop.removeAttribute('src');
+  dialog.classList.toggle('reviewing-cover', choices.length > 0);
+  const stage = $('coverPreview');
+  stage.replaceChildren();
+  stage.hidden = !choices.length;
+  const list = $('coverChoices');
+  list.replaceChildren();
+  let selection = choices.length === 1 ? choices[0] : null;
+  $('coverConfirmAction').disabled = choices.length > 1;
+  function showPreview(choice) {
+    const { provider, image, id } = choice.location;
+    const preview = new Image();
+    preview.alt = choice.label;
+    preview.referrerPolicy = 'no-referrer';
+    backdrop.removeAttribute('src');
+    preview.onload = () => {
+      if (dialog.open && preview.parentNode === stage) backdrop.src = preview.currentSrc;
+    };
+    const archiveFront = `https://coverartarchive.org/release-group/${id}/front`;
+    preview.onerror = () => {
+      if (preview.parentNode !== stage) return;
+      if (provider === 'music_brainz' && preview.src !== archiveFront) {
+        preview.src = archiveFront;
+        return;
+      }
+      const message = document.createElement('span');
+      message.setAttribute('role', 'status');
+      message.textContent = 'Cover preview unavailable';
+      preview.replaceWith(message);
+    };
+    stage.replaceChildren(preview);
+    preview.src = provider === 'the_audio_db' ? image : archiveFront + '-1200';
+  }
+  if (choices.length) showPreview(choices[0]);
+  choices.forEach(choice => {
+    const details = document.createElement('span');
+    details.textContent = choice.label;
+    const source = document.createElement('small');
+    source.textContent = choice.location.provider === 'the_audio_db' ? 'TheAudioDB' : 'Cover Art Archive · MusicBrainz';
+    details.append(source);
+    if (choices.length === 1) { list.append(details); return; }
+    const row = document.createElement('label');
+    const radio = document.createElement('input');
+    radio.type = 'radio';
+    radio.name = 'cover-choice';
+    radio.onchange = () => {
+      selection = choice;
+      showPreview(choice);
+      $('coverConfirmAction').disabled = false;
+    };
+    const thumb = new Image();
+    thumb.alt = '';
+    thumb.loading = 'lazy';
+    thumb.referrerPolicy = 'no-referrer';
+    thumb.onerror = () => { thumb.hidden = true; };
+    const { provider, image, id } = choice.location;
+    thumb.src = provider === 'the_audio_db' ? image : `https://coverartarchive.org/release-group/${id}/front-250`;
+    row.append(radio, thumb, details);
+    list.append(row);
+  });
+  dialog.returnValue = '';
+  return new Promise(resolve => {
+    dialog.addEventListener('close', () => {
+      backdrop.removeAttribute('src');
+      resolve(dialog.returnValue === 'accept' && (choices.length ? selection : true));
+    }, { once: true });
+    dialog.showModal();
+  });
+}
+
+async function findAlbumCover(album, single) {
+  const run = step => invoke('upgrade_cover', { albumId: album.id, step });
+  let result = await run({ type: 'lookup', offer_ai: single });
+  if (!single) return result;
+  if (result.status === 'offer_research') {
+    const reason = result.reason || 'The cover sources couldn’t find a front cover for this album.';
+    const sources = [...currentCoverSearch.sources].join(', ');
+    if (state.viewAlbum?.id !== album.id || !await confirmCover(album, 'Identify album with AI?',
+      (sources ? 'Checked: ' + sources + '. ' : '') + reason + ' Muso can send the artist, album title, year and up to 12 track titles to OpenAI for one paid web search.',
+      'Search with AI')) return { status: 'cancelled' };
+    result = await run({ type: 'research' });
+  }
+  if (result.status !== 'review_covers') return result;
+  if (state.viewAlbum?.id !== album.id) return { status: 'cancelled' };
+  const multiple = result.choices.length > 1;
+  const choice = await confirmCover(album, multiple ? 'Choose a front cover' : 'Use this release?',
+    multiple ? 'Select the edition that matches your album.' : 'Use this front cover if it improves your current artwork?',
+    'Use cover', result.choices);
+  return choice ? run({ type: 'use_release', location: choice.location }) : { status: 'cancelled' };
+}
+
 async function findCovers(albums, single = false) {
   if (coverSearchRunning) return;
   coverSearchRunning = true;
@@ -1201,12 +1313,13 @@ async function findCovers(albums, single = false) {
   const button = $('findCovers');
   button.textContent = 'Stop search';
   $('findAlbumCover').disabled = true;
-  let checked = 0, updated = 0, failed = 0, consecutiveErrors = 0;
+  let checked = 0, updated = 0, ambiguous = 0, failed = 0, consecutiveErrors = 0;
   let lastError = '';
   const messages = {
     updated: 'Cover updated',
     already_large_enough: 'Front cover found. Keeping your current resolution.',
-    no_match: 'Could not identify a unique MusicBrainz release for this album',
+    no_match: 'No matching cover release found',
+    ambiguous: 'Multiple editions found. Choose a cover from the album menu.',
     no_front_cover: 'Release found, but no front cover was available',
     unknown_artist: 'Artist missing from the library entry',
     cancelled: 'Cover search cancelled',
@@ -1215,12 +1328,19 @@ async function findCovers(albums, single = false) {
   try {
     for (const album of albums) {
       if (stopCoverSearch) break;
-      currentCoverSearch = { id: album.id, single, label: `Checking ${checked + 1} of ${albums.length} · ${album.title}` };
+      currentCoverSearch = { id: album.id, single, label: `Checking ${checked + 1} of ${albums.length} · ${album.title}`,
+        sources: new Set(), message: 'Starting cover search…' };
+      renderCoverSearchStatus();
       $('coverProgress').textContent = currentCoverSearch.label;
       try {
-        const result = await invoke('upgrade_cover', { albumId: album.id, offerAi: single });
+        const result = await findAlbumCover(album, single);
         resultMessage = messages[result.status];
-        if (result.status === 'updated') { applyCover(album.id, result.file); updated++; }
+        if (result.status === 'updated') {
+          applyCover(album.id, result.file);
+          updated++;
+          resultMessage += ' · ' + result.source.provider;
+        }
+        if (result.status === 'ambiguous') ambiguous++;
         consecutiveErrors = 0;
       } catch (e) {
         failed++;
@@ -1231,12 +1351,20 @@ async function findCovers(albums, single = false) {
       if (consecutiveErrors >= 3) break;
     }
     let summary = `${checked} of ${albums.length} checked · ${updated} updated`;
-    if (single) summary = failed ? lastError : resultMessage;
+    if (ambiguous) summary += ` · ${ambiguous} with multiple editions`;
+    if (single && currentCoverSearch) {
+      summary = failed ? lastError : resultMessage;
+      const sources = [...currentCoverSearch.sources];
+      const detail = sources.length ? summary + ' · Checked: ' + sources.join(', ') : summary;
+      coverSearchResults.set(currentCoverSearch.id, detail);
+      summary = detail;
+    }
     else if (failed) summary += ` · ${failed} failed. ${lastError}`;
     $('coverProgress').textContent = summary;
     if (single || $('settings').classList.contains('hidden')) toast(summary, 4500);
   } finally {
     currentCoverSearch = null;
+    renderCoverSearchStatus();
     coverSearchRunning = false;
     button.disabled = false;
     button.textContent = 'Find better covers';
@@ -1255,7 +1383,6 @@ $('findCovers').addEventListener('click', () => {
 $('findAlbumCover').addEventListener('click', () => {
   show($('albumMenu'), false);
   if (state.viewAlbum) {
-    toast('Looking for a better cover…');
     findCovers([state.viewAlbum], true);
   }
 });
@@ -1772,6 +1899,7 @@ function displayAlbum(a, advancing = false) {
   closeMenu();
   state.view = 'album';
   state.viewAlbum = a;
+  renderCoverSearchStatus();
   const view = $('album');
   view.classList.remove('leaving', 'idle');
   view.style.setProperty('--blank', blankColor(a.id));
@@ -2073,7 +2201,7 @@ window.addEventListener('keydown', (e) => {
     if (!e.repeat) toggleFullscreen();
     return;
   }
-  if (stylePicker.open || (e.target.closest('.style-trigger') && [' ', 'Enter'].includes(e.key))) return;
+  if ($('coverConfirm').open || stylePicker.open || (e.target.closest('.style-trigger') && [' ', 'Enter'].includes(e.key))) return;
   if (e.key === 'Escape' && !$('eq').classList.contains('hidden')) {
     $('eq').querySelector('.close').click();
     return;

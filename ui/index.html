@@ -178,7 +178,7 @@
           </select>
         </label>
         <h3>Album covers</h3>
-        <p class="muted">Look up artist and album names on MusicBrainz. Higher-resolution front covers from the Cover Art Archive are saved only in Muso.</p>
+        <p class="muted">Find front covers in the Cover Art Archive and TheAudioDB. Missing covers and higher-resolution matches are saved in Muso.</p>
         <button id="findCovers" class="link setting-action">Find better covers</button>
         <p id="coverProgress" class="muted" role="status"></p>
         <h3>Collection archive</h3>
@@ -240,6 +240,23 @@
       </div>
     </div>
   </div>
+
+  <dialog id="coverConfirm" class="modal-card" aria-labelledby="coverConfirmTitle" aria-describedby="coverConfirmText">
+    <img id="coverBackdrop" alt="" aria-hidden="true" />
+    <form method="dialog" class="modal-scroll">
+      <header class="cover-intro">
+        <h2 id="coverConfirmTitle"></h2>
+        <p id="coverConfirmAlbum"></p>
+        <p id="coverConfirmText"></p>
+      </header>
+      <div id="coverPreview" hidden></div>
+      <div id="coverChoices"></div>
+      <div class="modal-actions">
+        <button class="link" id="coverConfirmCancel" value="cancel" formnovalidate autofocus>Cancel</button>
+        <button class="pill strong" id="coverConfirmAction" value="accept"></button>
+      </div>
+    </form>
+  </dialog>
 
   <dialog id="stylePicker" aria-labelledby="stylePickerTitle">
     <header><h2 id="stylePickerTitle">Atmosphere style</h2><button type="button" id="closeStylePicker" aria-label="Close style selection">×</button></header>
@@ -307,6 +324,7 @@
       <canvas id="atmosGrain" aria-hidden="true"></canvas>
     </div>
     <div class="veil"></div>
+    <div id="coverSearchStatus" role="status" hidden></div>
 
     <button id="backBtn" class="chrome corner-left" aria-label="Back">
       <svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7" /></svg>
@@ -319,6 +337,7 @@
       <button id="albumEQ"><svg aria-hidden="true"><use href="icons/lucide.svg#audio-lines"/></svg>EQ Settings</button>
       <button id="showAtmosBtn" aria-pressed="false" disabled><svg aria-hidden="true"><use href="icons/lucide.svg#gallery-vertical-end"/></svg>Show Visual Atmospheres<svg class="check-icon" aria-hidden="true"><use href="icons/lucide.svg#check"/></svg></button>
       <button id="findAlbumCover"><svg aria-hidden="true"><use href="icons/lucide.svg#scan-search"/></svg>Find a higher-resolution cover</button>
+      <p id="coverSearchResult" hidden></p>
       <div class="style-field"><svg aria-hidden="true"><use href="icons/lucide.svg#swatch-book"/></svg><span id="albumStyleLabel">Atmosphere style</span><button type="button" id="albumStyle" class="style-trigger" aria-haspopup="dialog" aria-controls="stylePicker" aria-labelledby="albumStyleLabel albumStyle"></button></div>
       <label class="style-field"><svg aria-hidden="true"><use href="icons/lucide.svg#tag"/></svg>Genre <select id="albumGenre"></select></label>
       <input id="albumGenreInput" class="hidden" type="text" maxlength="60" placeholder="New genre – Enter to save" aria-label="New genre" spellcheck="false" autocomplete="off" />
