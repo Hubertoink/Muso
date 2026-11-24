@@ -1548,6 +1548,36 @@ $('genBtn').addEventListener('click', () => {
 
 /* ---------------- atmospheres ---------------- */
 
+// Keep the repeating texture inside its own bitmap. WebKitGTK can tile the
+// underlying painting when a repeating CSS background blends across a fade.
+function initAtmosGrain() {
+  const canvas = $('atmosGrain');
+  const texture = new Image();
+  texture.onload = () => {
+    const ctx = canvas.getContext('2d');
+    const pattern = ctx.createPattern(texture, 'repeat');
+    function paint() {
+      const width = Math.round(canvas.clientWidth * devicePixelRatio);
+      const height = Math.round(canvas.clientHeight * devicePixelRatio);
+      if (canvas.width === width && canvas.height === height) return;
+      canvas.width = width;
+      canvas.height = height;
+      ctx.fillStyle = pattern;
+      ctx.fillRect(0, 0, width, height);
+    }
+    const observer = new ResizeObserver(paint);
+    const box = 'devicePixelContentBoxSize' in ResizeObserverEntry.prototype ? 'device-pixel-content-box' : 'content-box';
+    observer.observe(canvas, { box });
+    function watchDensity() {
+      paint();
+      matchMedia(`(resolution: ${devicePixelRatio}dppx)`).addEventListener('change', watchDensity, { once: true });
+    }
+    watchDensity();
+  };
+  texture.src = 'grain.png';
+}
+initAtmosGrain();
+
 let atmosTimer = null;
 let atmosToken = 0;
 let readyAlbum = null;
@@ -1602,24 +1632,14 @@ function setPaintings(albumId, style, files) {
   loadPainting(playlist, files[0]);
 }
 
-function loadPainting(set, file) {
+async function loadPainting(set, file) {
   set.pending = true;
   const other = $('atmosA').classList.contains('on') ? $('atmosA') : $('atmosB');
   const img = other === $('atmosA') ? $('atmosB') : $('atmosA');
-  img.onload = () => {
-    if (set !== playlist) return;
-    set.pending = false;
-    set.shown = file;
-    set.since = performance.now();
-    readyAlbum = set.albumId;
-    $('album').dataset.preview = set.style === albumStyle(set.albumId) ? '' : albumStyle(set.albumId);
-    img.classList.add('on');
-    other.classList.remove('on');
-    updateAtmosView();
-    $('showAtmosBtn').setAttribute('aria-pressed', 'true');
-    schedulePainting();
-  };
-  img.onerror = () => {
+  img.src = asset(file);
+  try {
+    await img.decode();
+  } catch {
     if (set !== playlist) return;
     set.pending = false;
     set.failed.add(file);
@@ -1628,8 +1648,19 @@ function loadPainting(set, file) {
     if (set.files.length) { loadPainting(set, set.files[0]); return; }
     stopAtmospheres();
     toast('Saved atmosphere images could not be opened.', 5000);
-  };
-  img.src = asset(file);
+    return;
+  }
+  if (set !== playlist) return;
+  set.pending = false;
+  set.shown = file;
+  set.since = performance.now();
+  readyAlbum = set.albumId;
+  $('album').dataset.preview = set.style === albumStyle(set.albumId) ? '' : albumStyle(set.albumId);
+  img.classList.add('on');
+  other.classList.remove('on');
+  updateAtmosView();
+  $('showAtmosBtn').setAttribute('aria-pressed', 'true');
+  schedulePainting();
 }
 function stopAtmospheres() {
   atmosToken++;
@@ -1642,7 +1673,6 @@ function stopAtmospheres() {
   for (const id of ['atmosA', 'atmosB']) {
     const img = $(id);
     img.classList.remove('on');
-    img.onload = img.onerror = null;
     img.removeAttribute('src');
   }
 }

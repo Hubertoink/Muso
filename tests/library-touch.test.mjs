@@ -45,7 +45,7 @@ beforeEach(async () => {
           return structuredClone(crates);
         }
         if (command === 'get_tracks') return window.testTracks ?? [{ path: 'test', title: 'Track' }];
-        if (command === 'get_atmospheres') return [];
+        if (command === 'get_atmospheres') return window.testPaintings ?? [];
       } },
       event: { listen: async (name, fn) => events.set(name, fn) },
       app: { getVersion: async () => 'test' },
@@ -506,6 +506,56 @@ test('accepting the sleeve behind the playing album keeps its image at the hando
   await offer.waitFor({ state: 'hidden' });
   assert.equal(await page.locator('#alTitle').textContent(), 'Record 21');
   assert.equal(await page.evaluate(() => window.offeredImage === document.querySelector('#coverImg')), true);
+});
+
+test('the cover stays up until the current atmosphere has decoded', async () => {
+  // Use the HTTP form of Muso's image protocol so Playwright can serve a real image.
+  await page.addInitScript(() => Object.defineProperty(navigator, 'userAgent', { value: 'Windows' }));
+  await page.route('http://muso.localhost/atmos/**', route => route.fulfill({
+    contentType: 'image/svg+xml',
+    body: '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="16"><rect width="32" height="16" fill="red"/></svg>',
+  }));
+  await page.reload();
+  await page.locator('#crate .sleeve[data-index="20"]').waitFor();
+  await page.evaluate(() => {
+    window.testPaintings = ['atmos/first.svg'];
+    window.decodes = [];
+    const decode = HTMLImageElement.prototype.decode;
+    HTMLImageElement.prototype.decode = async function () {
+      await decode.call(this);
+      if (this.closest('#atmosPictures')) await new Promise(resolve => window.decodes.push(resolve));
+    };
+  });
+  await down();
+  await up();
+  await page.waitForFunction(() => window.decodes.length === 1);
+  await page.evaluate(() => {
+    window.emitPlayback('cover-intro-ended', state.playing.playbackId);
+    window.testPaintings = ['atmos/replacement.svg'];
+  });
+  await page.locator('#albumMenuBtn').click();
+  await page.locator('#albumStyle').selectOption('ambient');
+  await page.waitForFunction(() => window.decodes.length === 2);
+  await page.evaluate(() => window.decodes[0]());
+  assert.equal(await page.locator('#album.showing-atmos').count(), 0);
+  await page.evaluate(() => window.decodes[1]());
+  const painting = page.locator('#album.showing-atmos #atmosPictures img.on');
+  await painting.waitFor();
+  assert.match(await painting.getAttribute('src'), /replacement\.svg$/);
+});
+
+test('atmosphere grain keeps its pixel size across display scales and window sizes', async () => {
+  await down();
+  await up();
+  await page.locator('#alTrack button').waitFor();
+  for (const [width, height, density] of [[1200, 800, 1], [1280, 800, 2], [930, 620, 1.5]]) {
+    await input.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: density, mobile: false });
+    await page.waitForFunction(dpr => {
+      const canvas = document.getElementById('atmosGrain');
+      return devicePixelRatio === dpr && canvas.clientWidth >= innerWidth && canvas.clientHeight >= innerHeight &&
+        canvas.width === Math.round(canvas.clientWidth * dpr) && canvas.height === Math.round(canvas.clientHeight * dpr);
+    }, density);
+  }
 });
 
 test('a queued record keeps the outgoing artwork until the incoming cover is ready', async () => {

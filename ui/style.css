@@ -394,8 +394,8 @@ body:has(> .modal:not(.hidden, .from-player))::before { background-color: rgb(0 
   animation: kenburns 90s ease-in-out infinite alternate;
 }
 .atmos img.on { --motion-opacity: 1; }
-.atmos { opacity: var(--motion-opacity); --motion-opacity: 0; transition: --motion-opacity .18s; isolation: isolate; }
-.atmos::after { content: ''; position: absolute; inset: 0; background: url('grain.png') repeat; mix-blend-mode: soft-light; opacity: .52; pointer-events: none; }
+.atmos { opacity: var(--motion-opacity); --motion-opacity: 0; transition: --motion-opacity .18s; overflow: hidden; pointer-events: none; }
+#atmosGrain { position: absolute; top: -4px; left: -4px; width: calc(100% + 8px); height: calc(100% + 8px); opacity: .065; }
 .effect-strength { margin-top: 14px; }
 .effect-strength input { width: 42%; accent-color: var(--accent); }
 .filter-defs { position: absolute; pointer-events: none; }
@@ -411,14 +411,20 @@ body:has(> .modal:not(.hidden, .from-player))::before { background-color: rgb(0 
 #eqColour { width: 44px; height: 26px; border: 0; padding: 0; background: transparent; }
 #eq.from-player { align-items: start; justify-items: end; background: transparent; padding: 18px; }
 #eq.from-player .modal-card { width: min(400px, 94vw); --card-pad-y: 24px; --card-pad-x: 24px; }
-#lightFilter { display: none; mix-blend-mode: screen; opacity: calc(.36 * var(--effect-strength)); }
+#lightFilter { display: none; background-repeat: no-repeat; opacity: calc(.36 * var(--effect-strength)); }
 #album.showing-atmos[data-filter=light] #lightFilter,
 #album.showing-atmos[data-filter=haze] #lightFilter { display: block; inset: -15%; animation: light-drift 24s ease-in-out infinite alternate; }
-#album[data-filter=light] #lightFilter { background: radial-gradient(ellipse at 24% 65%, #d99962 0, transparent 46%); }
-#album[data-filter=haze] #lightFilter { background: radial-gradient(ellipse at 28% 40%, #9891d8, transparent 46%), radial-gradient(ellipse at 75% 65%, #68bbaa, transparent 42%); animation-direction: alternate-reverse; }
-#album.showing-atmos[data-filter=film] #lightFilter { display: block; background: url('grain.png'); mix-blend-mode: overlay; animation: film-weave .8s steps(1) infinite; }
+#album[data-filter=light] #lightFilter { background-image: radial-gradient(ellipse at 24% 65%, #d99962 0, transparent 46%); }
+#album[data-filter=haze] #lightFilter { background-image: radial-gradient(ellipse at 28% 40%, #9891d8, transparent 46%), radial-gradient(ellipse at 75% 65%, #68bbaa, transparent 42%); animation-direction: alternate-reverse; }
+@media (prefers-reduced-motion: no-preference) {
+  #album.showing-atmos[data-filter=film] #atmosGrain { opacity: calc(.065 + .12 * var(--effect-strength)); animation: film-weave .8s steps(1) infinite; }
+}
 @keyframes light-drift { from { transform: translate(-8%, -5%) scale(.96); } to { transform: translate(11%, 6%) scale(1.14); } }
-@keyframes film-weave { 25% { background-position: 17px 31px; } 50% { background-position: -23px 7px; } 75% { background-position: 11px -29px; } }
+@keyframes film-weave {
+  25% { transform: translate(calc(2px * var(--effect-strength)), calc(4px * var(--effect-strength))); }
+  50% { transform: translate(calc(-4px * var(--effect-strength)), calc(1px * var(--effect-strength))); }
+  75% { transform: translate(calc(3px * var(--effect-strength)), calc(-3px * var(--effect-strength))); }
+}
 @media (prefers-reduced-motion: reduce) {
   #album.showing-atmos #lightFilter { display: none !important; }
   #atmosPictures.refracting { filter: none; }
@@ -429,7 +435,7 @@ body:has(> .modal:not(.hidden, .from-player))::before { background-color: rgb(0 
 #album[data-preview=dreamscape] { --atmos-filter: sepia(.26) hue-rotate(318deg) saturate(.86) contrast(.92); }
 #album[data-preview=ambient] { --atmos-filter: saturate(.52) contrast(.78) brightness(1.12) blur(2px); }
 #album[data-preview=tape] { --atmos-filter: saturate(1.35) contrast(1.14) hue-rotate(-14deg); }
-#album[data-preview=tape] .atmos::after { background-image: repeating-linear-gradient(0deg, transparent 0 2px, #303030 3px), url('grain.png'); }
+#album[data-preview=tape] .atmos::after { content: ''; position: absolute; inset: 0; background: repeating-linear-gradient(0deg, transparent 0 2px, #303030 3px) no-repeat; opacity: .24; }
 #album[data-preview=photogram] { --atmos-filter: grayscale(1) contrast(1.45); }
 .popover svg { width: 17px; height: 17px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.65; stroke-linecap: round; stroke-linejoin: round; }
 .popover .check-icon { width: 14px; height: 14px; margin-left: auto; }
