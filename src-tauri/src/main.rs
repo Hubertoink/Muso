@@ -4,6 +4,7 @@ mod ai;
 mod archive;
 mod audio;
 mod covers;
+mod crates;
 mod db;
 mod paintings;
 mod releases;
@@ -327,6 +328,7 @@ fn main() {
             remove_folder,
             scan_library,
             get_albums,
+            crates::library_crates,
             get_album_note,
             generate_album_note,
             delete_album_note,

@@ -20,6 +20,7 @@
   <!-- Library / crate -->
   <section id="library" class="screen hidden">
     <div id="crate"></div>
+    <button id="crateDock" class="hidden" title="Manage crates"><span aria-hidden="true">▤</span><span id="dockName"></span><span id="dockCount"></span></button>
     <nav id="libraryIndex" aria-label="Browse the library by initial">
       <button id="indexMode" type="button"><span id="indexModeLabel">Artist</span><span aria-hidden="true">⇄</span></button>
       <div id="indexLetters" role="group" aria-label="Artist initials"></div>
@@ -70,6 +71,8 @@
       <h3>Music folders</h3>
       <ul id="folderList"></ul>
       <button id="addFolderBtn" class="link">+ Add folder</button>
+      <h3>Crates</h3>
+      <button id="manageCrates" class="link setting-action">Manage album crates…</button>
       <h3>Album covers</h3>
       <p class="muted">Look up artist and album names on MusicBrainz. Higher-resolution front covers from the Cover Art Archive are saved only in Muso.</p>
       <button id="findCovers" class="link setting-action">Find better covers</button>
@@ -99,6 +102,17 @@
   </div>
 
   <!-- AI features -->
+  <div id="cratesDialog" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="cratesHeading"><div class="modal-card">
+    <h2 id="cratesHeading">Crates</h2>
+    <div class="crate-toolbar"><select id="cratePicker" aria-label="Active crate"></select><button id="newCrate" class="link">+ New crate</button></div>
+    <div id="crateEditor">
+      <form id="crateRename"><input id="crateName" type="text" aria-label="Crate name" maxlength="120" required><button class="link">Rename</button></form>
+      <ol id="crateAlbums"></ol>
+      <button class="link setting-action" id="crateAddFocused">Add selected album</button>
+      <div class="crate-toolbar"><button id="playCrate" class="pill">Play crate</button><button id="deleteCrate" class="link">Delete crate</button></div>
+    </div>
+    <div class="modal-actions"><button class="close pill">Done</button></div>
+  </div></div>
   <div id="article" class="modal animated-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="articleTitle" inert><div class="modal-card">
     <header class="article-header">
       <div><div id="articleArtist" class="al-artist"></div><h2 id="articleTitle"></h2></div>
@@ -223,6 +237,7 @@
   <div id="toast"></div>
 
   <script src="spectrum.js"></script>
+  <script src="crates.js"></script>
   <script src="main.js"></script>
 </body>
 </html>

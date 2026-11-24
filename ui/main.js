@@ -392,18 +392,33 @@ crate.addEventListener('wheel', (e) => {
 }, { passive: false });
 
 // drag / swipe
+let albumsById = new Map();
+const albumCrates = createAlbumCrates({
+  invoke, focused, lookup: id => albumsById.get(id), toast,
+  play: albums => { clearProposal(); startAlbum(albums[0], albums.slice(1)); },
+});
+let dragPointer = null, startY = 0, filingAlbum = false, downAlbum = null;
 let dragging = false, moved = false, startX = 0, startTarget = 0, downSleeve = null, lastX = 0, lastT = 0, vel = 0;
 crate.addEventListener('pointerdown', (e) => {
-  if (e.button !== 0) return;
+  if (e.button !== 0 || !e.isPrimary || dragging) return;
+  dragPointer = e.pointerId; startY = e.clientY; filingAlbum = false;
   dragging = true; moved = false;
   startX = lastX = e.clientX; lastT = performance.now(); vel = 0;
   startTarget = state.target;
   downSleeve = e.target.closest('.sleeve');
+  downAlbum = downSleeve && state.albums[Number(downSleeve.dataset.index)];
   crate.setPointerCapture(e.pointerId);
 });
 crate.addEventListener('pointermove', (e) => {
-  if (!dragging) return;
+  if (!dragging || dragPointer !== e.pointerId) return;
   const dx = e.clientX - startX;
+  const dy = e.clientY - startY;
+  if (!moved && !filingAlbum && downAlbum && dy > 10 && dy > Math.abs(dx)) {
+    filingAlbum = true;
+    albumCrates.begin(downAlbum, downSleeve, e.clientX, e.clientY);
+  }
+  if (filingAlbum) { albumCrates.drag(e.clientX, e.clientY); return; }
+  if (!moved && Math.abs(dx) < Math.abs(dy)) return;
   if (Math.abs(dx) > 6) { moved = true; crate.classList.add('dragging'); }
   if (!moved) return;
   const now = performance.now();
@@ -412,10 +427,16 @@ crate.addEventListener('pointermove', (e) => {
   state.target = clamp(startTarget - dx / (state.size * 0.32), 0, state.albums.length - 1);
   kick();
 });
-function endDrag() {
-  if (!dragging) return;
+function endDrag(e) {
+  if (!dragging || dragPointer !== e.pointerId) return;
   dragging = false;
   crate.classList.remove('dragging');
+  if (filingAlbum) {
+    albumCrates.end(e.clientX, e.clientY, e.type !== 'pointerup');
+    filingAlbum = false;
+    return;
+  }
+  if (e.type !== 'pointerup' || (!moved && Math.abs(e.clientY - startY) > 10)) return;
   if (moved) {
     go(state.target - vel * 6); // gentle flick
   } else if (downSleeve) {
@@ -427,6 +448,7 @@ function endDrag() {
 }
 crate.addEventListener('pointerup', endDrag);
 crate.addEventListener('pointercancel', endDrag);
+crate.addEventListener('lostpointercapture', endDrag);
 
 /* ---------------- library loading ---------------- */
 
@@ -436,6 +458,7 @@ async function loadAlbums() {
   const albums = await invoke('get_albums');
   if (request !== libraryRequest) return;
   const byId = new Map(albums.map(a => [a.id, a]));
+  albumsById = byId;
   const represented = new Set();
   for (const a of albums) {
     const artists = (a.members || []).map(id => {
@@ -477,6 +500,7 @@ $('indexMode').addEventListener('click', () => {
 
 async function boot() {
   layout();
+  await albumCrates.load();
   const folders = await invoke('get_folders');
   if (!folders.length) {
     showOnboard();
@@ -942,6 +966,13 @@ async function playIndex(i) {
   const p = state.playing;
   if (!p) return;
   if (i >= p.tracks.length) {
+    if (p.remaining?.length && !p.advancing) {
+      p.advancing = true;
+      try { await startAlbum(p.remaining[0], p.remaining.slice(1), true); }
+      finally { p.advancing = false; }
+      if (state.playing !== p) return;
+    }
+    if (p.advancing) return;
     // The record has ended: lift the needle.
     await invoke('stop');
     Object.assign(p, { index: 0, paused: true, ended: true, introDone: false });
@@ -1155,8 +1186,9 @@ proposedCover.addEventListener('click', e => {
   if (e.detail === 0 && proposal && !proposal.busy) startAlbum(proposal.album);
 });
 
-async function startAlbum(a) {
-  const offer = proposal;
+async function startAlbum(a, remaining = [], advancing = false) {
+  const offer = advancing ? null : proposal;
+  if (advancing && proposal?.busy) return;
   if (offer?.busy) return;
   if (offer) offer.busy = true;
   const request = ++albumRequest;
@@ -1174,8 +1206,8 @@ async function startAlbum(a) {
     }
     if (request !== albumRequest) return;
     clearProposal();
-    state.playing = { album: a, tracks, index: 0, paused: false, ended: false };
-    displayAlbum(a);
+    state.playing = { album: a, tracks, index: 0, paused: false, ended: false, remaining };
+    if (!advancing || state.view === 'album') displayAlbum(a);
     await playIndex(0);
   } catch (e) {
     if (request !== albumRequest) return;
