@@ -412,12 +412,22 @@ function leaveCrates() {
   showLibrary();
 }
 let dragPointer = null, startY = 0, filingAlbum = false, downAlbum = null;
-let dragging = false, moved = false, startX = 0, startTarget = 0, downSleeve = null, lastX = 0, lastT = 0, vel = 0;
+let dragging = false, moved = false, startX = 0, startTarget = 0, downSleeve = null;
+let velocitySamples = [];
+function swipeVelocity(now) {
+  while (velocitySamples.length > 2 && velocitySamples[1].t < now - 100) velocitySamples.shift();
+  const first = velocitySamples[0];
+  const last = velocitySamples[velocitySamples.length - 1];
+  if (!first || !last || now - last.t > 100) return 0;
+  const elapsed = last.t - first.t;
+  return elapsed > 0 ? (last.x - first.x) / elapsed : 0;
+}
 crate.addEventListener('pointerdown', (e) => {
   if (e.button !== 0 || !e.isPrimary || dragging) return;
   dragPointer = e.pointerId; startY = e.clientY; filingAlbum = false;
   dragging = true; moved = false;
-  startX = lastX = e.clientX; lastT = performance.now(); vel = 0;
+  startX = e.clientX;
+  velocitySamples = [{ x: e.clientX, t: performance.now() }];
   startTarget = state.target;
   downSleeve = e.target.closest('.sleeve');
   downAlbum = downSleeve && state.albums[Number(downSleeve.dataset.index)];
@@ -436,8 +446,8 @@ crate.addEventListener('pointermove', (e) => {
   if (Math.abs(dx) > 6) { moved = true; crate.classList.add('dragging'); }
   if (!moved) return;
   const now = performance.now();
-  vel = (e.clientX - lastX) / Math.max(1, now - lastT);
-  lastX = e.clientX; lastT = now;
+  velocitySamples.push({ x: e.clientX, t: now });
+  while (velocitySamples.length > 2 && velocitySamples[0].t < now - 140) velocitySamples.shift();
   state.target = clamp(startTarget - dx / (state.size * 0.32), 0, state.albums.length - 1);
   kick();
 });
@@ -452,7 +462,10 @@ function endDrag(e) {
   }
   if (e.type !== 'pointerup' || (!moved && Math.abs(e.clientY - startY) > 10)) return;
   if (moved) {
-    go(state.target - vel * 6); // gentle flick
+    const velocity = swipeVelocity(performance.now());
+    const distancePerAlbum = state.size * 0.32;
+    const momentum = clamp(-velocity * 220 / distancePerAlbum, -5, 5);
+    go(state.target + momentum);
   } else if (downSleeve) {
     const i = Number(downSleeve.dataset.index);
     if (i === Math.round(state.target)) openAlbum(state.albums[i]);
