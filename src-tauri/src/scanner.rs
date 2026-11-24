@@ -12,7 +12,7 @@ use std::time::UNIX_EPOCH;
 use walkdir::WalkDir;
 
 const AUDIO_EXTS: &[&str] = &[
-    "flac", "mp3", "m4a", "mp4", "aac", "alac", "ogg", "oga", "wav", "wave", "aif", "aiff", "aifc",
+    "flac", "mp3", "m4a", "aac", "alac", "ogg", "oga", "wav", "wave", "aif", "aiff", "aifc",
 ];
 const IMAGE_EXTS: &[&str] = &["jpg", "jpeg", "png", "webp"];
 const PREFERRED_COVERS: &[&str] = &["cover", "folder", "front", "album", "artwork", "albumart"];
@@ -364,9 +364,11 @@ pub fn scan(db_path: &Path, data_dir: &Path, progress: impl Fn(Progress)) -> Res
         }
     }
 
-    // Forget files that disappeared, but never touch folders that are currently offline (NAS, external SSD).
+    // Keep supported tracks from offline folders. Retire formats dropped from the index.
     for path in existing.keys() {
-        if seen.contains(path) || offline.iter().any(|f| path.starts_with(f.as_str())) {
+        let file = Path::new(path);
+        if seen.contains(path) || (offline.iter().any(|f| file.starts_with(f))
+            && ext_of(file).is_some_and(|e| AUDIO_EXTS.contains(&e.as_str()))) {
             continue;
         }
         tx.execute("DELETE FROM tracks WHERE path=?1", [path]).map_err(e2s)?;
@@ -393,6 +395,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn scan_retires_cached_mp4_but_keeps_audio_and_the_original_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let folder = tmp.path().join("Music");
+        std::fs::create_dir(&folder).unwrap();
+        let video = folder.join("concert.MP4");
+        let audio = folder.join("song.m4a");
+        std::fs::write(&video, b"video fixture").unwrap();
+        std::fs::write(&audio, b"").unwrap();
+        let path = tmp.path().join("library.db");
+        let conn = db::open(&path).unwrap();
+        db::add_folder(&conn, folder.to_str().unwrap()).unwrap();
+        conn.execute("INSERT INTO albums(id,artist,title,sort_key) VALUES('old','Artist','Album','a')", []).unwrap();
+        conn.execute("INSERT INTO tracks(path,album_id,title,mtime) VALUES(?1,'old','Concert',0)", [video.to_str()]).unwrap();
+        assert!(db::tracks(&conn,"old").unwrap().is_empty());
+        scan(&path, tmp.path(), |_| {}).unwrap();
+        let paths = conn.prepare("SELECT path FROM tracks").unwrap()
+            .query_map([], |r| r.get::<_,String>(0)).unwrap().collect::<Result<Vec<_>,_>>().unwrap();
+        assert_eq!(paths, [audio.to_str().unwrap()]);
+        assert_eq!(std::fs::read(video).unwrap(), b"video fixture");
+    }
+
+    #[test]
     fn bonus_recordings_join_only_one_identifiable_release_and_keep_the_article() {
         let mut db = db::open(Path::new(":memory:")).unwrap();
         let tx = db.transaction().unwrap();
@@ -404,9 +428,9 @@ mod tests {
                 params![id,artist,title]).unwrap();
         }
         for (path, id) in [
-            ("Music/Alone/song.mp3", "tagged"), ("Music/Alone/concert.mp4", "old"),
+            ("Music/Alone/song.mp3", "tagged"), ("Music/Alone/concert.wav", "old"),
             ("Music/Mixtape/a.mp3", "tagged"), ("Music/Mixtape/b.mp3", "other"),
-            ("Music/Mixtape/bonus.mp4", "mixed"),
+            ("Music/Mixtape/bonus.wav", "mixed"),
         ] {
             tx.execute("INSERT INTO tracks(path,album_id,title,mtime) VALUES(?1,?2,?3,0)",
                 params![path,id,Path::new(path).file_stem().unwrap().to_str()]).unwrap();

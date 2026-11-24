@@ -32,7 +32,7 @@ pub enum Edit {
     Delete { id: u64 },
     Add { id: Option<u64>, album: String },
     Remove { id: u64, album: String },
-    Move { id: u64, album: String, direction: i8 },
+    Reorder { id: u64, album: String, index: usize },
 }
 
 impl Collection {
@@ -63,18 +63,18 @@ impl Collection {
             }
             Edit::Add { id, album } => {
                 let a = db::album(db, &album).map_err(crate::err)?.ok_or("Album unavailable.")?;
-                let id = id.or(self.active).unwrap_or_else(|| self.create());
+                let id = id.unwrap_or_else(|| self.create());
                 let list = self.list(id)?;
                 if !list.albums.iter().any(|entry| entry.id == a.id) {
                     list.albums.push(Entry { id:a.id, title:a.title, artist:a.artist });
                 }
             }
             Edit::Remove { id, album } => self.list(id)?.albums.retain(|a| a.id != album),
-            Edit::Move { id, album, direction } => {
+            Edit::Reorder { id, album, index } => {
                 let albums = &mut self.list(id)?.albums;
                 if let Some(i) = albums.iter().position(|a| a.id == album) {
-                    let dest = i.saturating_add_signed(direction.signum() as isize).min(albums.len()-1);
-                    albums.swap(i, dest);
+                    let entry = albums.remove(i);
+                    albums.insert(index.min(albums.len()), entry);
                 }
             }
         }
@@ -101,16 +101,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn first_drop_creates_a_crate_and_edits_keep_its_album_order() {
+    fn dropping_on_a_new_crate_creates_it_and_reorder_moves_to_any_position() {
         let db = db::open(std::path::Path::new(":memory:")).unwrap();
         db.execute_batch("INSERT INTO albums(id, artist, title, sort_key) VALUES
             ('a','Artist','One','a'), ('b','Artist','Two','b')").unwrap();
         let mut crates = Collection::default();
-        for album in ["a","b","a"] {
-            crates.edit(Edit::Add { id:None, album:album.into() }, &db).unwrap();
+        crates.edit(Edit::Add { id:None, album:"a".into() }, &db).unwrap();
+        for album in ["b","a"] {
+            crates.edit(Edit::Add { id:Some(1), album:album.into() }, &db).unwrap();
         }
+        assert_eq!(crates.lists.len(), 1);
         assert_eq!(crates.lists[0].name, "Crate 1");
-        crates.edit(Edit::Move { id:1, album:"b".into(), direction:-1 }, &db).unwrap();
+        crates.edit(Edit::Reorder { id:1, album:"a".into(), index:9 }, &db).unwrap();
         let saved = serde_json::to_string(&crates).unwrap();
         let mut crates: Collection = serde_json::from_str(&saved).unwrap();
         assert_eq!(crates.lists[0].albums.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(), ["b","a"]);
@@ -119,6 +121,8 @@ mod tests {
         crates.edit(Edit::Delete { id:2 }, &db).unwrap();
         assert_eq!(crates.active, Some(1));
         assert_eq!(crates.lists[0].name, "Night");
+        crates.edit(Edit::Add { id:None, album:"a".into() }, &db).unwrap();
+        assert_eq!(crates.lists.iter().map(|c| c.albums.len()).collect::<Vec<_>>(), [2, 1]);
         crates.edit(Edit::Remove { id:1, album:"a".into() }, &db).unwrap();
         assert_eq!(crates.lists[0].albums.len(), 1);
     }

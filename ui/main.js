@@ -394,9 +394,23 @@ crate.addEventListener('wheel', (e) => {
 // drag / swipe
 let albumsById = new Map();
 const albumCrates = createAlbumCrates({
-  invoke, focused, lookup: id => albumsById.get(id), toast,
-  play: albums => { clearProposal(); startAlbum(albums[0], albums.slice(1)); },
+  invoke, lookup: id => albumsById.get(id), toast, coverUrl, blankColor,
+  play: albums => { leaveCrates(); clearProposal(); startAlbum(albums[0], albums.slice(1)); },
+  back: () => leaveCrates(),
 });
+function openCrates() {
+  if (state.view !== 'library') return;
+  closeSearch();
+  state.view = 'crates';
+  show($('library'), false);
+  syncMini();
+  albumCrates.open();
+}
+function leaveCrates() {
+  if (state.view !== 'crates') return;
+  albumCrates.close();
+  showLibrary();
+}
 let dragPointer = null, startY = 0, filingAlbum = false, downAlbum = null;
 let dragging = false, moved = false, startX = 0, startTarget = 0, downSleeve = null, lastX = 0, lastT = 0, vel = 0;
 crate.addEventListener('pointerdown', (e) => {
@@ -526,6 +540,7 @@ function showLibrary() {
   show($('menuBtn'));
   layout();
   updateCaption(true);
+  syncMini();
 }
 
 $('chooseBtn').addEventListener('click', async () => {
@@ -609,6 +624,7 @@ $('menu').querySelectorAll('[data-action]').forEach((b) =>
     closeMenu();
     const act = b.dataset.action;
     if (act === 'search') openSearch();
+    if (act === 'crates') openCrates();
     if (act === 'settings') openSettings();
     if (act === 'eq') openEQ(false);
     if (act === 'fullscreen') toggleFullscreen();
@@ -1081,14 +1097,32 @@ trackRail.addEventListener('keydown', (e) => {
 });
 new ResizeObserver(() => centerTrack()).observe(trackRail);
 
+const miniMeter = createMiniMeter(invoke, listen, $('npBars'));
+let npAlbum = null;
+function syncMini() {
+  const p = state.playing;
+  miniMeter.set(!!p && !p.paused && !p.ended && state.view === 'library', p?.playbackId);
+}
 function updatePlayUi() {
   updateAtmosView();
   const p = state.playing;
   const np = $('nowPlaying');
   show(np, !!p);
+  syncMini();
   if (!p) return;
-  np.classList.toggle('paused', p.paused);
-  $('npText').textContent = `${p.album.artist} — ${p.album.title}`;
+  np.classList.toggle('paused', p.paused || p.ended);
+  if (npAlbum !== p.album.id) {
+    npAlbum = p.album.id;
+    const img = $('npCover');
+    img.parentElement.style.setProperty('--blank', blankColor(p.album.id));
+    if (p.album.art) { img.src = coverUrl(p.album, 'thumb'); show(img); }
+    else { img.removeAttribute('src'); show(img, false); }
+    $('npArtist').textContent = p.album.artist;
+    $('npTitle').textContent = p.album.title;
+    np.classList.remove('swap');
+    void np.offsetWidth;
+    np.classList.add('swap');
+  }
   if (state.viewAlbum && state.viewAlbum.id === p.album.id) {
     $('album').classList.toggle('is-paused', p.paused);
     updateTrackRail(p);
@@ -1186,12 +1220,53 @@ proposedCover.addEventListener('click', e => {
   if (e.detail === 0 && proposal && !proposal.busy) startAlbum(proposal.album);
 });
 
+let crateRequest;
+function clearCrateTransition() {
+  const view = $('album');
+  view.classList.remove('changing-record');
+  view.querySelectorAll('.outgoing-sleeve, .outgoing-backdrop').forEach(layer => layer.remove());
+}
+
+function animateCrateChange() {
+  const view = $('album');
+  const sleeve = $('cover').cloneNode(true);
+  sleeve.removeAttribute('id');
+  sleeve.firstElementChild.removeAttribute('id');
+  sleeve.classList.add('outgoing-sleeve');
+  sleeve.style.setProperty('--blank', view.style.getPropertyValue('--blank'));
+  sleeve.style.setProperty('--outgoing-opacity', getComputedStyle($('cover')).opacity);
+  coverFade?.cancel();
+  sleeve.setAttribute('aria-hidden', 'true');
+  $('cover').after(sleeve);
+
+  const backdrop = document.createElement('div');
+  backdrop.className = 'outgoing-backdrop';
+  backdrop.setAttribute('aria-hidden', 'true');
+  // Preserve the painting currently on screen, including a crossfade in progress.
+  const atmosphere = view.querySelector('.atmos');
+  for (const source of [$('bgArt'), ...atmosphere.querySelectorAll('img')]) {
+    if (!source.currentSrc || !source.naturalWidth || source.classList.contains('hidden')) continue;
+    const style = getComputedStyle(source);
+    const opacity = source === $('bgArt') ? 1 : Number(style.opacity) * Number(getComputedStyle(atmosphere).opacity);
+    if (!opacity) continue;
+    const image = new Image();
+    image.src = source.currentSrc;
+    Object.assign(image.style, { inset: style.inset, width: style.width, height: style.height,
+      opacity, transform: style.transform, filter: style.filter });
+    backdrop.append(image);
+  }
+  atmosphere.after(backdrop);
+  view.classList.add('changing-record');
+  backdrop.addEventListener('animationend', clearCrateTransition, { once: true });
+}
+
 async function startAlbum(a, remaining = [], advancing = false) {
   const offer = advancing ? null : proposal;
   if (advancing && proposal?.busy) return;
   if (offer?.busy) return;
   if (offer) offer.busy = true;
   const request = ++albumRequest;
+  if (advancing) crateRequest = request;
   try {
     const tracks = await invoke('get_tracks', {albumId: a.id});
     if (request !== albumRequest) return;
@@ -1207,17 +1282,21 @@ async function startAlbum(a, remaining = [], advancing = false) {
     if (request !== albumRequest) return;
     clearProposal();
     state.playing = { album: a, tracks, index: 0, paused: false, ended: false, remaining };
-    if (!advancing || state.view === 'album') displayAlbum(a);
+    if (!advancing || state.view === 'album') displayAlbum(a, advancing);
     await playIndex(0);
   } catch (e) {
     if (request !== albumRequest) return;
     clearProposal();
     updatePlayUi();
     toast(String(e), 4500);
+  } finally {
+    if (crateRequest === request) crateRequest = null;
   }
 }
 
-function displayAlbum(a) {
+function displayAlbum(a, advancing = false) {
+  clearCrateTransition();
+  if (advancing && state.viewAlbum?.id !== a.id && !reducedMotion.matches && !document.hidden) animateCrateChange();
   closeSearch();
   closeMenu();
   state.view = 'album';
@@ -1247,7 +1326,9 @@ function displayAlbum(a) {
 }
 
 function closeAlbum() {
-  ++albumRequest;
+  // Leaving the player can cancel a manual selection, but a crate keeps playing in the library.
+  if (crateRequest !== albumRequest) ++albumRequest;
+  clearCrateTransition();
   clearProposal();
   const view = $('album');
   view.classList.add('leaving');
@@ -1255,6 +1336,7 @@ function closeAlbum() {
   state.view = 'library';
   state.viewAlbum = null;
   show($('menuBtn'));
+  syncMini();
   setTimeout(() => { if (state.view === 'library') show(view, false); view.classList.remove('leaving'); }, 450);
 }
 $('backBtn').addEventListener('click', closeAlbum);
@@ -1470,6 +1552,7 @@ window.addEventListener('keydown', (e) => {
     if (modalOpen) document.querySelectorAll('.modal').forEach((m) => show(m, false));
     else if (!$('menu').classList.contains('hidden')) closeMenu();
     else if (!$('search').classList.contains('hidden')) closeSearch();
+    else if (state.view === 'crates') albumCrates.escape();
     else if (state.view === 'album') closeAlbum();
     return;
   }

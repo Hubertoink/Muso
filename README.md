@@ -24,7 +24,7 @@ The **•••** menu in the article footer lets you delete the saved text or c
 | Library | Click **Artist** at the left of the alphabet to switch to **Album** and browse by title. Click a letter to jump to its first match. In Artist order, “The Beatles” appears under B. Muso remembers the order and selected album on launch. |
 | Compilations | Album order shows one sleeve for tracks with the same album title in the same release folder, including numbered CD or disc subfolders. Open it to play all artists in disc and track order. Artist order keeps the individual artist entries. |
 | Library | Click the centred sleeve or press Enter to put the record on. |
-| Crates | Drag a sleeve downward, then drop it on the crate at the lower right. The first drop creates Crate 1. Open the dock or **Settings → Crates** to create or select a different crate, rename it, reorder or remove albums, or play the albums in sequence. |
+| Crates | Pull a sleeve downward and your crates rise from the bottom edge as cover stacks. Drop the sleeve on a stack, or on **New crate** to start another. Open **Menu → Crates** to see all crates on a shelf. Click a stack to spread it out: drag covers to change the order, drag one down to take it out, click a cover to play from there, and use the icons to play, rename or delete the crate. |
 | Library | Just start typing to search, or use Ctrl+F. |
 | Corner ● | Opens Search · Settings · Refresh Library · AI Features. |
 | Album | Space plays or pauses, ← → change tracks, F or F11 toggles fullscreen, Esc goes back. |

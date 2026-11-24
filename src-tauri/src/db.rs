@@ -153,11 +153,11 @@ pub fn album(c: &Connection, id: &str) -> rusqlite::Result<Option<Album>> {
 pub fn tracks(c: &Connection, album_id: &str) -> rusqlite::Result<Vec<Track>> {
     let sql = if album_id.starts_with("release-") {
         "SELECT t.path,t.title,t.artist,t.track_no,r.disc_no,t.duration FROM release_tracks r
-         JOIN tracks t ON t.path=r.path WHERE r.release_id=?1
+         JOIN tracks t ON t.path=r.path WHERE r.release_id=?1 AND lower(substr(t.path,-4))<>'.mp4'
          ORDER BY COALESCE(r.disc_no,1), COALESCE(t.track_no,99999), t.path"
     } else {
         "SELECT path, title, artist, track_no, disc_no, duration FROM tracks
-         WHERE album_id=?1
+         WHERE album_id=?1 AND lower(substr(path,-4))<>'.mp4'
          ORDER BY COALESCE(disc_no, 1), COALESCE(track_no, 99999), path"
     };
     let mut st = c.prepare(sql)?;

@@ -1,5 +1,67 @@
 'use strict';
 
+// Several views can want live levels; the backend meter runs while any of them does.
+const spectrumDemand = (() => {
+  const owners = new Set();
+  let sent = false;
+  return (invoke, owner, on) => {
+    if (on) owners.add(owner); else owners.delete(owner);
+    const enabled = owners.size > 0;
+    if (enabled === sent) return Promise.resolve();
+    sent = enabled;
+    return invoke('set_spectrum_enabled', { enabled }).catch(e => { sent = !enabled; owners.delete(owner); throw e; });
+  };
+})();
+
+function createMiniMeter(invoke, listen, root) {
+  const bars = [...root.children];
+  const reduce = matchMedia('(prefers-reduced-motion: reduce)');
+  const level = new Float32Array(bars.length), target = new Float32Array(bars.length);
+  let wanted = false, active = false, trackId, frame = 0, lastEvent = 0;
+  function sync() {
+    const on = wanted && !reduce.matches && !document.hidden;
+    if (on === active) return;
+    active = on;
+    root.classList.toggle('live', on);
+    spectrumDemand(invoke, 'mini', on).catch(() => { active = false; root.classList.remove('live'); });
+    if (on) loop(); else { target.fill(0); loop(); }
+  }
+  function loop() {
+    if (frame) return;
+    const step = () => {
+      frame = 0;
+      if (performance.now() - lastEvent > 180) target.fill(0);
+      let moving = false;
+      for (let i = 0; i < bars.length; i++) {
+        level[i] += (target[i] - level[i]) * (target[i] > level[i] ? .5 : .14);
+        if (Math.abs(target[i] - level[i]) > .003) moving = true;
+        bars[i].style.transform = `scaleY(${(.12 + level[i] * .88).toFixed(3)})`;
+      }
+      if (active || moving) frame = requestAnimationFrame(step);
+    };
+    frame = requestAnimationFrame(step);
+  }
+  listen('audio-spectrum', ({ payload: [id, bands] }) => {
+    if (!active || id !== trackId) return;
+    lastEvent = performance.now();
+    const per = bands.length / bars.length;
+    for (let i = 0; i < bars.length; i++) {
+      let sum = 0;
+      for (let k = Math.floor(i * per); k < Math.floor((i + 1) * per); k++) sum = Math.max(sum, bands[k]);
+      target[i] = Math.min(1, Math.pow(sum, .7) * 1.25);
+    }
+  });
+  reduce.addEventListener('change', sync);
+  document.addEventListener('visibilitychange', sync);
+  return {
+    set(on, id) {
+      wanted = on;
+      trackId = id;
+      sync();
+    },
+  };
+}
+
 function createSpectrumView(invoke, listen) {
   const toggle = document.getElementById('spectrumToggle');
   const control = id => document.getElementById(id);
@@ -59,7 +121,7 @@ function createSpectrumView(invoke, listen) {
     if (enabled === active) return;
     active = enabled;
     if (!enabled) clear();
-    invoke('set_spectrum_enabled', { enabled }).catch(() => { active = false; clear(); });
+    spectrumDemand(invoke, 'atmosphere', enabled).catch(() => { active = false; clear(); });
   }
   toggle.addEventListener('change', () => {
     localStorage.setItem('muso.spectrum', toggle.checked ? '1' : '0');

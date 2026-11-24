@@ -20,7 +20,7 @@
   <!-- Library / crate -->
   <section id="library" class="screen hidden">
     <div id="crate"></div>
-    <button id="crateDock" class="hidden" title="Manage crates"><span aria-hidden="true">▤</span><span id="dockName"></span><span id="dockCount"></span></button>
+    <div id="crateTray" aria-hidden="true"><div id="trayCrates"></div></div>
     <nav id="libraryIndex" aria-label="Browse the library by initial">
       <button id="indexMode" type="button"><span id="indexModeLabel">Artist</span><span aria-hidden="true">⇄</span></button>
       <div id="indexLetters" role="group" aria-label="Artist initials"></div>
@@ -34,10 +34,37 @@
       </div>
     </div>
     <div id="counter"></div>
-    <button id="nowPlaying" class="hidden" title="Now playing">
-      <span class="dot"></span><span id="npText"></span>
+    <button id="nowPlaying" class="hidden" title="Back to the record that is playing">
+      <span class="np-cover"><img id="npCover" alt="" draggable="false" /></span>
+      <span class="np-text"><span id="npArtist"></span><span id="npTitle"></span></span>
+      <span id="npBars" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>
     </button>
     <div id="libStatus" class="status"></div>
+  </section>
+
+  <!-- Crates page -->
+  <section id="cratesPage" class="screen hidden" aria-label="Crates">
+    <button id="cratesBack" class="chrome corner-left" aria-label="Back to the library">
+      <svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7" /></svg>
+    </button>
+    <div id="cratesHeader"><div class="al-artist">Crates</div><p id="cratesHint" class="muted"></p></div>
+    <div id="crateShelf" role="list"></div>
+    <div id="crateFan" class="hidden">
+      <div class="fan-scrim"></div>
+      <div id="fanCovers"></div>
+      <div id="fanFoot">
+        <div id="fanName"></div>
+        <input id="fanNameInput" class="hidden" type="text" maxlength="120" aria-label="Crate name" spellcheck="false" autocomplete="off" />
+        <div id="fanMeta" class="muted"></div>
+        <div id="fanTools">
+          <button id="fanPlay" title="Play crate" aria-label="Play crate"><svg viewBox="0 0 24 24"><path d="M8 5l12 7-12 7z" class="fill" /></svg></button>
+          <button id="fanRename" title="Rename" aria-label="Rename crate"><svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z" /><path d="M13 7l4 4" /></svg></button>
+          <button id="fanDelete" title="Delete crate" aria-label="Delete crate"><svg viewBox="0 0 24 24"><path d="M5 7h14" /><path d="M10 7V4h4v3" /><path d="M7 7l1 13h8l1-13" /></svg></button>
+          <button id="fanClose" title="Close" aria-label="Close crate"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" /></svg></button>
+        </div>
+        <div id="fanHint" class="status"></div>
+      </div>
+    </div>
   </section>
 
   <!-- Corner icon + hidden overlay -->
@@ -46,6 +73,7 @@
     <div class="menu-scrim"></div>
     <nav class="menu-panel">
       <button data-action="search">Search</button>
+      <button data-action="crates">Crates</button>
       <button data-action="settings">Settings</button>
       <button data-action="eq">EQ</button>
       <button data-action="fullscreen" class="fullscreen-label">Enter fullscreen</button>
@@ -71,8 +99,6 @@
       <h3>Music folders</h3>
       <ul id="folderList"></ul>
       <button id="addFolderBtn" class="link">+ Add folder</button>
-      <h3>Crates</h3>
-      <button id="manageCrates" class="link setting-action">Manage album crates…</button>
       <h3>Album covers</h3>
       <p class="muted">Look up artist and album names on MusicBrainz. Higher-resolution front covers from the Cover Art Archive are saved only in Muso.</p>
       <button id="findCovers" class="link setting-action">Find better covers</button>
@@ -102,17 +128,6 @@
   </div>
 
   <!-- AI features -->
-  <div id="cratesDialog" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="cratesHeading"><div class="modal-card">
-    <h2 id="cratesHeading">Crates</h2>
-    <div class="crate-toolbar"><select id="cratePicker" aria-label="Active crate"></select><button id="newCrate" class="link">+ New crate</button></div>
-    <div id="crateEditor">
-      <form id="crateRename"><input id="crateName" type="text" aria-label="Crate name" maxlength="120" required><button class="link">Rename</button></form>
-      <ol id="crateAlbums"></ol>
-      <button class="link setting-action" id="crateAddFocused">Add selected album</button>
-      <div class="crate-toolbar"><button id="playCrate" class="pill">Play crate</button><button id="deleteCrate" class="link">Delete crate</button></div>
-    </div>
-    <div class="modal-actions"><button class="close pill">Done</button></div>
-  </div></div>
   <div id="article" class="modal animated-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="articleTitle" inert><div class="modal-card">
     <header class="article-header">
       <div><div id="articleArtist" class="al-artist"></div><h2 id="articleTitle"></h2></div>
