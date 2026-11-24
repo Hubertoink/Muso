@@ -363,6 +363,19 @@ function clearCrate() {
 // Horizontal travel from the centre to the next sleeve, shared by layout and input.
 const sleeveSpacing = () => state.size * 0.66;
 
+function positionSleeve(el, d, size) {
+  const ad = Math.abs(d);
+  const s = Math.sign(d);
+  const t = Math.min(ad, 1);
+  const x = s * (t * (size * 0.66) + Math.max(0, ad - 1) * (size * 0.17));
+  const z = -t * size * 0.6 - Math.max(0, ad - 1) * size * 0.05;
+  const rot = -s * t * 64;
+  el.style.transform = `translate3d(${x.toFixed(1)}px,0,${z.toFixed(1)}px) rotateY(${rot.toFixed(2)}deg)`;
+  el.style.zIndex = String(1000 - Math.round(ad * 10));
+  el.style.opacity = ad > WINDOW - 1.5 ? String(clamp(WINDOW - 0.5 - ad, 0, 1)) : '1';
+  el.style.setProperty('--shade', (Math.min(ad, 5) * 0.16).toFixed(3));
+}
+
 function render() {
   const n = state.albums.length;
   if (!n) return;
@@ -372,23 +385,10 @@ function render() {
   for (const [i, el] of pool) {
     if (i < lo || i > hi) { el.remove(); pool.delete(i); }
   }
-  const S = state.size;
-  const side = sleeveSpacing();
-  const gap = S * 0.17;
   for (let i = lo; i <= hi; i++) {
     let el = pool.get(i);
     if (!el) { el = makeSleeve(i); pool.set(i, el); crate.appendChild(el); }
-    const d = i - state.pos;
-    const ad = Math.abs(d);
-    const s = Math.sign(d);
-    const t = Math.min(ad, 1);
-    const x = s * (t * side + Math.max(0, ad - 1) * gap);
-    const z = -t * S * 0.6 - Math.max(0, ad - 1) * S * 0.05;
-    const rot = -s * t * 64;
-    el.style.transform = `translate3d(${x.toFixed(1)}px,0,${z.toFixed(1)}px) rotateY(${rot.toFixed(2)}deg)`;
-    el.style.zIndex = String(1000 - Math.round(ad * 10));
-    el.style.opacity = ad > WINDOW - 1.5 ? String(clamp(WINDOW - 0.5 - ad, 0, 1)) : '1';
-    el.style.setProperty('--shade', (Math.min(ad, 5) * 0.16).toFixed(3));
+    positionSleeve(el, i - state.pos, state.size);
   }
 }
 
@@ -644,35 +644,38 @@ swipeDirection.addEventListener('change', () => localStorage.setItem('muso.libra
 const directionSlop = 10; // CSS pixels
 const velocityWindow = 100; // ms
 let drag = null;
-function moveSleeves(e) {
-  const dx = e.clientX - drag.x;
-  const pos = clamp(state.pos + dx * drag.indexDirection / drag.spacing, 0, state.albums.length - 1);
-  drag.x = e.clientX;
-  state.pos = state.target = pos;
+function moveThroughSleeves(gesture, e, current, last) {
+  const dx = e.clientX - gesture.x;
+  const pos = clamp(current + dx * gesture.indexDirection / gesture.spacing, 0, last);
+  gesture.x = e.clientX;
 
-  const samples = drag.samples;
+  const samples = gesture.samples;
   while (samples.length && samples[0].t < e.timeStamp - velocityWindow) samples.shift();
   const sample = { pos, t: e.timeStamp };
-  const delta = pos - drag.extreme.pos;
-  if (delta && delta * drag.direction >= 0) {
-    drag.direction = Math.sign(delta);
-    drag.extreme = sample;
+  const delta = pos - gesture.extreme.pos;
+  if (delta && delta * gesture.direction >= 0) {
+    gesture.direction = Math.sign(delta);
+    gesture.extreme = sample;
   } else if (delta) {
     // Fast swipes can roll back briefly on lift. Count a turn relative to the recent stroke.
-    const stroke = samples.length ? Math.abs(drag.extreme.pos - samples[0].pos) * drag.spacing : 0;
-    if (Math.abs(delta) * drag.spacing >= clamp(stroke / 3, directionSlop, 32)) {
+    const stroke = samples.length ? Math.abs(gesture.extreme.pos - samples[0].pos) * gesture.spacing : 0;
+    if (Math.abs(delta) * gesture.spacing >= clamp(stroke / 3, directionSlop, 32)) {
       samples.length = 0;
-      if (drag.extreme.t >= e.timeStamp - velocityWindow) samples.push(drag.extreme);
-      drag.direction = Math.sign(delta);
-      drag.extreme = sample;
+      if (gesture.extreme.t >= e.timeStamp - velocityWindow) samples.push(gesture.extreme);
+      gesture.direction = Math.sign(delta);
+      gesture.extreme = sample;
     }
   }
   samples.push(sample);
+  return pos;
 }
 
-function settleSwipe(gesture, releasedAt) {
+function moveSleeves(e) {
+  state.pos = state.target = moveThroughSleeves(drag, e, state.pos, state.albums.length - 1);
+}
+
+function settleSwipe(gesture, releasedAt, pos, navigate) {
   const { samples, direction, spacing } = gesture;
-  const pos = state.pos;
   const first = samples.find(sample => sample.t >= releasedAt - velocityWindow) ?? samples.at(-1);
   const distance = pos - first.pos, elapsed = releasedAt - first.t;
   const velocity = elapsed >= 8 && distance * direction * spacing >= directionSlop ? distance / elapsed : 0;
@@ -686,7 +689,7 @@ function settleSwipe(gesture, releasedAt) {
   let end = projected;
   if (direction > 0) end = Math.max(end, Math.ceil(pos - margin));
   if (direction < 0) end = Math.min(end, Math.floor(pos + margin));
-  go(end, velocity ? clamp(Math.abs((end - pos) / velocity), 65, glideTime) : defaultSettleTime);
+  navigate(end, velocity ? clamp(Math.abs((end - pos) / velocity), 65, glideTime) : defaultSettleTime);
 }
 
 crate.addEventListener('pointerdown', e => {
@@ -738,7 +741,7 @@ function endDrag(e) {
   drag = null;
   crate.classList.remove('dragging');
   if (gesture.mode === 'file') albumCrates.end(e.clientX, e.clientY, !released);
-  if (released && gesture.mode === 'browse') settleSwipe(gesture, e.timeStamp);
+  if (released && gesture.mode === 'browse') settleSwipe(gesture, e.timeStamp, state.pos, go);
   else if (released && gesture.mode === 'pending' && !gesture.caught && gesture.sleeve &&
       Math.abs(e.clientX - gesture.startX) <= 6 && Math.abs(e.clientY - gesture.startY) <= 10) {
     const i = Number(gesture.sleeve.dataset.index);
@@ -1265,6 +1268,12 @@ $('addFolderBtn').addEventListener('click', async () => {
 
 let coverSearchRunning = false;
 let stopCoverSearch = false;
+let currentCoverSearch = null;
+listen('cover-search-progress', ({ payload }) => {
+  if (currentCoverSearch?.id !== payload.albumId) return;
+  $('coverProgress').textContent = currentCoverSearch.label + ' · ' + payload.message;
+  if (currentCoverSearch.single && state.viewAlbum?.id === payload.albumId) toast(payload.message, 5000);
+});
 
 function applyCover(id, file) {
   const updated = new Set();
@@ -1296,13 +1305,24 @@ async function findCovers(albums, single = false) {
   $('findAlbumCover').disabled = true;
   let checked = 0, updated = 0, failed = 0, consecutiveErrors = 0;
   let lastError = '';
+  const messages = {
+    updated: 'Cover updated',
+    already_large_enough: 'Front cover found. Keeping your current resolution.',
+    no_match: 'Could not identify a unique MusicBrainz release for this album',
+    no_front_cover: 'Release found, but no front cover was available',
+    unknown_artist: 'Artist missing from the library entry',
+    cancelled: 'Cover search cancelled',
+  };
+  let resultMessage = '';
   try {
     for (const album of albums) {
       if (stopCoverSearch) break;
-      $('coverProgress').textContent = `Checking ${checked + 1} of ${albums.length} · ${album.title}`;
+      currentCoverSearch = { id: album.id, single, label: `Checking ${checked + 1} of ${albums.length} · ${album.title}` };
+      $('coverProgress').textContent = currentCoverSearch.label;
       try {
-        const file = await invoke('upgrade_cover', { albumId: album.id });
-        if (file) { applyCover(album.id, file); updated++; }
+        const result = await invoke('upgrade_cover', { albumId: album.id, offerAi: single });
+        resultMessage = messages[result.status];
+        if (result.status === 'updated') { applyCover(album.id, result.file); updated++; }
         consecutiveErrors = 0;
       } catch (e) {
         failed++;
@@ -1313,11 +1333,12 @@ async function findCovers(albums, single = false) {
       if (consecutiveErrors >= 3) break;
     }
     let summary = `${checked} of ${albums.length} checked · ${updated} updated`;
-    if (single && !failed) summary = updated ? 'Cover updated' : 'No higher-resolution match found';
-    if (failed) summary += ` · ${failed} failed. ${lastError}`;
+    if (single) summary = failed ? lastError : resultMessage;
+    else if (failed) summary += ` · ${failed} failed. ${lastError}`;
     $('coverProgress').textContent = summary;
     if (single || $('settings').classList.contains('hidden')) toast(summary, 4500);
   } finally {
+    currentCoverSearch = null;
     coverSearchRunning = false;
     button.disabled = false;
     button.textContent = 'Find better covers';
@@ -1366,42 +1387,66 @@ const styleNames = {
   biomechanical: 'Biomechanical',
   streetart: 'Modern Street Art',
 };
-function albumStyle(id) {
-  if ($('autoStyle').checked) return 'auto';
+function albumStyleOverride(id) {
   const saved = localStorage.getItem('muso.style.' + id);
-  return Object.hasOwn(styleNames, saved) ? saved : 'cinematic';
+  return Object.hasOwn(styleNames, saved) ? saved : '';
+}
+function albumStyle(id) {
+  return albumStyleOverride(id) || ($('autoStyle').checked ? 'auto' : 'cinematic');
 }
 let styleAlbum;
+const stylePicker = $('stylePicker');
+const styleTriggers = [$('albumStyle'), $('aiStyle')];
 async function showStyle(id) {
+  if (stylePicker.open && styleAlbum !== id) stylePicker.close();
   styleAlbum = id;
+  const aiDefault = $('autoStyle').checked;
   const style = albumStyle(id);
-  const auto = style === 'auto';
-  for (const select of [$('albumStyle'), $('aiStyle')]) {
-    select.disabled = auto;
-    select.options[0].textContent = 'AI choice';
-    select.value = style;
+  const override = albumStyleOverride(id);
+  function display(defaultLabel) {
+    $('defaultStyleChoice').querySelector('span').textContent = defaultLabel;
+    for (const trigger of styleTriggers) {
+      trigger.disabled = !id;
+      trigger.textContent = styleNames[override] || defaultLabel;
+    }
   }
-  $('genLabel').textContent = auto ? 'Generate with AI style' : 'Generate ' + styleNames[style] + ' images';
-  if (auto && id) {
+  display(aiDefault ? 'Default · AI choice' : 'Default · Cinematic');
+  $('genLabel').textContent = style === 'auto' ? 'Generate with AI style' : 'Generate ' + styleNames[style] + ' images';
+  if (aiDefault && id) {
     const name = await invoke('get_setting', { key: 'atmos_auto_style.' + id });
-    if (name && styleAlbum === id && $('autoStyle').checked) {
-      for (const select of [$('albumStyle'), $('aiStyle')]) select.options[0].textContent = name;
+    if (name && styleAlbum === id && $('autoStyle').checked && override === albumStyleOverride(id)) {
+      display('AI choice · ' + name);
     }
   }
 }
-for (const select of [$('albumStyle'), $('aiStyle')]) {
-  const automatic = new Option('AI choice', 'auto');
-  automatic.hidden = true;
-  select.add(automatic);
-  for (const [id, label] of Object.entries(styleNames)) select.add(new Option(label, id));
-  select.addEventListener('change', () => {
-    const a = state.viewAlbum || focused();
-    if (!a) return;
-    localStorage.setItem('muso.style.' + a.id, select.value);
-    showStyle(a.id);
-    if (state.viewAlbum) startAtmospheres(a.id);
-  });
+function chooseStyle(style) {
+  stylePicker.close();
+  if (style === albumStyleOverride(styleAlbum)) return;
+  const key = 'muso.style.' + styleAlbum;
+  if (style) localStorage.setItem(key, style);
+  else localStorage.removeItem(key);
+  showStyle(styleAlbum);
+  if (state.viewAlbum?.id === styleAlbum) startAtmospheres(styleAlbum);
 }
+const styleCrate = createStyleCrate(stylePicker, styleNames, chooseStyle);
+for (const trigger of styleTriggers) trigger.addEventListener('click', () => {
+  const album = state.viewAlbum || focused();
+  if (!album || stylePicker.open) return;
+  showStyle(album.id);
+  trigger.focus({ preventScroll: true });
+  stylePicker.showModal();
+  const selected = albumStyleOverride(album.id);
+  $('defaultStyleChoice').setAttribute('aria-pressed', String(!selected));
+  styleCrate.open(selected);
+});
+$('defaultStyleChoice').addEventListener('click', () => chooseStyle(''));
+$('closeStylePicker').addEventListener('click', () => stylePicker.close());
+stylePicker.addEventListener('click', e => {
+  if (e.target === stylePicker) {
+    const r = stylePicker.getBoundingClientRect();
+    if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) stylePicker.close();
+  }
+});
 $('autoStyle').checked = localStorage.getItem('muso.autoStyle') === '1';
 $('autoStyle').addEventListener('change', () => {
   localStorage.setItem('muso.autoStyle', $('autoStyle').checked ? '1' : '0');
@@ -2091,6 +2136,7 @@ listen('atmos-image-ready', ({ payload }) => {
   if (payload.files.length === 1 && styleAlbum === payload.albumId) showStyle(payload.albumId);
 });
 async function generate(a, automatic = false) {
+  const style = albumStyle(a.id);
   if (!automatic && !(await invoke('has_openai_key'))) {
     await loadKey();
     prepareAi();
@@ -2102,7 +2148,6 @@ async function generate(a, automatic = false) {
   generating.add(a.id);
   if (!automatic) toast(`Composing atmospheres for ${a.title}…`);
   try {
-    const style = albumStyle(a.id);
     const files = await invoke('generate_atmospheres', { albumId: a.id, research: researchEnabled(), style,
       onlyIfEmpty: automatic, count: automatic ? Number(playImageCount.value) : 3 });
     if (!files.length) return;
@@ -2130,6 +2175,7 @@ window.addEventListener('keydown', (e) => {
     if (!e.repeat) toggleFullscreen();
     return;
   }
+  if (stylePicker.open || (e.target.closest('.style-trigger') && [' ', 'Enter'].includes(e.key))) return;
   if (e.key === 'Escape' && !$('eq').classList.contains('hidden')) {
     $('eq').querySelector('.close').click();
     return;

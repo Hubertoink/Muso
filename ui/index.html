@@ -241,6 +241,20 @@
     </div>
   </div>
 
+  <dialog id="stylePicker" aria-labelledby="stylePickerTitle">
+    <header><h2 id="stylePickerTitle">Atmosphere style</h2><button type="button" id="closeStylePicker" aria-label="Close style selection">×</button></header>
+    <div id="styleCanvas" role="group" aria-label="Browse atmosphere styles" tabindex="0"></div>
+    <div class="style-navigation">
+      <button type="button" id="prevStyle" aria-label="Previous style">‹</button>
+      <div id="styleCaption" aria-live="polite"></div>
+      <button type="button" id="nextStyle" aria-label="Next style">›</button>
+    </div>
+    <div class="style-actions">
+      <button id="defaultStyleChoice" class="link" type="button"><span></span></button>
+      <button id="useStyle" class="pill" type="button">Use this style</button>
+    </div>
+  </dialog>
+
   <div id="ai" class="modal animated-overlay hidden" inert>
     <div class="modal-card">
       <div class="modal-scroll">
@@ -253,8 +267,8 @@
         <label class="check"><input id="generateOnPlay" type="checkbox" /> Generate on playback for albums without atmospheres</label>
         <label class="style-field">Images per album <select id="playImageCount" disabled><option>3</option><option>4</option><option>5</option></select></label>
         <p class="muted">Each new set uses your OpenAI API key and incurs API charges.</p>
-        <label class="check"><input id="autoStyle" type="checkbox" /> Let AI choose a visual style for each album</label>
-        <label class="style-field">Atmosphere style <select id="aiStyle"></select></label>
+        <label class="check"><input id="autoStyle" type="checkbox" /> Use AI choice as the default atmosphere style</label>
+        <div class="style-field"><span id="aiStyleLabel">Style for this album</span><button type="button" id="aiStyle" class="style-trigger" aria-haspopup="dialog" aria-controls="stylePicker" aria-labelledby="aiStyleLabel aiStyle"></button></div>
         <label class="check"><input id="researchToggle" type="checkbox" /> Research the artist and album before generating</label>
         <p class="muted">With research on, Muso looks up the album once and writes a missing article when generating images. Future sets reuse the saved research. Saved articles and existing research also guide images when web research is off. Web searches and new articles incur API charges.</p>
         <h3>Genres</h3>
@@ -305,7 +319,7 @@
       <button id="albumEQ"><svg aria-hidden="true"><use href="icons/lucide.svg#audio-lines"/></svg>EQ Settings</button>
       <button id="showAtmosBtn" aria-pressed="false" disabled><svg aria-hidden="true"><use href="icons/lucide.svg#gallery-vertical-end"/></svg>Show Visual Atmospheres<svg class="check-icon" aria-hidden="true"><use href="icons/lucide.svg#check"/></svg></button>
       <button id="findAlbumCover"><svg aria-hidden="true"><use href="icons/lucide.svg#scan-search"/></svg>Find a higher-resolution cover</button>
-      <label class="style-field"><svg aria-hidden="true"><use href="icons/lucide.svg#swatch-book"/></svg>Atmosphere style <select id="albumStyle"></select></label>
+      <div class="style-field"><svg aria-hidden="true"><use href="icons/lucide.svg#swatch-book"/></svg><span id="albumStyleLabel">Atmosphere style</span><button type="button" id="albumStyle" class="style-trigger" aria-haspopup="dialog" aria-controls="stylePicker" aria-labelledby="albumStyleLabel albumStyle"></button></div>
       <label class="style-field"><svg aria-hidden="true"><use href="icons/lucide.svg#tag"/></svg>Genre <select id="albumGenre"></select></label>
       <input id="albumGenreInput" class="hidden" type="text" maxlength="60" placeholder="New genre – Enter to save" aria-label="New genre" spellcheck="false" autocomplete="off" />
       <button id="genBtn"><svg aria-hidden="true"><use href="icons/lucide.svg#sparkles"/></svg><span id="genLabel">Generate Visual Atmospheres</span></button>
@@ -348,6 +362,7 @@
   <script src="spectrum.js"></script>
   <script src="crates.js"></script>
   <script src="genres.js"></script>
+  <script src="style-crate.js"></script>
   <script src="main.js"></script>
 </body>
 </html>

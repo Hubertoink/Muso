@@ -555,6 +555,42 @@ body:has(> .modal:not(.hidden, .from-player))::before { background-color: rgb(0 
 .modal .style-field { margin-top: 16px; }
 .popover .style-field { justify-content: flex-start; gap: 11px; border-top: 1px solid rgba(255,255,255,.08); margin-top: 4px; padding: 12px 14px 5px; }
 .style-field select { color-scheme: dark; background: #242422; color: var(--ink); border: 1px solid #41413e; border-radius: 5px; padding: 5px 7px; font: inherit; }
+.style-field .style-trigger {
+  display: block; width: auto; max-width: min(36vw, 270px); padding: 6px 10px; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; text-align: left; font: inherit; color: var(--ink);
+  background: #242422; border: 1px solid #41413e; border-radius: 5px;
+}
+#stylePicker {
+  margin: auto; width: 100%; max-width: none; max-height: 100vh; padding: 0;
+  color: var(--ink); color-scheme: dark; border: 0; background: transparent; overflow-x: hidden;
+}
+#stylePicker[open] { display: flex; flex-direction: column; }
+#stylePicker::backdrop {
+  background: rgb(4 4 6 / .65);
+  -webkit-backdrop-filter: blur(20px);
+  backdrop-filter: blur(20px);
+}
+#stylePicker header { display: flex; align-items: center; justify-content: space-between; padding: 16px clamp(22px, 4vw, 72px) 12px; }
+#stylePicker h2 { font-weight: 400; font-size: 20px; }
+#closeStylePicker { font-size: 24px; width: 36px; height: 36px; color: var(--ink-dim); }
+#styleCanvas {
+  --size: min(43vh, 44vw, 380px);
+  position: relative; height: calc(var(--size) + 50px);
+  perspective: 1500px; touch-action: none; cursor: grab;
+}
+#styleCanvas:active { cursor: grabbing; }
+#styleCanvas:focus-visible { outline: none; }
+#styleCanvas:focus-visible + .style-navigation #styleCaption { text-decoration: underline; text-underline-offset: 5px; }
+#styleCanvas .sleeve { top: 50%; cursor: inherit; }
+.style-navigation, .style-actions { display: flex; align-items: center; justify-content: center; gap: 18px; }
+.style-navigation { padding: 0 12px; }
+#styleCaption { min-width: min(210px, 48vw); text-align: center; font-size: 18px; font-weight: 300; }
+.style-navigation button { font-size: 26px; width: 40px; height: 40px; color: var(--ink-dim); }
+.style-navigation button:disabled { color: var(--ink-faint); cursor: default; }
+.style-actions { padding: 12px 20px 22px; }
+#defaultStyleChoice[aria-pressed=true] { color: var(--ink); }
+#defaultStyleChoice[aria-pressed=true]::before { content: '✓ '; color: var(--accent); }
+#stylePicker button:focus-visible { outline: 2px solid var(--ink); outline-offset: -3px; }
 #atmosStatus { position: absolute; left: 0; right: 0; bottom: 18px; text-align: center; z-index: 5; }
 
 /* ---------- Toast ---------- */

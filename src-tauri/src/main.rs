@@ -88,16 +88,52 @@ fn get_albums(state: State<'_, AppState>) -> R<Vec<db::LibraryAlbum>> {
     db::albums(&tx).map_err(err)
 }
 
+async fn confirm_cover_action(app: &AppHandle, title: &str, message: String, action: &str) -> bool {
+    let Some(window) = app.get_webview_window("main") else { return false };
+    let (send, answer) = tokio::sync::oneshot::channel();
+    app.dialog().message(message).title(title).parent(&window)
+        .buttons(tauri_plugin_dialog::MessageDialogButtons::OkCancelCustom(action.into(), "Cancel".into()))
+        .show(move |yes| { let _ = send.send(yes); });
+    answer.await.unwrap_or(false)
+}
+
 #[tauri::command]
-async fn upgrade_cover(app: AppHandle, state: State<'_, AppState>, album_id: String) -> R<Option<String>> {
+async fn upgrade_cover(app: AppHandle, state: State<'_, AppState>, album_id: String, offer_ai: bool) -> R<covers::Outcome> {
+    use covers::Outcome;
     let album = db::album(&*state.db.lock().map_err(err)?, &album_id).map_err(err)?;
-    let Some(album) = album else { return Ok(None) };
-    let Some(bytes) = state.cover_search.find(&album).await? else { return Ok(None) };
+    let album = album.ok_or("This album is no longer in your library.")?;
+    let progress = |message: String| { let _ = app.emit("cover-search-progress", serde_json::json!({"albumId": album_id, "message": message})); };
+    let search = &state.cover_search;
+    let group = match search.group(&album, &progress).await? {
+        Some(group) => group,
+        None => {
+            let missing = if album.artist == "Unknown Artist" { Outcome::UnknownArtist } else { Outcome::NoMatch };
+            if !offer_ai { return Ok(missing); }
+            let key = openai_key(&*state.db.lock().map_err(err)?)?;
+            let Some(key) = key else { return Ok(missing) };
+            if !confirm_cover_action(&app, "Identify album with AI?", format!("MusicBrainz could not identify “{}” reliably. Use one paid OpenAI web search with the artist, album title, year and track titles?", album.title), "Search with AI").await {
+                return Ok(missing);
+            }
+            progress("Researching the release with AI…".into());
+            let tracks = db::tracks(&*state.db.lock().map_err(err)?, &album.id).map_err(err)?;
+            let Some(identity) = ai::research_cover_identity(&key, &album, &tracks).await? else { return Ok(Outcome::NoMatch) };
+            let candidate = db::Album { title: identity.title, artist: identity.artist, ..album.clone() };
+            let Some(group) = search.group(&candidate, &progress).await? else { return Ok(Outcome::NoMatch) };
+            if !confirm_cover_action(&app, "Use this release?", format!("MusicBrainz lists {}. Look for its front cover for “{}”?", group.label(), album.title), "Use this release").await {
+                return Ok(Outcome::Cancelled);
+            }
+            group
+        }
+    };
+    let Some(bytes) = search.artwork(&group, &progress).await? else { return Ok(Outcome::NoFrontCover) };
     tauri::async_runtime::spawn_blocking(move || {
         let img = covers::decode(&bytes)?;
         let state = app.state::<AppState>();
         let mut db = state.db.lock().map_err(err)?;
-        covers::install(&mut db, &state.data_dir, &album.id, &img)
+        Ok(match covers::install(&mut db, &state.data_dir, &album.id, &img)? {
+            Some(file) => Outcome::Updated { file },
+            None => Outcome::AlreadyLargeEnough,
+        })
     }).await.map_err(err)?
 }
 

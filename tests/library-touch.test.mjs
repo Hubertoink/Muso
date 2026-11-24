@@ -29,6 +29,10 @@ beforeEach(async () => {
       core: { invoke: async (command, args) => {
         if (command === 'get_folders') { await window.folderGate; return ['test']; }
         if (command === 'get_albums') return structuredClone(albums);
+        if (command === 'upgrade_cover') {
+          window.coverRequest = args;
+          return window.coverResult;
+        }
         if (command === 'genre_state') return {genres:[{name:'Electronic', parent:null}], albums:{}, suggestions:0};
         if (command === 'genre_inventory') return {tags:[], broad:[], records:albums.length, untagged:albums.length};
         if (command === 'genre_classify') {
@@ -89,6 +93,20 @@ async function settled() {
   await page.waitForFunction(() => state.pos === state.target && Number.isInteger(state.pos));
   return position();
 }
+
+test('cover lookup distinguishes missing artwork and reserves AI offers for an individual search', async () => {
+  await page.evaluate(async () => {
+    window.coverResult = {status: 'no_front_cover'};
+    await findCovers([focused()], true);
+  });
+  assert.equal(await page.locator('#toast').textContent(), 'Release found, but no front cover was available');
+  assert.equal(await page.evaluate(() => window.coverRequest.offerAi), true);
+  await page.evaluate(async () => {
+    window.coverResult = {status: 'no_match'};
+    await findCovers([focused()]);
+  });
+  assert.equal(await page.evaluate(() => window.coverRequest.offerAi), false);
+});
 
 test('genre sorting remembers custom instructions, including an empty preference', async () => {
   const field = page.getByLabel('Genre sorting instructions', {exact:false});
@@ -652,6 +670,48 @@ test('automatic painting is opt-in, persists its count and checks only once per 
   assert.equal(calls[0].count, 5);
 });
 
+test('AI style is a default that an album can override, remember and restore', async () => {
+  await page.evaluate(() => {
+    localStorage.setItem('muso.autoStyle', '1');
+    sessionStorage.setItem('test.envKey', 'yes');
+  });
+  await page.reload();
+  await page.locator('#crate .sleeve[data-index="20"]').waitFor();
+  await down(); await up();
+  await page.locator('#albumMenuBtn').click();
+  const style = page.locator('#albumStyle');
+  assert.equal(await style.textContent(), 'Default · AI choice');
+  assert.equal(await page.locator('#genLabel').textContent(), 'Generate with AI style');
+  await style.click();
+  const gallery = page.getByRole('dialog', {name: 'Atmosphere style'});
+  await gallery.waitFor();
+  assert.equal(await gallery.locator('#styleCanvas img').count(), 22);
+  await gallery.locator('#styleCanvas img').evaluateAll(images => Promise.all(images.map(img => img.decode())));
+  for (let i = 0; i < 8; i++) await page.keyboard.press('ArrowRight');
+  assert.equal(await page.locator('#styleCaption').textContent(), 'Pixel Art');
+  await gallery.getByRole('button', {name: 'Use this style'}).click();
+  await page.getByRole('button', {name: 'Generate Pixel Art images'}).click();
+  await page.waitForFunction(() => window.generationRequests?.[0]?.style === 'pixelart');
+
+  await page.reload();
+  await page.locator('#crate .sleeve[data-index="20"]').waitFor();
+  await down(); await up();
+  await page.locator('#albumMenuBtn').click();
+  assert.equal(await style.textContent(), 'Pixel Art');
+  assert.equal(await page.locator('#aiStyle').textContent(), 'Pixel Art');
+  assert.equal(await page.evaluate(() => albumStyle(state.albums[21].id)), 'auto');
+  await style.click();
+  assert.equal(await gallery.locator('[data-style=pixelart]').getAttribute('aria-pressed'), 'true');
+  await page.keyboard.press('Escape');
+  assert.ok(await style.evaluate(el => document.activeElement === el));
+  assert.equal(await style.textContent(), 'Pixel Art');
+  await style.click();
+  await gallery.locator('#defaultStyleChoice').click();
+  await page.getByRole('button', {name: 'Generate with AI style'}).click();
+  await page.waitForFunction(() => window.generationRequests?.[0]?.style === 'auto');
+  assert.equal(await page.evaluate(() => localStorage.getItem('muso.style.' + state.viewAlbum.id)), null);
+});
+
 test('the atmosphere toggle reflects saved images even with display turned off', async () => {
   await page.evaluate(() => localStorage.setItem('muso.atmos', '0'));
   await down(); await up();
@@ -670,6 +730,47 @@ test('the atmosphere toggle reflects saved images even with display turned off',
   assert.ok(await toggle.isEnabled());
   await page.evaluate(async () => { window.testPaintings = []; await startAtmospheres(state.viewAlbum.id); });
   assert.ok(await toggle.isDisabled());
+});
+
+test('the style gallery returns to AI settings and applies only a confirmed choice', async () => {
+  await page.locator('#menuBtn').click();
+  await page.getByRole('button', {name:'AI Features', exact:true}).click();
+  const trigger = page.locator('#aiStyle');
+  await trigger.focus();
+  await page.keyboard.press('Space');
+  const gallery = page.getByRole('dialog', {name:'Atmosphere style'});
+  await gallery.waitFor();
+  await gallery.getByRole('button', {name:'Close style selection'}).click();
+  assert.equal(await trigger.textContent(), 'Default · Cinematic');
+  assert.ok(await trigger.evaluate(el => document.activeElement === el));
+  await trigger.click();
+  await gallery.getByRole('button', {name:'Next style'}).click();
+  await gallery.getByRole('button', {name:'Dreamscape', exact:true}).click();
+  assert.equal(await trigger.textContent(), 'Dreamscape');
+  assert.ok(await page.locator('#ai').isVisible());
+  assert.equal(await page.evaluate(() => window.generationRequests?.length ?? 0), 0);
+});
+
+test('the style covers follow touch swipes and wheel browsing without changing the album', async () => {
+  await down(); await up();
+  await page.locator('#albumMenuBtn').click();
+  await page.locator('#albumStyle').click();
+  const stage = page.locator('#styleCanvas');
+  const bounds = await stage.boundingBox();
+  const x = bounds.x + bounds.width / 2, y = bounds.y + bounds.height / 2;
+  await touch('touchStart', x, 16, y);
+  await touch('touchMove', x + 48, 16, y);
+  await touch('touchMove', x + 120, 32, y);
+  await touch('touchEnd', null, 100);
+  await page.waitForFunction(() => document.querySelector('#styleCaption').textContent !== 'Cinematic');
+  const afterSwipe = await page.locator('#styleCaption').textContent();
+  await page.mouse.move(x, y);
+  await page.mouse.wheel(0, 80);
+  await page.waitForFunction(old => document.querySelector('#styleCaption').textContent !== old, afterSwipe);
+  await page.keyboard.press('Escape');
+  assert.equal(await page.locator('#albumStyle').textContent(), 'Default · Cinematic');
+  assert.equal(await position(), 20);
+  assert.equal(await page.evaluate(() => window.generationRequests?.length ?? 0), 0);
 });
 
 test('the cover stays up until the current atmosphere has decoded', async () => {
@@ -698,7 +799,10 @@ test('the cover stays up until the current atmosphere has decoded', async () => 
     window.testPaintings = ['atmos/replacement.svg'];
   });
   await page.locator('#albumMenuBtn').click();
-  await page.locator('#albumStyle').selectOption('ambient');
+  await page.locator('#albumStyle').click();
+  await page.keyboard.press('ArrowRight');
+  await page.keyboard.press('ArrowRight');
+  await page.keyboard.press('Enter');
   await page.waitForFunction(() => window.decodes.length === 2);
   await page.evaluate(() => window.decodes[0]());
   assert.equal(await page.locator('#album.showing-atmos').count(), 0);
