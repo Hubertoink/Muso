@@ -644,7 +644,13 @@ crate.addEventListener('wheel', (e) => {
 let albumsById = new Map();
 const albumCrates = createAlbumCrates({
   invoke, lookup: id => albumsById.get(id), toast, coverUrl, blankColor,
-  play: albums => { leaveCrates(); clearProposal(); startAlbum(albums[0], albums.slice(1)); },
+  play: albums => {
+    leaveCrates();
+    const [album, ...remaining] = albums;
+    if (tvActive && state.playing?.album.id !== album.id) return openAlbum(album, remaining);
+    clearProposal();
+    return startAlbum(album, remaining);
+  },
   back: () => leaveCrates(),
 });
 function openCrates() {
@@ -990,6 +996,8 @@ $('menu').querySelectorAll('[data-action]').forEach((b) =>
     if (act === 'search') openSearch();
     if (act === 'crates') openCrates();
     if (act === 'eq') openEQ(false);
+    if (act === 'images') openImagesDialog();
+    if (act === 'presenter') openTvDialog();
     if (act === 'fullscreen') toggleFullscreen();
     if (act === 'refresh') {
       invoke('scan_library').then((started) => toast(started ? 'Refreshing library…' : 'Already digging…'));
@@ -1014,7 +1022,9 @@ function closeSearch() {
   $('searchResults').innerHTML = '';
 }
 function runSearch() {
-  const q = $('searchInput').value.trim().toLowerCase();
+  const value = $('searchInput').value;
+  $('clearSearch').hidden = value.length === 0;
+  const q = value.trim().toLowerCase();
   const box = $('searchResults');
   box.innerHTML = '';
   results = [];
@@ -1045,6 +1055,11 @@ function setActive(k) {
   go(results[activeResult]);
 }
 $('searchInput').addEventListener('input', runSearch);
+$('clearSearch').addEventListener('click', () => {
+  $('searchInput').value = '';
+  runSearch();
+  $('searchInput').focus();
+});
 $('searchInput').addEventListener('keydown', (e) => {
   if (e.key === 'Escape') { closeSearch(); e.stopPropagation(); }
   else if (e.key === 'Enter') { closeSearch(); e.stopPropagation(); }
@@ -1477,6 +1492,7 @@ function chooseStyle(style) {
   if (style) localStorage.setItem(key, style);
   else localStorage.removeItem(key);
   showStyle(styleAlbum);
+  syncTv();
   if (state.viewAlbum?.id === styleAlbum) startAtmospheres(styleAlbum);
 }
 const styleCrate = createStyleCrate(stylePicker, styleNames, chooseStyle);
@@ -1502,6 +1518,7 @@ $('autoStyle').checked = localStorage.getItem('muso.autoStyle') === '1';
 $('autoStyle').addEventListener('change', () => {
   localStorage.setItem('muso.autoStyle', $('autoStyle').checked ? '1' : '0');
   showStyle((state.viewAlbum || focused())?.id);
+  syncTv();
   if (state.viewAlbum) startAtmospheres(state.viewAlbum.id);
 });
 const generateOnPlay = $('generateOnPlay'), playImageCount = $('playImageCount');
@@ -1540,6 +1557,181 @@ document.querySelectorAll('.modal').forEach((m) => {
   m.addEventListener('click', (e) => { if (e.target === m) show(m, false); });
   m.querySelector('.close').addEventListener('click', () => show(m, false));
 });
+
+/* ---------------- personal image folders ---------------- */
+const personalSets = new Map();
+let imageInventory = null, imageBusy = false, classifying = false, stopClassification = false;
+$('imageMatch').checked = localStorage.getItem('muso.imageMatch') === '1';
+$('imageOnline').checked = localStorage.getItem('muso.imageOnline') === '1';
+$('imageOnline').disabled = !$('imageMatch').checked;
+function refreshPersonalPlayback() {
+  personalSets.clear();
+  syncTv(true);
+  if (state.viewAlbum) startAtmospheres(state.viewAlbum.id);
+}
+function renderImageFolders(info) {
+  imageInventory = info;
+  $('imageFolders').replaceChildren(...info.folders.map(folder => {
+    const row = document.createElement('li'), name = document.createElement('span'), remove = document.createElement('button');
+    name.textContent = folder;
+    remove.textContent = 'Remove';
+    remove.className = 'link';
+    remove.disabled = imageBusy;
+    remove.onclick = () => changeImageFolders('remove_image_folder', {folder});
+    row.append(name, remove);
+    return row;
+  }));
+  $('imageAdd').disabled = imageBusy;
+  $('imageRefresh').disabled = imageBusy || !info.folders.length;
+  $('imageClassify').textContent = classifying
+    ? (stopClassification ? 'Stopping…' : 'Stop after current image')
+    : (info.pending ? 'Classify ' + info.pending + (info.pending === 1 ? ' image' : ' images') : 'No images awaiting classification');
+  $('imageClassify').disabled = classifying ? stopClassification : imageBusy || !info.pending;
+  $('imageStatus').textContent = info.total + ' images · ' + (info.total - info.pending - info.unreadable) + ' classified'
+    + (info.unreadable ? ' · ' + info.unreadable + ' unreadable' : '');
+}
+async function openImagesDialog() {
+  try {
+    renderImageFolders(await invoke('image_inventory'));
+    $('imagesDialog').showModal();
+  } catch (error) { toast(String(error)); }
+}
+async function changeImageFolders(command, args) {
+  if (imageBusy) return;
+  imageBusy = true;
+  renderImageFolders(imageInventory);
+  $('imageStatus').textContent = 'Updating image folders…';
+  let failure;
+  try { imageInventory = await invoke(command, args); }
+  catch (error) { failure = String(error); }
+  finally {
+    imageBusy = false;
+    try { renderImageFolders(await invoke('image_inventory')); }
+    catch (error) { renderImageFolders(imageInventory); failure ||= String(error); }
+    refreshPersonalPlayback();
+    if (failure) $('imageStatus').textContent = failure;
+  }
+}
+$('imageAdd').onclick = () => changeImageFolders('pick_image_folders');
+$('imageRefresh').onclick = () => changeImageFolders('rescan_image_folders');
+$('imageMatch').onchange = e => {
+  localStorage.setItem('muso.imageMatch', e.target.checked ? '1' : '0');
+  $('imageOnline').disabled = !e.target.checked;
+  refreshPersonalPlayback();
+};
+$('imageOnline').onchange = e => {
+  localStorage.setItem('muso.imageOnline', e.target.checked ? '1' : '0');
+  refreshPersonalPlayback();
+};
+$('imageClassify').onclick = async () => {
+  if (classifying) { stopClassification = true; renderImageFolders(imageInventory); return; }
+  if (imageBusy) return;
+  imageBusy = classifying = true;
+  stopClassification = false;
+  const budget = imageInventory.pending;
+  renderImageFolders(imageInventory);
+  let failure;
+  try {
+    for (let n = 0; n < budget && !stopClassification && imageInventory.pending; n++) {
+      renderImageFolders(await invoke('classify_next_image'));
+    }
+  } catch (error) { failure = String(error); }
+  finally {
+    imageBusy = classifying = false;
+    renderImageFolders(imageInventory);
+    if (failure) $('imageStatus').textContent = failure;
+    refreshPersonalPlayback();
+  }
+};
+$('imageDone').onclick = () => $('imagesDialog').close();
+for (const dialog of document.querySelectorAll('.library-dialog')) {
+  dialog.addEventListener('click', e => {
+    if (e.target !== dialog) return;
+    const box = dialog.getBoundingClientRect();
+    if (e.clientX < box.left || e.clientX > box.right || e.clientY < box.top || e.clientY > box.bottom) dialog.close();
+  });
+}
+
+/* ---------------- TV display ---------------- */
+const tvChannel = new BroadcastChannel('muso-presenter');
+let tvActive = false, tvReady = false, tvSet = null;
+async function savedPaintingSet(albumId, style) {
+  for (const candidate of new Set([style, ...Object.keys(styleNames), 'auto'])) {
+    const files = await invoke('get_atmospheres', { albumId, style: candidate });
+    if (files.length) return {style: candidate, files};
+  }
+  const matching = $('imageMatch').checked && state.playing?.album.id === albumId;
+  const allowAnalysis = matching && $('imageOnline').checked;
+  const key = JSON.stringify([albumId, matching, allowAnalysis]);
+  if (!personalSets.has(key)) {
+    const request = invoke('album_images', {albumId, matching, allowAnalysis}).then(result => {
+      if (result.warning) toast('Album matching unavailable · ' + result.warning, 5000);
+      return {style:'personal', files:result.files};
+    }).catch(error => {
+      if (personalSets.get(key) === request) personalSets.delete(key);
+      throw error;
+    });
+    personalSets.set(key, request);
+  }
+  return personalSets.get(key);
+}
+function syncTv(refresh = false) {
+  if (!tvActive || !tvReady) return;
+  const p = state.playing;
+  if (!p || p.ended || !p.playbackId) { tvChannel.postMessage({track: null}); return; }
+  const style = albumStyle(p.album.id);
+  if (refresh || tvSet?.id !== p.album.id || tvSet.style !== style) {
+    const entry = tvSet = {id: p.album.id, style, files: tvSet?.id === p.album.id ? tvSet.files : []};
+    savedPaintingSet(entry.id, style).then(set => {
+      if (tvSet === entry) { entry.files = set.files.map(asset); syncTv(); }
+    }).catch(e => toast(String(e)));
+  }
+  const track = p.tracks[p.index];
+  tvChannel.postMessage({track: p.playbackId, artist: track.artist || p.album.artist, title: track.title,
+    intro: !p.introDone, paused: p.paused, files: tvSet.files, cover: p.album.art ? coverUrl(p.album, 'art') : ''});
+}
+tvChannel.onmessage = e => {
+  if (e.data === 'ready') { tvReady = true; syncTv(); }
+  if (e.data === 'close' && tvActive) invoke('set_presenter', {display:null}).catch(e => toast(String(e)));
+};
+listen('presenter-closed', () => { tvActive = false; tvReady = false; tvSet = null; show($('tvStop'), false); });
+async function openTvDialog() {
+  try {
+    const api = window.__TAURI__.window;
+    const [screens, current] = await Promise.all([api.availableMonitors(), api.currentMonitor()]);
+    const select = $('tvDisplay');
+    select.replaceChildren(...screens.map((screen, i) => {
+      const number = screen.name?.match(/DISPLAY(\d+)$/i)?.[1];
+      const label = number ? 'Display ' + number : screen.name || 'Screen ' + (i + 1);
+      return new Option(label + ' · ' + screen.size.width + ' × ' + screen.size.height,
+        JSON.stringify([screen.position.x, screen.position.y]));
+    }));
+    const other = screens.findIndex(s => s.position.x !== current?.position.x || s.position.y !== current?.position.y);
+    const saved = localStorage.getItem('muso.tvDisplay');
+    if ([...select.options].some(o => o.value === saved)) select.value = saved;
+    else select.selectedIndex = Math.max(0, other);
+    $('tvStart').disabled = !screens.length;
+    show($('tvStop'), tvActive);
+    $('tvDialog').showModal();
+  } catch (e) { toast(String(e)); }
+}
+$('tvCancel').onclick = () => $('tvDialog').close();
+$('tvStop').onclick = async () => {
+  try { await invoke('set_presenter', {display:null}); $('tvDialog').close(); } catch (e) { toast(String(e)); }
+};
+$('tvStart').onclick = async () => {
+  const value = $('tvDisplay').value;
+  $('tvStart').disabled = true;
+  try {
+    await invoke('set_presenter', {display:JSON.parse(value)});
+    tvActive = true;
+    localStorage.setItem('muso.tvDisplay', value);
+    $('tvDialog').close();
+    if (state.view === 'album') closeAlbum();
+    syncTv();
+  } catch (e) { toast(String(e)); }
+  finally { $('tvStart').disabled = false; }
+};
 
 /* ---------------- playback ---------------- */
 
@@ -1726,14 +1918,14 @@ function clearProposal() {
   show(proposedCover, false);
 }
 
-function openAlbum(a) {
+function openAlbum(a, remaining = []) {
   ++albumRequest;
   clearProposal();
   const playing = state.playing;
   if (playing?.album.id === a.id) return displayAlbum(a);
-  if (!playing || playing.paused || playing.ended) return startAlbum(a);
+  if (!playing || playing.paused || playing.ended) return startAlbum(a, remaining);
 
-  proposal = { album: a, drag: null, busy: false };
+  proposal = { album: a, remaining, returnToLibrary: tvActive && state.view === 'library', drag: null, busy: false };
   const preview = $('proposedImg');
   preview.onerror = () => show(preview, false);
   show(preview, a.art);
@@ -1779,7 +1971,7 @@ function endProposalDrag(e) {
   const dx = e.clientX - drag.x;
   const threshold = clamp(proposedCover.offsetWidth * .14, 36, 80);
   if (e.type === 'pointerup' && dx >= threshold && dx > Math.abs(e.clientY - drag.y)) {
-    startAlbum(proposal.album);
+    startAlbum(proposal.album, proposal.remaining);
     return;
   }
   proposedCover.classList.remove('dragging');
@@ -1792,7 +1984,7 @@ proposedCover.addEventListener('keydown', e => {
   if (e.key === 'Enter' || e.key === ' ') e.stopPropagation();
 });
 proposedCover.addEventListener('click', e => {
-  if (e.detail === 0 && proposal && !proposal.busy) startAlbum(proposal.album);
+  if (e.detail === 0 && proposal && !proposal.busy) startAlbum(proposal.album, proposal.remaining);
 });
 
 const playerCover = $('cover');
@@ -1908,9 +2100,11 @@ async function startAlbum(a, remaining = [], advancing = false) {
       preview.id = 'coverImg';
     }
     clearProposal();
+    personalSets.clear();
     state.playing = { album: a, tracks, index: 0, paused: false, ended: false, remaining };
-    if (!advancing || state.view === 'album') displayAlbum(a, advancing);
+    if (state.view === 'album' || (!advancing && !tvActive)) displayAlbum(a, advancing);
     await playIndex(0);
+    if (offer?.returnToLibrary && tvActive && request === albumRequest) closeAlbum();
   } catch (e) {
     if (request !== albumRequest) return;
     clearProposal();
@@ -2001,17 +2195,41 @@ $('album').addEventListener('click', (e) => {
   if (!e.target.closest('#albumMenu, #albumMenuBtn')) show($('albumMenu'), false);
 });
 const playerWindow = window.__TAURI__.window.getCurrentWindow();
+const exitFullscreen = $('exitFullscreen');
+let windowFullscreen = false;
 function showFullscreenAction(fullscreen) {
+  windowFullscreen = fullscreen;
+  if (!fullscreen) show(exitFullscreen, false);
   document.querySelectorAll('.fullscreen-label').forEach(el => { el.textContent = fullscreen ? 'Exit fullscreen' : 'Enter fullscreen'; });
   document.querySelectorAll('.fullscreen-icon').forEach(el => el.setAttribute('href', 'icons/lucide.svg#' + (fullscreen ? 'minimize' : 'maximize')));
 }
-async function toggleFullscreen() {
+async function toggleFullscreen(target) {
   try {
-    const enter = !(await playerWindow.isFullscreen());
+    const enter = target ?? !(await playerWindow.isFullscreen());
     await playerWindow.setFullscreen(enter);
     showFullscreenAction(enter);
   } catch (e) { toast(String(e)); }
 }
+function syncWindowFullscreen() {
+  playerWindow.isFullscreen().then(showFullscreenAction).catch(console.warn);
+}
+syncWindowFullscreen();
+let fullscreenResizeTimer;
+window.addEventListener('resize', () => {
+  clearTimeout(fullscreenResizeTimer);
+  fullscreenResizeTimer = setTimeout(syncWindowFullscreen, 120);
+});
+document.addEventListener('pointermove', e => {
+  if (!windowFullscreen) return;
+  const inReach = (e.clientY <= 10 && !e.buttons) || (!exitFullscreen.classList.contains('hidden') && e.clientY <= 64);
+  show(exitFullscreen, inReach && e.pointerType === 'mouse');
+}, { passive: true });
+document.addEventListener('pointerdown', e => {
+  if (e.pointerType !== 'mouse') show(exitFullscreen, false);
+}, { capture: true, passive: true });
+document.documentElement.addEventListener('pointerleave', () => show(exitFullscreen, false));
+window.addEventListener('blur', () => show(exitFullscreen, false));
+exitFullscreen.addEventListener('click', () => toggleFullscreen(false));
 $('albumMenuBtn').addEventListener('click', async () => {
   const opening = $('albumMenu').classList.contains('hidden');
   if (opening && state.viewAlbum) fillAlbumGenre(state.viewAlbum);
@@ -2082,6 +2300,7 @@ let atmosToken = 0;
 let readyAlbum = null;
 let playlist = null;
 function updateAtmosView() {
+  syncTv();
   const p = state.playing;
   const reveal = !coverPull && !proposal && p?.introDone && readyAlbum === p.album.id && state.viewAlbum?.id === readyAlbum;
   $('album').classList.toggle('showing-atmos', !!reveal);
@@ -2094,18 +2313,16 @@ async function startAtmospheres(albumId, announce = false) {
   const style = albumStyle(albumId);
   try {
     // Preview the chosen look on a saved set until this album has images in that style.
-    for (const candidate of new Set([style, ...Object.keys(styleNames), 'auto'])) {
-      const files = await invoke('get_atmospheres', { albumId, style: candidate });
-      if (token !== atmosToken) return;
-      if (files.length) {
-        if (atmosEnabled()) setPaintings(albumId, candidate, files);
-        else $('showAtmosBtn').disabled = false;
-        return;
-      }
+    const set = await savedPaintingSet(albumId, style);
+    if (token !== atmosToken) return;
+    if (set.files.length) {
+      if (atmosEnabled()) setPaintings(albumId, set.style, set.files);
+      else $('showAtmosBtn').disabled = false;
+      return;
     }
   }
   catch (e) { if (token === atmosToken) toast(String(e), 6000); return; }
-  if (announce) toast('No saved images for this album. Choose Generate Visual Atmospheres.', 5500);
+  if (announce) toast('No images available. Add a folder in Images or generate atmospheres.', 5500);
 }
 
 function schedulePainting() {
@@ -2154,7 +2371,7 @@ async function loadPainting(set, file) {
   set.shown = file;
   set.since = performance.now();
   readyAlbum = set.albumId;
-  $('album').dataset.preview = set.style === albumStyle(set.albumId) ? '' : albumStyle(set.albumId);
+  $('album').dataset.preview = set.style === 'personal' || set.style === albumStyle(set.albumId) ? '' : albumStyle(set.albumId);
   img.classList.add('on');
   other.classList.remove('on');
   updateAtmosView();
@@ -2180,10 +2397,11 @@ function stopAtmospheres() {
 
 const generating = new Set();
 function paintingReady({ albumId, style, files }) {
+  if (tvActive && state.playing?.album.id === albumId) syncTv(true);
   if (state.viewAlbum?.id !== albumId || !files.length) return;
   if (!atmosEnabled()) {
     $('showAtmosBtn').disabled = false;
-  } else if (albumStyle(albumId) === style || !playlist) {
+  } else if (albumStyle(albumId) === style || !playlist || playlist.style === 'personal') {
     setPaintings(albumId, style, files);
   }
 }
@@ -2225,7 +2443,9 @@ listen('atmos-progress', ({ payload }) => {
 /* ---------------- keyboard ---------------- */
 
 window.addEventListener('keydown', (e) => {
+  if (['clearSearch', 'exitFullscreen'].includes(e.target.id) && (e.key === 'Enter' || e.key === ' ')) return;
   const modalOpen = [...document.querySelectorAll('.modal')].some((m) => !m.classList.contains('hidden'));
+  if ($('tvDialog').open || $('imagesDialog').open) return;
   if (e.key === 'F11') {
     e.preventDefault();
     if (!e.repeat) toggleFullscreen();

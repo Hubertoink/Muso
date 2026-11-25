@@ -139,16 +139,30 @@
 
   <!-- Corner icon + hidden overlay -->
   <button id="menuBtn" class="corner hidden" aria-label="Menu"><span></span></button>
+  <button id="exitFullscreen" class="hidden" type="button" aria-label="Exit fullscreen" aria-description="Exit fullscreen">
+    <svg aria-hidden="true"><use href="icons/lucide.svg#minimize"/></svg>
+  </button>
   <div id="menu" class="animated-overlay hidden" inert>
     <div class="menu-scrim"></div>
-    <nav class="menu-panel">
-      <button data-action="search">Search</button>
-      <button data-action="crates">Crates</button>
-      <button data-action="settings">Settings</button>
-      <button data-action="eq">EQ</button>
-      <button data-action="fullscreen" class="fullscreen-label">Enter fullscreen</button>
-      <button data-action="refresh">Refresh Library</button>
-      <button data-action="ai">AI Features</button>
+    <nav class="menu-panel" aria-label="Main menu">
+      <div class="menu-group" role="group" aria-labelledby="menuLibrary">
+        <h2 id="menuLibrary">Library</h2>
+        <button data-action="search">Search</button>
+        <button data-action="crates">Crates</button>
+        <button data-action="images">Images</button>
+        <button data-action="refresh">Refresh Library</button>
+      </div>
+      <div class="menu-group" role="group" aria-labelledby="menuPlayback">
+        <h2 id="menuPlayback">Playback &amp; display</h2>
+        <button data-action="eq">EQ</button>
+        <button data-action="presenter">TV display</button>
+        <button data-action="fullscreen" class="fullscreen-label">Enter fullscreen</button>
+      </div>
+      <div class="menu-group" role="group" aria-labelledby="menuPreferences">
+        <h2 id="menuPreferences">Preferences</h2>
+        <button data-action="ai">AI Features</button>
+        <button data-action="settings">Settings</button>
+      </div>
       <div class="menu-update">
         <small id="updateStatus" role="status"></small>
         <button type="button" id="menuVersion" aria-description="Check for updates"></button>
@@ -156,9 +170,42 @@
     </nav>
   </div>
 
+  <dialog id="tvDialog" class="modal-card library-dialog" aria-labelledby="tvTitle">
+    <div class="modal-scroll">
+      <h2 id="tvTitle">TV display</h2>
+      <label class="style-field">Screen <select id="tvDisplay"></select></label>
+      <div class="modal-actions">
+        <button id="tvStop" class="link hidden">Stop TV display</button>
+        <button id="tvCancel" class="link">Close</button>
+        <button id="tvStart" class="pill">Show on screen</button>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="imagesDialog" class="modal-card library-dialog" aria-labelledby="imagesTitle">
+    <div class="modal-scroll">
+      <h2 id="imagesTitle">Images</h2>
+      <p class="muted">Play images from your folders when an album has no saved atmospheres.</p>
+      <h3>Image folders</h3>
+      <ul id="imageFolders"></ul>
+      <div class="image-tools"><button class="link" id="imageAdd">+ Add folder</button><button class="link" id="imageRefresh">Rescan folders</button></div>
+      <h3>Image matching</h3>
+      <p class="muted">GPT-6 Luna rates each preview by mood, visual density, energy and abstraction. Each image uses one paid request.</p>
+      <button id="imageClassify" class="link setting-action"></button>
+      <label class="check"><input id="imageMatch" type="checkbox"> Match classified images to the playing album</label>
+      <label class="check"><input id="imageOnline" type="checkbox"> Allow paid analysis for albums without a current four-axis profile</label>
+      <p class="muted">Saved album profiles work offline. Without one, Muso uses the genre to narrow the selection. If the genre gives no guidance, it picks at random.</p>
+      <p id="imageStatus" class="status" role="status"></p>
+      <div class="modal-actions"><button id="imageDone" class="pill">Done</button></div>
+    </div>
+  </dialog>
+
   <!-- Search -->
   <div id="search" class="sheet hidden">
-    <input id="searchInput" type="text" placeholder="Search the crate" spellcheck="false" autocomplete="off" />
+    <div class="search-field">
+      <input id="searchInput" type="text" placeholder="Search the crate" aria-label="Search the crate" spellcheck="false" autocomplete="off" />
+      <button id="clearSearch" type="button" aria-label="Clear search" hidden>×</button>
+    </div>
     <div id="searchResults"></div>
   </div>
 
@@ -191,7 +238,7 @@
           <select id="imageFilter">
             <option value="off">Off</option>
             <option value="light">Drifting light</option>
-            <option value="film">Film weave</option>
+            <option value="film">Film grain</option>
             <option value="haze">Colour haze</option>
           </select>
         </label>

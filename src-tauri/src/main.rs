@@ -8,6 +8,7 @@ mod crates;
 mod db;
 mod genres;
 mod paintings;
+mod personal_images;
 mod releases;
 mod scanner;
 #[cfg(any(windows, target_os = "linux"))]
@@ -415,6 +416,9 @@ async fn generate_atmospheres(app: AppHandle, state: State<'_, AppState>, album_
 /// Serves cached artwork / atmospheres from the app data dir via `muso://`.
 fn serve(app: &AppHandle, req: Request<Vec<u8>>) -> Response<Vec<u8>> {
     let not_found = || Response::builder().status(404).body(Vec::new()).unwrap();
+    if let Some(token) = req.uri().path().strip_prefix("/personal/") {
+        return personal_images::serve(app, token).unwrap_or_else(not_found);
+    }
     let Some(rel) = paintings::image_path(req.uri().path()) else { return not_found() };
     let Some(state) = app.try_state::<AppState>() else { return not_found() };
     match std::fs::read(state.data_dir.join(rel.as_ref())) {
@@ -426,6 +430,37 @@ fn serve(app: &AppHandle, req: Request<Vec<u8>>) -> Response<Vec<u8>> {
             .unwrap(),
         Err(_) => not_found(),
     }
+}
+
+#[tauri::command]
+async fn set_presenter(app: AppHandle, display: Option<(i32, i32)>) -> R<()> {
+    let existing = app.get_webview_window("presenter");
+    let Some((x, y)) = display else {
+        if let Some(window) = existing { window.close().map_err(err)?; }
+        return Ok(());
+    };
+    let main = app.get_webview_window("main").ok_or("Main window unavailable")?;
+    if !main.available_monitors().map_err(err)?.iter().any(|m| m.position().x == x && m.position().y == y) {
+        return Err("Display disconnected. Choose an available display.".into());
+    }
+    let window = match existing {
+        Some(window) => window,
+        None => {
+            let window = tauri::WebviewWindowBuilder::new(&app, "presenter", tauri::WebviewUrl::App("presenter.html".into()))
+                .title("Muso TV").visible(false).focused(false).decorations(false).build().map_err(err)?;
+            #[cfg(any(windows, target_os = "linux"))]
+            {
+                let presenter = window.clone();
+                app.run_on_main_thread(move || {
+                    if let Err(error) = screen::watch(presenter) { eprintln!("TV screen idle inhibition: {error}"); }
+                }).map_err(err)?;
+            }
+            window
+        }
+    };
+    window.set_fullscreen_on_monitor(tauri::PhysicalPosition::new(x as f64, y as f64)).map_err(err)?;
+    window.show().map_err(err)?;
+    main.set_focus().map_err(err)
 }
 
 fn main() {
@@ -456,7 +491,23 @@ fn main() {
             });
             Ok(())
         })
+        .on_window_event(|window, event| {
+            if matches!(event, tauri::WindowEvent::Destroyed) {
+                match window.label() {
+                    "main" => if let Some(tv) = window.app_handle().get_webview_window("presenter") { let _ = tv.close(); },
+                    "presenter" => { let _ = window.emit_to("main", "presenter-closed", ()); }
+                    _ => {}
+                }
+            }
+        })
         .invoke_handler(tauri::generate_handler![
+            set_presenter,
+            personal_images::image_inventory,
+            personal_images::pick_image_folders,
+            personal_images::rescan_image_folders,
+            personal_images::remove_image_folder,
+            personal_images::classify_next_image,
+            personal_images::album_images,
             get_folders,
             pick_folders,
             remove_folder,

@@ -8,7 +8,8 @@ before(async () => {
 });
 after(() => browser?.close());
 beforeEach(async () => {
-  page = await browser.newPage({ viewport: { width: 1200, height: 800 }, hasTouch: true });
+  const context = await browser.newContext({ viewport: { width: 1200, height: 800 }, hasTouch: true });
+  page = await context.newPage();
   await page.addInitScript(() => {
     const albums = Array.from({ length: 80 }, (_, i) => ({
       id: i.toString(16).padStart(6, '0'), artist: 'Test', title: 'Record ' + i,
@@ -59,6 +60,11 @@ beforeEach(async () => {
           return structuredClone(crates);
         }
         if (command === 'get_tracks') return window.testTracks ?? [{ path: 'test', title: 'Track' }];
+        if (command === 'album_images') {
+          (window.personalRequests ??= []).push(args);
+          return {files:window.personalFiles ?? [],warning:null};
+        }
+        if (command === 'image_inventory') return {folders:[],total:0,pending:0,unreadable:0};
         if (command === 'get_atmospheres') return window.testPaintings ?? [];
         if (command === 'generate_atmospheres') {
           (window.generationRequests ??= []).push(args);
@@ -75,7 +81,7 @@ beforeEach(async () => {
   input = await page.context().newCDPSession(page);
   now = Date.now() / 1000;
 });
-afterEach(() => page?.close());
+afterEach(() => page?.context().close());
 
 // Send touch through the browser's input pipeline with a repeatable finger speed.
 async function touch(type, x, elapsed = 16, y = 350) {
@@ -1011,6 +1017,12 @@ test('atmosphere grain keeps its pixel size across display scales and window siz
   await down();
   await up();
   await page.locator('#alTrack button').waitFor();
+  await page.evaluate(() => {
+    const album = document.querySelector('#album');
+    album.dataset.filter = 'film';
+    album.classList.add('showing-atmos');
+  });
+  assert.equal(await page.locator('#atmosGrain').evaluate(el => getComputedStyle(el).animationName), 'none');
   for (const [width, height, density] of [[1200, 800, 1], [1280, 800, 2], [930, 620, 1.5]]) {
     await input.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: density, mobile: false });
     await page.waitForFunction(dpr => {
@@ -1060,4 +1072,129 @@ test('a large crate finishes folding before its stack reappears', async () => {
   assert.ok(await stack.evaluate(el => el.classList.contains('lifted-away')));
   await fan.waitFor({ state: 'hidden' });
   assert.ok(await stack.isVisible());
+});
+
+test('TV follows the playing track while the controller stays in the library', async () => {
+  await page.evaluate(() => {
+    const primary = { name:'Laptop', position:{x:0,y:0}, size:{width:1920,height:1080} };
+    const tv = { name:'TV', position:{x:-1920,y:0}, size:{width:1920,height:1080} };
+    Object.assign(window.__TAURI__.window, { availableMonitors:async () => [primary,tv], currentMonitor:async () => primary });
+    window.testTracks = [{title:'First', artist:'Guest', path:'a'}, {title:'Second',path:'b'}];
+  });
+  await page.locator('#menuBtn').click();
+  await page.locator('[data-action=presenter]').click();
+  assert.equal(await page.locator('#tvDisplay').inputValue(), '[-1920,0]');
+  await page.locator('#tvStart').click();
+  const tv = await page.context().newPage();
+  await tv.goto(new URL('../ui/presenter.html', import.meta.url).href);
+  await page.waitForFunction(() => tvReady);
+  await page.evaluate(() => openAlbum(focused()));
+  await tv.waitForFunction(() => document.querySelector('#title').textContent === 'First');
+  assert.equal(await page.evaluate(() => state.view), 'library');
+  assert.equal(await tv.locator('#artist').textContent(), 'Guest');
+  await page.evaluate(() => window.emitPlayback('cover-intro-ended', state.playing.playbackId));
+  await tv.waitForFunction(() => !document.querySelector('aside').classList.contains('visible'));
+  await page.evaluate(() => next());
+  await tv.waitForFunction(() => document.querySelector('#title').textContent === 'Second');
+  assert.equal(await tv.locator('#artist').textContent(), 'Test');
+  assert.ok(await tv.locator('aside').evaluate(el => el.classList.contains('visible')));
+  const playingId = await page.evaluate(() => state.playing.playbackId);
+  const offer = page.locator('#proposedCover');
+  await page.evaluate(() => openAlbum(state.albums[21]));
+  await offer.waitFor();
+  await offer.locator('.swipe-hint').tap();
+  assert.equal(await page.evaluate(() => state.playing.playbackId), playingId);
+  assert.equal(await tv.locator('#title').textContent(), 'Second');
+  await page.locator('#backBtn').tap();
+  await page.locator('#album').waitFor({state:'hidden'});
+  assert.equal(await page.evaluate(() => state.playing.playbackId), playingId);
+  await page.evaluate(() => openAlbum(state.albums[21]));
+  await offer.waitFor();
+  await offer.evaluate(el => Promise.all(el.getAnimations().map(a => a.finished)));
+  const box = await offer.boundingBox();
+  const x = box.x + box.width - 22, y = box.y + box.height / 2;
+  await touch('touchStart', x, 16, y);
+  await move(x + 100, 120, y);
+  await up();
+  await tv.waitForFunction(() => document.querySelector('#title').textContent === 'First');
+  await page.locator('#album').waitFor({state:'hidden'});
+  assert.equal(await page.evaluate(() => state.playing.album.title), 'Record 21');
+  assert.equal(await page.evaluate(() => state.view), 'library');
+  await tv.close();
+});
+
+test('TV and Images dialogs stay hidden after closing by touch, Escape or backdrop', async () => {
+  await page.evaluate(() => {
+    const monitor = {name:'Screen',position:{x:0,y:0},size:{width:1280,height:720}};
+    Object.assign(window.__TAURI__.window, {availableMonitors:async()=>[monitor],currentMonitor:async()=>monitor});
+  });
+  for (const [action, id, done] of [['presenter','tvDialog','tvCancel'],['images','imagesDialog','imageDone']]) {
+    const dialog = page.locator('#' + id);
+    assert.equal(await dialog.isVisible(), false);
+    for (const method of ['button','escape','backdrop']) {
+      await page.locator('#menuBtn').tap();
+      await page.locator('[data-action=' + action + ']').tap();
+      await dialog.waitFor();
+      if (method === 'button') await page.locator('#' + done).tap();
+      if (method === 'escape') await page.keyboard.press('Escape');
+      if (method === 'backdrop') await page.touchscreen.tap(5,5);
+      await dialog.waitFor({state:'hidden'});
+      assert.equal(await dialog.evaluate(el=>el.open),false);
+    }
+  }
+});
+
+test('personal images are shared by both views and generated album sets take priority', async () => {
+  const result = await page.evaluate(async()=>{
+    window.personalFiles=['personal/1-1','personal/3-1'];
+    const id=focused().id;
+    const [player,tv]=await Promise.all([savedPaintingSet(id,'cinematic'),savedPaintingSet(id,'auto')]);
+    window.testPaintings=['atmos/album.jpg'];
+    const generated=await savedPaintingSet(id,'cinematic');
+    return {player,tv,generated,requests:window.personalRequests};
+  });
+  assert.equal(result.player.style,'personal');
+  assert.deepEqual(result.player.files,result.tv.files);
+  assert.deepEqual(result.generated.files,['atmos/album.jpg']);
+  assert.equal(result.requests.length,1);
+  assert.equal(result.requests[0].matching,false);
+});
+
+test('clearing search removes the results and keeps typing in the field', async () => {
+  await page.keyboard.type('R');
+  const field = page.getByRole('textbox', {name:'Search the crate'});
+  const clear = page.getByRole('button', {name:'Clear search'});
+  await clear.tap();
+  assert.equal(await field.inputValue(), '');
+  assert.equal(await clear.isVisible(), false);
+  assert.equal(await page.locator('#searchResults button').count(), 0);
+  assert.equal(await field.evaluate(el => el === document.activeElement), true);
+  await page.keyboard.type('Record 21');
+  assert.equal(await page.locator('#searchResults button').count(), 1);
+  await clear.press('Enter');
+  assert.equal(await field.inputValue(), '');
+  assert.equal(await page.evaluate(() => state.view), 'library');
+});
+
+test('the fullscreen exit is revealed at the top edge for the mouse', async () => {
+  await page.evaluate(() => {
+    window.testFullscreen = false;
+    playerWindow.isFullscreen = async () => window.testFullscreen;
+    playerWindow.setFullscreen = async value => { window.testFullscreen = value; };
+  });
+  const exit = page.locator('#exitFullscreen');
+  await page.mouse.move(100, 2);
+  assert.equal(await exit.isVisible(), false);
+  await page.locator('#menuBtn').click();
+  await page.getByRole('group', {name:'Playback & display'}).getByText('Enter fullscreen').click();
+  await page.mouse.move(100, 2);
+  await exit.waitFor();
+  await page.mouse.move(100, 150);
+  await exit.waitFor({state:'hidden'});
+  await page.touchscreen.tap(100, 3);
+  assert.equal(await exit.isVisible(), false);
+  await page.mouse.move(100, 2);
+  await exit.click();
+  await exit.waitFor({state:'hidden'});
+  assert.equal(await page.evaluate(() => window.testFullscreen), false);
 });
