@@ -96,16 +96,16 @@ function createGenres({ invoke, listen, toast, lookup, records, coverUrl, blankC
       if (parent) { const p = document.createElement('i'); p.textContent = parent + ' ›'; name.append(p); }
       name.append(c.name);
       const members = [...c.tags].map(tagName);
-      b.title = (members.length ? members.join(' · ') : 'No file tags yet – albums arrive here in step 2')
+      b.ariaDescription = (members.length ? members.join(' · ') : 'No file tags yet – albums arrive here in step 2')
         + '\nClick to rename, nest or take tags out';
       b.append(name, n);
-      if (c.tags.size > 1) { const s = document.createElement('em'); s.textContent = c.tags.size; s.title = c.tags.size + ' file tags'; b.append(s); }
+      if (c.tags.size > 1) { const s = document.createElement('em'); s.textContent = c.tags.size; s.ariaDescription = c.tags.size + ' file tags'; b.append(s); }
       if ([...c.tags].some(k => draft.broad.has(k))) b.classList.add('broad');
     } else {
       const t = tagsByKey().get(it.key);
       b.dataset.key = it.key;
       name.textContent = it.name;
-      b.title = (t?.variants.join(' · ') || it.key) + (t?.artists.length ? '\n' + t.artists.join(', ') : '') + '\nDrag onto another tag to merge them into one genre';
+      b.ariaDescription = (t?.variants.join(' · ') || it.key) + (t?.artists.length ? '\n' + t.artists.join(', ') : '') + '\nDrag onto another tag to merge them into one genre';
       b.append(name, n);
       if (draft.broad.has(it.key)) b.classList.add('broad');
     }
@@ -278,7 +278,7 @@ function createGenres({ invoke, listen, toast, lookup, records, coverUrl, blankC
       level.append(new Option('Under ' + t.name, t.uid, false, c.parent === t.uid));
     }
     level.disabled = hasChildren;
-    level.title = hasChildren ? 'Has its own subgenres' : '';
+    level.ariaDescription = hasChildren ? 'Has its own subgenres' : '';
     el('popTags').replaceChildren(...[...c.tags].sort((a, b) => tagAlbums(b) - tagAlbums(a)).map(k => {
       const li = document.createElement('li');
       const s = document.createElement('span');
@@ -288,7 +288,7 @@ function createGenres({ invoke, listen, toast, lookup, records, coverUrl, blankC
       const x = document.createElement('button');
       x.type = 'button';
       x.textContent = '×';
-      x.title = 'Take this tag out of the genre';
+      x.ariaDescription = 'Take this tag out of the genre';
       x.setAttribute('aria-label', 'Take ' + tagName(k) + ' out');
       x.addEventListener('click', () => { animate(() => { takeTag(k); draft.unassigned.add(k); }); markDirty(); openPop(id); });
       li.append(s, n, x);
@@ -585,7 +585,7 @@ function createGenres({ invoke, listen, toast, lookup, records, coverUrl, blankC
     const from = document.createElement('span');
     from.className = 'rfrom';
     from.textContent = s.current || s.tag || '—';
-    from.title = s.tag ? 'Tag: ' + s.tag : 'No tag';
+    from.ariaDescription = s.tag ? 'Tag: ' + s.tag : 'No tag';
     const to = document.createElement('select');
     to.className = 'rto';
     to.setAttribute('aria-label', 'Genre for ' + s.title);
@@ -596,10 +596,10 @@ function createGenres({ invoke, listen, toast, lookup, records, coverUrl, blankC
     conf.textContent = Math.round(s.confidence * 100) + ' %';
     conf.style.setProperty('--c', s.confidence);
     const ok = document.createElement('button');
-    ok.type = 'button'; ok.className = 'rok'; ok.textContent = '✓'; ok.title = 'Accept'; ok.setAttribute('aria-label', 'Accept ' + to.value + ' for ' + s.title);
+    ok.type = 'button'; ok.className = 'rok'; ok.textContent = '✓'; ok.ariaDescription = 'Accept'; ok.setAttribute('aria-label', 'Accept ' + to.value + ' for ' + s.title);
     ok.addEventListener('click', () => decide([{ album_id: s.album_id, genre: to.value }], []));
     const no = document.createElement('button');
-    no.type = 'button'; no.className = 'rno'; no.textContent = '×'; no.title = 'Reject'; no.setAttribute('aria-label', 'Reject suggestion for ' + s.title);
+    no.type = 'button'; no.className = 'rno'; no.textContent = '×'; no.ariaDescription = 'Reject'; no.setAttribute('aria-label', 'Reject suggestion for ' + s.title);
     no.addEventListener('click', () => decide([], [s.album_id]));
     li.append(thumb, text, from, document.createTextNode('→'), to, conf, ok, no);
     return li;

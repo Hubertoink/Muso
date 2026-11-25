@@ -64,7 +64,7 @@ function createAlbumCrates({ invoke, lookup, play, back, toast, coverUrl, blankC
   /* ---------------- filing tray ---------------- */
 
   let ghost = null, drop = null;
-  let trayLists, traySize, scrollFrame = 0;
+  let trayLists, traySize, dragFrame = 0;
   function renderTray(side) {
     const count = data.lists.length + 1;
     const size = Math.round(side ? clamp(window.innerHeight / count - 52, 48, 76)
@@ -91,6 +91,8 @@ function createAlbumCrates({ invoke, lookup, play, back, toast, coverUrl, blankC
     return document.elementFromPoint(x, y)?.closest('.tray-crate') || null;
   }
   function removeGhost(g) {
+    cancelAnimationFrame(dragFrame);
+    dragFrame = 0;
     g.flight?.cancel();
     g.el.remove();
     g.sleeve.classList.remove('filing');
@@ -122,69 +124,82 @@ function createAlbumCrates({ invoke, lookup, play, back, toast, coverUrl, blankC
     g.style.width = g.style.height = size + 'px';
     const img = g.querySelector('img');
     if (img) { img.removeAttribute('id'); img.decoding = 'sync'; }
+    if (side && navigator.userAgent.includes('Linux')) {
+      // Keep WebKitGTK from re-filtering a full-size moving sleeve and its shadow.
+      g.classList.add('soften-player-ghost');
+      if (img && !img.classList.contains('hidden')) {
+        const soft = img.cloneNode(false);
+        soft.className = 'soft-cover';
+        g.append(soft);
+      }
+    }
     const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
     ghost = { el: g, album, sleeve, size, home: { x: cx, y: cy }, grab: { x: x - cx, y: y - cy },
-      side, startX: x, startY: y, lastX: x, rot: 0, trayTop: window.innerHeight - tray.offsetHeight };
-    place(x, y);
+      side, startX: x, startY: y, lastX: x, pointerX: x, pointerY: y, rot: 0, trayTop: window.innerHeight - tray.offsetHeight };
+    place(x, y, tray.offsetWidth);
     sleeve.classList.add('filing');
     document.body.appendChild(g);
   }
-  function place(x, y) {
-    const progress = ghost.side ? (ghost.startX - x) / Math.max(80, ghost.startX - tray.offsetWidth / 2)
+  function place(x, y, trayWidth) {
+    const progress = ghost.side ? (ghost.startX - x) / Math.max(80, ghost.startX - trayWidth / 2)
       : (y - ghost.startY) / Math.max(80, ghost.trayTop - ghost.startY);
     const p = clamp(progress, 0, 1);
     const scale = 1 - p * 0.62;
     ghost.rot = ghost.rot * 0.8 + clamp((x - ghost.lastX) * 0.9, -16, 16) * 0.2;
     ghost.lastX = x;
-    ghost.lastY = y;
     const cx = x - ghost.grab.x * scale, cy = y - ghost.grab.y * scale;
     ghost.el.style.setProperty('--motion-transform', `translate3d(${cx - ghost.size / 2}px,${cy - ghost.size / 2}px,0) scale(${scale}) rotate(${ghost.rot.toFixed(2)}deg)`);
   }
-  function highlight(x, y) {
+  function highlight(x, y, target) {
     // Fade the dragged sleeve as it approaches a drop area, including between stacks.
     const reach = clamp(ghost.size * .42, 110, 220);
-    let distance = reach;
-    for (const item of el('trayCrates').children) {
-      const r = item.getBoundingClientRect();
-      const dx = Math.max(r.left - x, x - r.right, 0);
-      const dy = Math.max(r.top - y, y - r.bottom, 0);
-      distance = Math.min(distance, Math.hypot(dx, dy));
+    let distance = target ? 0 : reach;
+    if (!target) {
+      for (const item of el('trayCrates').children) {
+        const r = item.getBoundingClientRect();
+        const dx = Math.max(r.left - x, x - r.right, 0);
+        const dy = Math.max(r.top - y, y - r.bottom, 0);
+        distance = Math.min(distance, Math.hypot(dx, dy));
+      }
     }
     const proximity = 1 - distance / reach;
     ghost.el.style.setProperty('--crate-proximity', proximity.toFixed(3));
-    const t = targetAt(x, y);
-    if (t !== drop) {
+    if (target !== drop) {
       drop?.classList.remove('over');
-      t?.classList.add('over');
-      drop = t;
+      target?.classList.add('over');
+      drop = target;
     }
   }
   function drag(x, y) {
-    if (!ghost) return;
-    place(x, y);
-    highlight(x, y);
-    cancelAnimationFrame(scrollFrame);
-    if (!ghost.side || x > tray.getBoundingClientRect().right) return;
-    const box = el('trayCrates');
-    const edge = 56;
-    const speed = clamp((y - (window.innerHeight - edge)) / edge, 0, 1) - clamp((edge - y) / edge, 0, 1);
-    if (!speed || box.scrollHeight <= box.clientHeight) return;
-    function scroll() {
-      const before = box.scrollTop;
-      box.scrollTop += Math.sign(speed) * Math.ceil(Math.abs(speed) * 10);
-      highlight(x, y);
-      if (box.scrollTop !== before) scrollFrame = requestAnimationFrame(scroll);
+    if (!ghost || ghost.flight) return;
+    ghost.pointerX = x;
+    ghost.pointerY = y;
+    if (!dragFrame) dragFrame = requestAnimationFrame(drawDrag);
+  }
+  function drawDrag() {
+    dragFrame = 0;
+    const { pointerX: x, pointerY: y } = ghost;
+    const bounds = tray.getBoundingClientRect();
+    if (ghost.side && x <= bounds.right) {
+      const box = el('trayCrates');
+      const edge = 56;
+      const speed = clamp((y - (window.innerHeight - edge)) / edge, 0, 1) - clamp((edge - y) / edge, 0, 1);
+      if (speed) {
+        const before = box.scrollTop;
+        box.scrollTop += Math.sign(speed) * Math.ceil(Math.abs(speed) * 10);
+        if (box.scrollTop !== before) dragFrame = requestAnimationFrame(drawDrag);
+      }
     }
-    scrollFrame = requestAnimationFrame(scroll);
+    highlight(x, y, targetAt(x, y));
+    place(x, y, bounds.width);
   }
   tray.addEventListener('transitionend', e => {
     if (e.target === tray && ghost && !ghost.flight && tray.classList.contains('open')) {
-      highlight(ghost.lastX, ghost.lastY);
+      drag(ghost.pointerX, ghost.pointerY);
     }
   });
   function dismissPlayerTray() {
     if (!ghost?.side) return;
-    cancelAnimationFrame(scrollFrame);
     removeGhost(ghost);
     ghost = null;
     drop = null;
@@ -201,8 +216,14 @@ function createAlbumCrates({ invoke, lookup, play, back, toast, coverUrl, blankC
   }
   async function end(x, y, cancelled) {
     if (!ghost) return;
-    cancelAnimationFrame(scrollFrame);
+    cancelAnimationFrame(dragFrame);
+    dragFrame = 0;
     const g = ghost, target = cancelled ? null : targetAt(x, y);
+    if (!cancelled) {
+      const width = tray.offsetWidth;
+      highlight(x, y, target);
+      place(x, y, width);
+    }
     drop?.classList.remove('over');
     drop = null;
     const id = target?.dataset.id ? Number(target.dataset.id) : null;
@@ -364,7 +385,7 @@ function createAlbumCrates({ invoke, lookup, play, back, toast, coverUrl, blankC
       const c = cover(entry);
       c.classList.add('fan-cover');
       c.dataset.id = entry.id;
-      c.title = (lookup(entry.id) || entry).artist + ' — ' + (lookup(entry.id) || entry).title + (lookup(entry.id) ? '' : ' (unavailable)');
+      c.ariaDescription = (lookup(entry.id) || entry).artist + ' — ' + (lookup(entry.id) || entry).title + (lookup(entry.id) ? '' : ' (unavailable)');
       const o = originT(i, S);
       c.style.transition = 'none';
       if (i > 3) c.style.setProperty('--motion-opacity', '0');
@@ -580,14 +601,14 @@ function createAlbumCrates({ invoke, lookup, play, back, toast, coverUrl, blankC
   function resetDelete() {
     clearTimeout(deleteTimer);
     el('fanDelete').classList.remove('confirm');
-    el('fanDelete').title = 'Delete crate';
+    el('fanDelete').ariaDescription = 'Delete crate';
   }
   el('fanDelete').addEventListener('click', async () => {
     if (!fanState || fanState.closing) return;
     const btn = el('fanDelete');
     if (!btn.classList.contains('confirm')) {
       btn.classList.add('confirm');
-      btn.title = 'Click again to delete';
+      btn.ariaDescription = 'Click again to delete';
       el('fanHint').textContent = 'Click again to delete this crate';
       deleteTimer = setTimeout(() => { resetDelete(); saveFan(Promise.resolve()); }, 3200);
       return;

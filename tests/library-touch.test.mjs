@@ -397,11 +397,14 @@ test('a touch tap clears mouse hover while keyboard focus and the next mouse mov
   const color = () => mode.evaluate(el => getComputedStyle(el).color);
   const rest = await color();
   await mode.hover();
+  assert.equal(await mode.getAttribute('title'), await mode.getAttribute('aria-description'));
   const highlighted = await color();
   assert.notEqual(highlighted, rest);
   await mode.tap();
   assert.equal(await page.locator('#indexModeLabel').textContent(), 'Album');
   assert.equal(await color(), rest);
+  assert.equal(await page.locator('[title]').count(), 0);
+  assert.match(await mode.getAttribute('aria-description'), /Switch to/);
   const current = page.locator('#indexLetters [aria-current=true]');
   const scale = () => current.evaluate(el => Number(getComputedStyle(el).getPropertyValue('--letter-scale')));
   assert.equal(await scale(), 1);
@@ -410,6 +413,7 @@ test('a touch tap clears mouse hover while keyboard focus and the next mouse mov
   assert.equal(await scale(), 1.8);
   await mode.hover({ position: { x: 5, y: 5 } });
   assert.equal(await color(), highlighted);
+  assert.equal(await mode.getAttribute('title'), await mode.getAttribute('aria-description'));
 });
 
 async function setApiKey(dialog, value) {
@@ -520,6 +524,11 @@ for (const device of ['touch', 'mouse']) {
     if (device === 'mouse') await page.evaluate(async () => { window.fillCrate(1); await albumCrates.load(); });
     await down(); await up();
     await page.locator('#album:not(.hidden) #cover').waitFor();
+    await page.locator('#coverImg').evaluate(async img => {
+      img.src = 'style-previews/ambient.webp';
+      img.classList.remove('hidden');
+      await img.decode();
+    });
     const playing = () => page.evaluate(() => [state.view, state.playing.album.id, state.playing.playbackId, state.playing.paused]);
     const before = await playing();
     if (device === 'touch') { await down(); await move(520, 32); }
@@ -535,8 +544,11 @@ for (const device of ['touch', 'mouse']) {
     });
     await point(80);
     await page.waitForFunction(() => {
-      const style = getComputedStyle(document.querySelector('.crate-ghost'));
-      return +style.opacity < .4 && parseFloat(style.filter.slice(5)) > 5;
+      const ghost = document.querySelector('.crate-ghost');
+      const soft = ghost.querySelector('.soft-cover');
+      const blurred = getComputedStyle(soft || ghost).filter;
+      return +getComputedStyle(ghost).opacity < .4 && parseFloat(blurred.slice(5)) > 5 &&
+        (!soft || +getComputedStyle(soft).opacity > .95);
     });
     await point(520);
     await page.waitForFunction(() => +getComputedStyle(document.querySelector('.crate-ghost')).opacity > .99);
@@ -742,9 +754,11 @@ test('accepting the sleeve behind the playing album keeps its image at the hando
 
 test('automatic painting is opt-in, persists its count and checks only once per playing album', async () => {
   assert.ok(await page.locator('#playImageCount').isDisabled());
+  assert.equal(await page.locator('#repaintToggle').isChecked(), false);
   await page.evaluate(() => {
     sessionStorage.setItem('test.envKey', 'yes');
     document.querySelector('#generateOnPlay').click();
+    document.querySelector('#repaintToggle').click();
     const select = document.querySelector('#playImageCount');
     select.value = '5';
     select.dispatchEvent(new Event('change'));
@@ -764,6 +778,7 @@ test('automatic painting is opt-in, persists its count and checks only once per 
   assert.equal(calls.length, 1);
   assert.equal(calls[0].onlyIfEmpty, true);
   assert.equal(calls[0].count, 5);
+  assert.equal(calls[0].allowRepaint, true);
 });
 
 test('AI style is a default that an album can override, remember and restore', async () => {
@@ -937,7 +952,7 @@ for (const preference of ['opposite', 'follow']) {
   });
 }
 
-test('the cover stays up until the current atmosphere has decoded', async () => {
+test('the cover waits for a decoded atmosphere and fades back on the next track', async () => {
   // Use the HTTP form of Muso's image protocol so Playwright can serve a real image.
   await page.addInitScript(() => Object.defineProperty(navigator, 'userAgent', { value: 'Windows' }));
   await page.route('http://muso.localhost/atmos/**', route => route.fulfill({
@@ -948,6 +963,7 @@ test('the cover stays up until the current atmosphere has decoded', async () => 
   await page.locator('#crate .sleeve[data-index="20"]').waitFor();
   await page.evaluate(() => {
     window.testPaintings = ['atmos/first.svg'];
+    window.testTracks = [{path:'first', title:'First'}, {path:'second', title:'Second'}];
     window.decodes = [];
     const decode = HTMLImageElement.prototype.decode;
     HTMLImageElement.prototype.decode = async function () {
@@ -975,6 +991,20 @@ test('the cover stays up until the current atmosphere has decoded', async () => 
   await painting.waitFor();
   assert.ok(await page.locator('#showAtmosBtn').isEnabled());
   assert.match(await painting.getAttribute('src'), /replacement\.svg$/);
+  const midFade = await page.evaluate(async () => {
+    const layers = [document.querySelector('.atmos'), document.getElementById('cover')];
+    await Promise.all(layers.flatMap(el => el.getAnimations()
+      .filter(a => a instanceof CSSTransition).map(a => a.finished)));
+    window.emitPlayback('track-ended', state.playing.playbackId);
+    for (const layer of layers) {
+      const fade = layer.getAnimations().find(a => a instanceof CSSTransition);
+      fade.pause();
+      fade.currentTime = 900;
+    }
+    return layers.map(el => +getComputedStyle(el).opacity);
+  });
+  assert.equal(await page.locator('#alTrack [aria-current]').textContent(), '02Second');
+  assert.ok(midFade.every(opacity => opacity > .4 && opacity < .6), 'both layers are visible halfway through the return fade');
 });
 
 test('atmosphere grain keeps its pixel size across display scales and window sizes', async () => {

@@ -12,6 +12,13 @@ pub struct References {
     common_styles: Vec<String>,
 }
 
+#[derive(Default)]
+pub struct VisualInputs {
+    pub cover: Option<Value>,
+    pub history: Vec<Value>,
+    pub frequent_media: Vec<String>,
+}
+
 impl References {
     pub fn load(db: &Connection, album: &Album) -> rusqlite::Result<Self> {
         let cover = album.art.then(|| {
@@ -37,11 +44,10 @@ impl References {
         Ok(Self { cover, paintings, common_styles })
     }
 
-    pub fn content(self, directory: &Path) -> Vec<Value> {
-        let mut parts = Vec::new();
-        if let Some(cover) = self.cover.and_then(|f| image::open(directory.join("art").join(f)).ok()) {
-            attach(&mut parts, "Current album cover: primary visual reference. Observe its palette, surface and composition.", cover.thumbnail(512, 512));
-        }
+    pub fn content(self, directory: &Path) -> VisualInputs {
+        let cover = self.cover.and_then(|f| image::open(directory.join("art").join(f)).ok())
+            .and_then(|img| image_part(&img.thumbnail(640, 640)).ok());
+        let mut history = Vec::new();
         let mut tiles = Vec::new();
         let mut seen = HashSet::new();
         for rel in self.paintings {
@@ -59,20 +65,20 @@ impl References {
                 let y = (i as u32 / 3) * 132 + (132 - tile.height()) / 2;
                 imageops::replace(&mut sheet, tile, x.into(), y.into());
             }
-            attach(&mut parts, "Previously generated pictures sampled across the library. Compare recurring subjects, framing and light; this sheet is for avoiding repetition only.", DynamicImage::ImageRgb8(sheet));
-            parts.push(json!({"type":"text","text":format!("Frequently saved media across the collection, for comparison: {}", self.common_styles.join(", "))}));
+            if let Ok(image) = image_part(&DynamicImage::ImageRgb8(sheet)) {
+                history.push(json!({"type":"text","text":"Previously generated pictures across the library. Compare subjects, framing and light for repetition."}));
+                history.push(image);
+            }
         }
-        parts
+        VisualInputs { cover, history, frequent_media: self.common_styles }
     }
 }
 
-fn attach(parts: &mut Vec<Value>, label: &str, image: DynamicImage) {
+pub fn image_part(image: &DynamicImage) -> Result<Value, String> {
     let mut bytes = Vec::new();
-    if image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, 78).encode_image(&image.to_rgb8()).is_ok() {
-        let data = base64::engine::general_purpose::STANDARD.encode(bytes);
-        parts.push(json!({"type":"text","text":label}));
-        parts.push(json!({"type":"image_url","image_url":{"url":format!("data:image/jpeg;base64,{data}"),"detail":"low"}}));
-    }
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, 82).encode_image(&image.to_rgb8()).map_err(crate::err)?;
+    let data = base64::engine::general_purpose::STANDARD.encode(bytes);
+    Ok(json!({"type":"image_url","image_url":{"url":format!("data:image/jpeg;base64,{data}"),"detail":"high"}}))
 }
 
 #[cfg(test)]
@@ -96,7 +102,8 @@ mod tests {
         assert!(refs.paintings.iter().position(|p| p.ends_with("legacy.jpg")).unwrap()
             < refs.paintings.iter().position(|p| p.ends_with("earlier.jpg")).unwrap());
         let parts = refs.content(dir.path());
-        assert_eq!(parts.iter().filter(|p| p["type"]=="image_url").count(), 1);
-        assert!(parts[0]["text"].as_str().unwrap().starts_with("Previously generated"));
+        assert!(parts.cover.is_none());
+        assert_eq!(parts.history.iter().filter(|p| p["type"]=="image_url").count(), 1);
+        assert!(parts.history[0]["text"].as_str().unwrap().starts_with("Previously generated"));
     }
 }

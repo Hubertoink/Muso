@@ -22,7 +22,7 @@
     <div id="crate"></div>
     <nav id="libraryIndex" aria-label="Browse the library by initial">
       <button id="indexMode" type="button"><span id="indexModeLabel">Artist</span><span aria-hidden="true">⇄</span></button>
-      <button id="newAlbums" type="button" aria-pressed="false" title="Albums added in the last 28 days" disabled>NEU</button>
+      <button id="newAlbums" type="button" aria-pressed="false" aria-description="Albums added in the last 28 days" disabled>NEU</button>
       <div id="indexLetters" role="group" aria-label="Artist initials"></div>
       <div id="indexGenres" class="hidden" role="group" aria-label="Genres"></div>
       <div id="indexSubs" class="hidden" role="group" aria-label="Subgenres"></div>
@@ -36,7 +36,7 @@
       </div>
     </div>
     <div id="counter"></div>
-    <button id="nowPlaying" class="hidden" title="Back to the record that is playing">
+    <button id="nowPlaying" class="hidden" aria-description="Back to the record that is playing">
       <span class="np-cover"><img id="npCover" alt="" draggable="false" /></span>
       <span class="np-text"><span id="npArtist"></span><span id="npTitle"></span></span>
       <span id="npBars" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>
@@ -60,10 +60,10 @@
         <input id="fanNameInput" class="hidden" type="text" maxlength="120" aria-label="Crate name" spellcheck="false" autocomplete="off" />
         <div id="fanMeta" class="muted"></div>
         <div id="fanTools">
-          <button id="fanPlay" title="Play crate" aria-label="Play crate"><svg viewBox="0 0 24 24"><path d="M8 5l12 7-12 7z" class="fill" /></svg></button>
-          <button id="fanRename" title="Rename" aria-label="Rename crate"><svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z" /><path d="M13 7l4 4" /></svg></button>
-          <button id="fanDelete" title="Delete crate" aria-label="Delete crate"><svg viewBox="0 0 24 24"><path d="M5 7h14" /><path d="M10 7V4h4v3" /><path d="M7 7l1 13h8l1-13" /></svg></button>
-          <button id="fanClose" title="Close" aria-label="Close crate"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" /></svg></button>
+          <button id="fanPlay" aria-description="Play crate" aria-label="Play crate"><svg viewBox="0 0 24 24"><path d="M8 5l12 7-12 7z" class="fill" /></svg></button>
+          <button id="fanRename" aria-description="Rename" aria-label="Rename crate"><svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z" /><path d="M13 7l4 4" /></svg></button>
+          <button id="fanDelete" aria-description="Delete crate" aria-label="Delete crate"><svg viewBox="0 0 24 24"><path d="M5 7h14" /><path d="M10 7V4h4v3" /><path d="M7 7l1 13h8l1-13" /></svg></button>
+          <button id="fanClose" aria-description="Close" aria-label="Close crate"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" /></svg></button>
         </div>
         <div id="fanHint" class="status"></div>
       </div>
@@ -89,7 +89,7 @@
       <div class="genre-bar">
         <p id="tagSummary" class="muted"></p>
         <div class="genre-actions">
-          <button id="genreSort" class="link sort-toggle" type="button" title="Change the order of the chips">Most albums</button>
+          <button id="genreSort" class="link sort-toggle" type="button" aria-description="Change the order of the chips">Most albums</button>
           <button id="addGenre" class="link" type="button">+ New genre</button>
           <button id="discardGenres" class="link hidden" type="button">Discard changes</button>
           <button id="proposeGenres" class="pill" type="button"><svg aria-hidden="true"><use href="icons/lucide.svg#sparkles"/></svg>Suggest genres with AI</button>
@@ -151,7 +151,7 @@
       <button data-action="ai">AI Features</button>
       <div class="menu-update">
         <small id="updateStatus" role="status"></small>
-        <button type="button" id="menuVersion" title="Check for updates"></button>
+        <button type="button" id="menuVersion" aria-description="Check for updates"></button>
       </div>
     </nav>
   </div>
@@ -276,18 +276,19 @@
     <div class="modal-card">
       <div class="modal-scroll">
         <h2>Visual Atmospheres</h2>
-        <p class="muted">Muso sends album descriptions, genre, track titles, a small cover preview and a visual sample of up to six previous paintings to OpenAI to plan each set. Generated images are saved on this computer.</p>
+        <p class="muted">Muso sends album notes, genre and track details to OpenAI. AI choice can use the cover to choose a visual style for the series. Scene review compares the plan with the cover and up to six earlier paintings. Each image is generated with the full series plan and checked against the cover and its musical cue. Images are saved locally at 1920 × 1080.</p>
         <h3>OpenAI API key</h3>
         <button class="link setting-action openai-keys">Open my OpenAI API keys ↗</button>
         <input id="keyInput2" type="password" aria-label="OpenAI API key" placeholder="Paste API key" spellcheck="false" autocomplete="off" />
         <label class="check"><input id="atmosToggle" type="checkbox" /> Show atmospheres during playback</label>
         <label class="check"><input id="generateOnPlay" type="checkbox" /> Generate on playback for albums without atmospheres</label>
         <label class="style-field">Images per album <select id="playImageCount" disabled><option>3</option><option>4</option><option>5</option></select></label>
-        <p class="muted">Each new set uses your OpenAI API key and incurs API charges.</p>
+        <label class="check"><input id="repaintToggle" type="checkbox" /> Allow one automatic repaint per scene</label>
+        <p class="muted">Every image is reviewed. A repaint adds one paid high-quality generation and another review. Scenes that fail the publication criteria are skipped.</p>
         <label class="check"><input id="autoStyle" type="checkbox" /> Use AI choice as the default atmosphere style</label>
         <div class="style-field"><span id="aiStyleLabel">Style for this album</span><button type="button" id="aiStyle" class="style-trigger" aria-haspopup="dialog" aria-controls="stylePicker" aria-labelledby="aiStyleLabel aiStyle"></button></div>
         <label class="check"><input id="researchToggle" type="checkbox" /> Research the artist and album before generating</label>
-        <p class="muted">With research on, Muso looks up the album once and writes a missing article when generating images. Future sets reuse the saved research. Saved articles and existing research also guide images when web research is off. Web searches and new articles incur API charges.</p>
+        <p class="muted">New research can use up to five web searches. Muso saves the findings and writes a missing article when generating images with research on. Saved research and articles also guide images when web research is off.</p>
         <h3>Genres</h3>
         <p class="muted">Tidy up your genre tags, merge near-duplicates and let the AI sort albums from broad categories into finer genres. Muso stores the result itself and leaves your files untouched.</p>
         <button id="openGenres" class="link setting-action" type="button">Organise genres…</button>

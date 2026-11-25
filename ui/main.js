@@ -46,12 +46,38 @@ function show(el, on = true) {
 // On hybrid devices a tap can leave :hover matched until the mouse moves again.
 const rootClasses = document.documentElement.classList;
 rootClasses.toggle('can-hover', matchMedia('(any-hover: hover)').matches);
-function updatePointerHover(e) {
-  rootClasses.toggle('can-hover', e.pointerType !== 'touch');
+// Only the current mouse target gets a native title. Touch-generated mouse
+// compatibility events can otherwise keep the WebView's tooltip on screen.
+let tooltipTarget = null;
+function syncTooltipTitle() {
+  if (tooltipTarget?.ariaDescription) tooltipTarget.title = tooltipTarget.ariaDescription;
+  else tooltipTarget?.removeAttribute('title');
 }
-for (const event of ['pointerdown', 'pointermove']) {
+const tooltipObserver = new MutationObserver(syncTooltipTitle);
+function setTooltipTarget(target) {
+  if (target === tooltipTarget) return;
+  tooltipObserver.disconnect();
+  tooltipTarget?.removeAttribute('title');
+  tooltipTarget = target;
+  if (target) {
+    syncTooltipTitle();
+    tooltipObserver.observe(target, { attributes: true, attributeFilter: ['aria-description'] });
+  }
+}
+function updatePointerHover(e) {
+  const mouse = e.pointerType === 'mouse' && !e.sourceCapabilities?.firesTouchEvents;
+  // A tap can also synthesize a mouse pointerover on the element underneath.
+  if (mouse && e.type === 'pointerover' && !rootClasses.contains('can-hover')) return;
+  rootClasses.toggle('can-hover', mouse);
+  setTooltipTarget(mouse ? e.target.closest?.('[aria-description]') ?? null : null);
+}
+for (const event of ['pointerover', 'pointerdown', 'pointermove']) {
   document.addEventListener(event, updatePointerHover, { capture: true, passive: true });
 }
+document.addEventListener('pointerout', e => {
+  if (!tooltipTarget?.contains(e.relatedTarget)) setTooltipTarget(null);
+}, true);
+window.addEventListener('blur', () => setTooltipTarget(null));
 
 /* ---------------- crate ---------------- */
 
@@ -164,7 +190,7 @@ function indexByGenre(albums) {
     b.textContent = m.name;
     b.dataset.index = m.index;
     b.dataset.name = m.name;
-    b.title = m.count + (m.count === 1 ? ' album' : ' albums') + (m.subs.length ? ' · click again for subgenres' : '');
+    b.ariaDescription = m.count + (m.count === 1 ? ' album' : ' albums') + (m.subs.length ? ' · click again for subgenres' : '');
     if (m.name === UNSORTED) b.classList.add('unsorted');
     return b;
   }));
@@ -202,7 +228,7 @@ function renderSubs() {
     const b = document.createElement('button');
     b.type = 'button';
     b.textContent = s.name;
-    b.title = s.count + (s.count === 1 ? ' album' : ' albums');
+    b.ariaDescription = s.count + (s.count === 1 ? ' album' : ' albums');
     b.dataset.index = s.index;
     b.dataset.name = s.name;
     return b;
@@ -278,7 +304,7 @@ indexSubs.addEventListener('click', e => {
 function indexAlbums(albums) {
   const label = modeLabels[indexMode];
   $('indexModeLabel').textContent = label;
-  $('indexMode').title = 'Switch to ' + modeLabels[nextMode[indexMode]].toLowerCase() + ' order';
+  $('indexMode').ariaDescription = 'Switch to ' + modeLabels[nextMode[indexMode]].toLowerCase() + ' order';
   $('indexMode').setAttribute('aria-label', label + ' order. ' + $('indexMode').title);
   show(indexLetters, indexMode !== 'genre');
   show(indexGenres, indexMode === 'genre');
@@ -554,7 +580,7 @@ function updateCaption(force) {
     const meta = document.createElement('span');
     meta.className = 'album-meta';
     meta.textContent = details.join(' · ');
-    if (a.genreTag && genre && a.genreTag.trim().toLowerCase() !== genre.toLowerCase()) meta.title = 'Tag in the file: ' + a.genreTag;
+    if (a.genreTag && genre && a.genreTag.trim().toLowerCase() !== genre.toLowerCase()) meta.ariaDescription = 'Tag in the file: ' + a.genreTag;
     title.append(' ', meta);
   }
   $('counter').textContent = `${String(i + 1).padStart(4, '0')} / ${String(n).padStart(4, '0')}`;
@@ -907,7 +933,7 @@ $('menuVersion').addEventListener('click', async () => {
       status.textContent = availableUpdate ? 'Update available' : 'Muso is up to date.';
       if (availableUpdate) {
         button.textContent = `Install v${availableUpdate.version}`;
-        button.title = 'Download and install update';
+        button.ariaDescription = 'Download and install update';
       }
     } else {
       let received = 0, total = 0;
@@ -1036,10 +1062,10 @@ async function renderFolders(list) {
     const li = document.createElement('li');
     const s = document.createElement('span');
     s.textContent = f;
-    s.title = f;
+    s.ariaDescription = f;
     const x = document.createElement('button');
     x.textContent = '×';
-    x.title = 'Remove';
+    x.ariaDescription = 'Remove';
     x.addEventListener('click', async () => {
       renderFolders(await invoke('remove_folder', { path: f }));
       invoke('scan_library');
@@ -1490,9 +1516,12 @@ generateOnPlay.addEventListener('change', () => {
 playImageCount.addEventListener('change', () => localStorage.setItem('muso.playImageCount', playImageCount.value));
 function prepareAi() {
   $('atmosToggle').checked = atmosEnabled();
+  $('repaintToggle').checked = repaintEnabled();
   $('researchToggle').checked = researchEnabled();
   showStyle((state.viewAlbum || focused())?.id);
 }
+const repaintEnabled = () => localStorage.getItem('muso.repaint') === '1';
+$('repaintToggle').addEventListener('change', (e) => localStorage.setItem('muso.repaint', e.target.checked ? '1' : '0'));
 const researchEnabled = () => localStorage.getItem('muso.research') === '1';
 $('researchToggle').addEventListener('change', (e) => localStorage.setItem('muso.research', e.target.checked ? '1' : '0'));
 function setAtmosEnabled(enabled) {
@@ -1712,7 +1741,7 @@ function openAlbum(a) {
   else preview.removeAttribute('src');
   proposedCover.style.setProperty('--blank', blankColor(a.id));
   const hint = 'Swipe right to play ' + a.artist + ' — ' + a.title;
-  proposedCover.title = hint;
+  proposedCover.ariaDescription = hint;
   proposedCover.setAttribute('aria-label', hint);
   proposedCover.querySelector('.swipe-hint').textContent = a.art ? 'Swipe right →' : a.title + ' →';
   displayAlbum(playing.album);
@@ -1829,10 +1858,11 @@ function animateCrateChange() {
   backdrop.setAttribute('aria-hidden', 'true');
   // Preserve the painting currently on screen, including a crossfade in progress.
   const atmosphere = view.querySelector('.atmos');
+  const atmosphereOpacity = Number(getComputedStyle(atmosphere).opacity);
   for (const source of [$('bgArt'), ...atmosphere.querySelectorAll('img')]) {
     if (!source.currentSrc || !source.naturalWidth || source.classList.contains('hidden')) continue;
-    const style = getComputedStyle(source);
-    const opacity = source === $('bgArt') ? 1 : Number(style.opacity) * Number(getComputedStyle(atmosphere).opacity);
+    const style = getComputedStyle(source.closest('.painting-layer') || source);
+    const opacity = source === $('bgArt') ? 1 : Number(style.opacity) * atmosphereOpacity;
     if (!opacity) continue;
     const image = new Image();
     image.src = source.currentSrc;
@@ -2174,7 +2204,7 @@ async function generate(a, automatic = false) {
   generating.add(a.id);
   if (!automatic) toast(`Composing atmospheres for ${a.title}…`);
   try {
-    const files = await invoke('generate_atmospheres', { albumId: a.id, research: researchEnabled(), style,
+    const files = await invoke('generate_atmospheres', { albumId: a.id, research: researchEnabled(), allowRepaint: repaintEnabled(), style,
       onlyIfEmpty: automatic, count: automatic ? Number(playImageCount.value) : 3 });
     if (!files.length) return;
     paintingReady({ albumId: a.id, style, files });

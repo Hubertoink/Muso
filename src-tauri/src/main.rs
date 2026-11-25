@@ -197,10 +197,20 @@ async fn album_context(app: &AppHandle, state: &AppState, key: &str, album: &db:
     tracks: &[db::Track], research: bool, purpose: ContextFor, progress: impl Fn(&str)) -> R<ai::AlbumContext> {
     let _guard = state.note_generation.lock().await;
     let id = &album.id;
-    let article = db::note(&*state.db.lock().map_err(err)?, id).map_err(err)?;
-    let mut context = ai::AlbumContext { article, ..Default::default() };
+    let mut context = {
+        let c = state.db.lock().map_err(err)?;
+        let book = genres::Book::load(&c).map_err(err)?;
+        let genre = genres::Library::load(&c).map_err(err)?.assigned(&book, id);
+        let parent_genre = genre.as_ref().and_then(|a| a.genre.as_deref())
+            .and_then(|name| book.genres.iter().find(|g| g.name.eq_ignore_ascii_case(name)))
+            .and_then(|g| g.parent.clone());
+        ai::AlbumContext { article: db::note(&c, id).map_err(err)?, genre, parent_genre, ..Default::default() }
+    };
     if purpose == ContextFor::Images && !research {
         context.research = db::research(&*state.db.lock().map_err(err)?, id).map_err(err)?.unwrap_or_default();
+        if context.research.trim().is_empty() {
+            let _ = app.emit("atmos-article-warning", format!("{} · No album research saved yet. The paintings can only draw on titles and credits; turn on research for more specific scenes.", album.title));
+        }
         return Ok(context);
     }
     if purpose == ContextFor::Article && context.article.is_some() {
@@ -208,11 +218,13 @@ async fn album_context(app: &AppHandle, state: &AppState, key: &str, album: &db:
     }
     if research {
         let cached = db::research(&*state.db.lock().map_err(err)?, id).map_err(err)?;
-        context.research = match cached.filter(|_| purpose != ContextFor::Rewrite) {
+        // Paintings need the sourced anchors that older briefs lack.
+        context.research = match cached.filter(|brief| purpose != ContextFor::Rewrite
+            && (purpose != ContextFor::Images || brief.contains(ai::ANCHOR_MARK))) {
             Some(brief) => brief,
             None => {
                 progress("Researching");
-                let brief = ai::research_album(key, album, tracks).await?;
+                let brief = ai::research_album(key, album, tracks, &context).await?;
                 state.db.lock().map_err(err)?.execute("INSERT INTO album_research(album_id,brief) VALUES(?1,?2)
                     ON CONFLICT(album_id) DO UPDATE SET brief=excluded.brief", (id, &brief)).map_err(err)?;
                 brief
@@ -221,7 +233,7 @@ async fn album_context(app: &AppHandle, state: &AppState, key: &str, album: &db:
     }
     if context.article.is_none() || purpose == ContextFor::Rewrite {
         progress("Writing");
-        match ai::album_note(key, album, tracks, &context.research).await {
+        match ai::album_note(key, album, tracks, &context).await {
             Ok(article) => {
                 progress("Saving");
                 let c = state.db.lock().map_err(err)?;
@@ -330,7 +342,7 @@ fn open_image_folder(state: State<'_, AppState>, album_id: String) -> R<()> {
 }
 
 #[tauri::command]
-async fn generate_atmospheres(app: AppHandle, state: State<'_, AppState>, album_id: String, research: Option<bool>, style: Option<String>, count: Option<usize>, only_if_empty: Option<bool>) -> R<Vec<String>> {
+async fn generate_atmospheres(app: AppHandle, state: State<'_, AppState>, album_id: String, research: Option<bool>, style: Option<String>, count: Option<usize>, allow_repaint: Option<bool>, only_if_empty: Option<bool>) -> R<Vec<String>> {
     let count = count.unwrap_or(3);
     if !(3..=5).contains(&count) { return Err("Choose 3 to 5 images.".into()); }
     let only_if_empty = only_if_empty.unwrap_or(false);
@@ -346,24 +358,24 @@ async fn generate_atmospheres(app: AppHandle, state: State<'_, AppState>, album_
     }
     let style = style.as_deref().unwrap_or("cinematic");
     let direction = if style == "auto" { None } else {
-        Some(ai::style_direction(style).ok_or("Unknown atmosphere style")?)
+        Some(ai::preset(style).ok_or("Unknown atmosphere style")?)
     };
-    let (key, album, tracks, assigned_genre, references) = {
+    let (key, album, tracks, references) = {
         let conn = state.db.lock().map_err(err)?;
         if only_if_empty && db::has_atmospheres(&conn, &album_id).map_err(err)? { return Ok(Vec::new()); }
         let key = openai_key(&conn)?.ok_or("No OpenAI API key set")?;
         let album = db::album(&conn, &album_id).map_err(err)?.ok_or("Album not found")?;
         let tracks = db::tracks(&conn, &album_id).map_err(err)?;
-        let genres = genres::Book::load(&conn).map_err(err)?;
-        let assigned = genres::Library::load(&conn).map_err(err)?.assigned(&genres, &album.id).and_then(|a| a.genre);
         let references = visual_context::References::load(&conn, &album).map_err(err)?;
-        (key, album, tracks, assigned, references)
+        (key, album, tracks, references)
     };
     let context = album_context(&app, &state, &key, &album, &tracks, research.unwrap_or(false), ContextFor::Images, |stage| {
         let message = match stage { "Researching" => "Researching the album", "Writing" => "Writing the album article", _ => "Saving the album article" };
         let _ = app.emit("atmos-progress", ai::AtmosProgress { album_id: album_id.clone(), step: 0, total: count + 1, message: message.into() });
     }).await?;
-    ai::generate(&app, &key, &album, &tracks, &state.data_dir, &context, assigned_genre.as_deref(), references, direction, count, |files, name, prompt| {
+    ai::generate(&key, &album, &tracks, &state.data_dir, &context, references, direction, count, allow_repaint.unwrap_or(false), |step, message| {
+        let _ = app.emit("atmos-progress", ai::AtmosProgress { album_id: album_id.clone(), step, total: count+1, message: message.into() });
+    }, |files, name, prompt| {
         let mut conn = state.db.lock().map_err(err)?;
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(err)?;
         let old = db::atmospheres(&tx, &album_id, style).map_err(err)?;

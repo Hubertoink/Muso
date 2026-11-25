@@ -405,6 +405,7 @@ body:has(#coverConfirm[open]) #coverSearchStatus { visibility: hidden; }
 /* ---------- Album view ---------- */
 #album {
   position: fixed; inset: 0; z-index: 20; overflow: hidden; background: #0a0a0a;
+  --atmos-fade: 1.8s ease-in-out;
   --motion-opacity: 1; opacity: var(--motion-opacity);
   transform: scale(calc(1 + .025 * (1 - var(--motion-opacity))));
   transition: --motion-opacity .9s var(--ease);
@@ -450,7 +451,7 @@ body:has(#coverConfirm[open]) #coverSearchStatus { visibility: hidden; }
 .atmos img.on, .painting-layer:has(> img.on) { --motion-opacity: 1; }
 .painting-layer > img { opacity: 1; filter: none; animation: none; transition: none; }
 .painting-layer > canvas { position: absolute; pointer-events: none; }
-.atmos { opacity: var(--motion-opacity); --motion-opacity: 0; transition: --motion-opacity .18s; overflow: hidden; pointer-events: none; }
+.atmos { opacity: var(--motion-opacity); --motion-opacity: 0; transition: --motion-opacity var(--atmos-fade); overflow: hidden; pointer-events: none; }
 #atmosGrain { position: absolute; top: -4px; left: -4px; width: calc(100% + 8px); height: calc(100% + 8px); opacity: .065; }
 .effect-strength { margin-top: 14px; }
 .effect-strength input { width: 42%; accent-color: var(--accent); }
@@ -468,12 +469,13 @@ body:has(#coverConfirm[open]) #coverSearchStatus { visibility: hidden; }
 #eq.from-player { align-items: start; justify-items: end; background: transparent; padding: 18px; }
 #eq.from-player .modal-card { width: min(400px, 94vw); --card-pad-y: 24px; --card-pad-x: 24px; }
 #lightFilter { display: none; background-repeat: no-repeat; opacity: calc(.36 * var(--effect-strength)); }
-#album.showing-atmos[data-filter=light] #lightFilter,
-#album.showing-atmos[data-filter=haze] #lightFilter { display: block; inset: -15%; animation: light-drift 24s ease-in-out infinite alternate; }
+#album[data-filter=light] #lightFilter,
+#album[data-filter=haze] #lightFilter { display: block; inset: -15%; animation: light-drift 24s ease-in-out infinite alternate paused; }
 #album[data-filter=light] #lightFilter { background-image: radial-gradient(ellipse at 24% 65%, #d99962 0, transparent 46%); }
 #album[data-filter=haze] #lightFilter { background-image: radial-gradient(ellipse at 28% 40%, #9891d8, transparent 46%), radial-gradient(ellipse at 75% 65%, #68bbaa, transparent 42%); animation-direction: alternate-reverse; }
 @media (prefers-reduced-motion: no-preference) {
-  #album.showing-atmos[data-filter=film] #atmosGrain { opacity: calc(.065 + .12 * var(--effect-strength)); animation: film-weave .8s steps(1) infinite; }
+  #album[data-filter=film] #atmosGrain { opacity: calc(.065 + .12 * var(--effect-strength)); animation: film-weave .8s steps(1) infinite paused; }
+  #album.showing-atmos :is(#lightFilter, #atmosGrain) { animation-play-state: running; }
 }
 @keyframes light-drift { from { transform: translate(-8%, -5%) scale(.96); } to { transform: translate(11%, 6%) scale(1.14); } }
 @keyframes film-weave {
@@ -482,11 +484,11 @@ body:has(#coverConfirm[open]) #coverSearchStatus { visibility: hidden; }
   75% { transform: translate(calc(3px * var(--effect-strength)), calc(-3px * var(--effect-strength))); }
 }
 @media (prefers-reduced-motion: reduce) {
-  #album.showing-atmos #lightFilter { display: none !important; }
+  #album #lightFilter { display: none !important; }
   #atmosPictures.refracting { filter: none; }
 }
-#album.showing-atmos .atmos { --motion-opacity: 1; transition-duration: 1.8s; }
-#album.showing-atmos .cover { --motion-opacity: 0; transition-duration: 1.8s; pointer-events: none; }
+#album.showing-atmos .atmos { --motion-opacity: 1; }
+#album.showing-atmos .cover { --motion-opacity: 0; pointer-events: none; }
 #album.showing-atmos.idle .meta, #album.showing-atmos.idle .controls, #album.showing-atmos.idle .veil { --motion-opacity: 0; }
 #album[data-preview=dreamscape] { --atmos-filter: sepia(.26) hue-rotate(318deg) saturate(.86) contrast(.92); }
 #album[data-preview=ambient] { --atmos-filter: saturate(.52) contrast(.78) brightness(1.12) blur(2px); }
@@ -532,7 +534,7 @@ body:has(#coverConfirm[open]) #coverSearchStatus { visibility: hidden; }
   box-shadow: 0 50px 100px -30px rgba(0,0,0,0.9), 0 0 0 1px rgba(255,255,255,0.05);
   animation: breathe 9s ease-in-out infinite;
   background: var(--blank, #222);
-  transition: --motion-opacity .18s;
+  transition: --motion-opacity var(--atmos-fade);
   flex: none;
 }
 .cover img { width: 100%; height: 100%; object-fit: cover; display: block; animation: cover-zoom 9s ease-in-out infinite; }
@@ -540,6 +542,10 @@ body:has(#coverConfirm[open]) #coverSearchStatus { visibility: hidden; }
 #cover img { pointer-events: none; }
 #cover.filing { cursor: grabbing; }
 #cover.filing::after { content: ''; position: absolute; inset: 0; background: rgba(22,22,21,.83); }
+/* Keep the blurred backdrop and the source sleeve still during a player drag. */
+#album:not(.changing-record):has(#cover.filing) :is(.bg img, #cover, #cover img, .atmos img, .painting-layer) {
+  animation-play-state: paused;
+}
 #proposedCover {
   transform: var(--motion-transform);
   position: absolute; inset: 0; width: 100%; height: 100%; overflow: hidden; border-radius: 4px; background: var(--blank);
@@ -720,6 +726,11 @@ body:has(#coverConfirm[open]) #coverSearchStatus { visibility: hidden; }
   border-radius: 3px; overflow: hidden; background: var(--blank, #302f2d);
   box-shadow: 0 40px 70px -20px rgba(0,0,0,.9), 0 0 0 1px rgba(255,255,255,.06);
   transform-origin: center; will-change: transform;
+}
+.crate-ghost.soften-player-ghost { filter: none; transition-property: opacity; }
+.crate-ghost .soft-cover {
+  position: absolute; inset: 0; filter: blur(6px);
+  opacity: var(--crate-proximity, 0); transition: opacity .12s ease-out;
 }
 
 /* Crates page */
