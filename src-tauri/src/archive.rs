@@ -53,6 +53,8 @@ struct Entry {
     prompts: BTreeMap<usize, String>,
     auto_style: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    auto_technique: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     genre: Option<GenreChoice>,
 }
 
@@ -167,6 +169,9 @@ pub fn export(c: &mut Connection, dir: &Path, dest: &Path) -> R<Summary> {
         summary.genres += usize::from(genre.is_some());
         let auto_style =
             db::get_setting(&tx, &format!("atmos_auto_style.{}", a.id)).map_err(err)?;
+        let auto_technique = tx.query_row("SELECT h.technique FROM atmosphere_variants v
+            JOIN auto_style_choices h ON h.first_file=v.file WHERE v.album_id=?1 AND v.style='auto' AND v.idx=0
+            ORDER BY h.seq DESC LIMIT 1", [&a.id], |r| r.get::<_, Option<String>>(0)).optional().map_err(err)?.flatten();
         manifest.albums.push(Entry {
             id: a.id,
             artist: a.artist,
@@ -179,6 +184,7 @@ pub fn export(c: &mut Connection, dir: &Path, dest: &Path) -> R<Summary> {
             paintings,
             prompts,
             auto_style,
+            auto_technique,
             genre,
         });
     }
@@ -430,6 +436,7 @@ pub fn import(c: &mut Connection, dir: &Path, src: &Path) -> R<Summary> {
             db::replace_atmospheres(&tx, id, &style, &files).map_err(err)?;
             if style == "auto" {
                 db::set_setting(&tx, &format!("atmos_auto_style.{id}"), label).map_err(err)?;
+                crate::style_history::record(&tx, &files[0], label, e.auto_technique.as_deref(), true).map_err(err)?;
             }
             summary.images += files.len();
         }

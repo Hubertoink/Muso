@@ -14,6 +14,7 @@ mod scanner;
 #[cfg(any(windows, target_os = "linux"))]
 mod screen;
 mod spectrum;
+mod style_history;
 mod visual_context;
 
 use std::path::PathBuf;
@@ -376,7 +377,7 @@ async fn generate_atmospheres(app: AppHandle, state: State<'_, AppState>, album_
     }).await?;
     ai::generate(&key, &album, &tracks, &state.data_dir, &context, references, direction, count, allow_repaint.unwrap_or(false), |step, message| {
         let _ = app.emit("atmos-progress", ai::AtmosProgress { album_id: album_id.clone(), step, total: count+1, message: message.into() });
-    }, |files, name, prompt| {
+    }, |files, name, technique, prompt| {
         let mut conn = state.db.lock().map_err(err)?;
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(err)?;
         let old = db::atmospheres(&tx, &album_id, style).map_err(err)?;
@@ -395,6 +396,7 @@ async fn generate_atmospheres(app: AppHandle, state: State<'_, AppState>, album_
         tx.execute("INSERT INTO painting_prompts(file,prompt) VALUES(?1,?2)", (files.last().unwrap(), prompt)).map_err(err)?;
         if files.len() == 1 && style == "auto" {
             db::set_setting(&tx, &format!("atmos_auto_style.{album_id}"), name).map_err(err)?;
+            style_history::record(&tx, &files[0], name, Some(technique), false).map_err(err)?;
         }
         tx.commit().map_err(err)?;
         let _ = app.emit("atmos-image-ready", serde_json::json!({

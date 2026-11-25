@@ -56,6 +56,7 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
         c.execute("ALTER TABLE albums ADD COLUMN cover_file TEXT", [])?;
     }
     let tx = c.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    crate::style_history::migrate(&tx)?;
     if get_setting(&tx, "scanner.artist_repair_v1")?.is_none() {
         tx.execute("UPDATE tracks SET mtime=-1 WHERE album_id IN
             (SELECT id FROM albums WHERE artist='Unknown Artist')", [])?;

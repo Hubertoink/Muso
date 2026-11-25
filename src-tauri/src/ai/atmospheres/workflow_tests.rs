@@ -57,8 +57,17 @@ fn run_styled_case(with_cover: bool, allow_repaint: bool, verdicts: &[(bool, boo
                     assert!(parts[0]["text"].as_str().unwrap().contains("Die zwei Achsen"));
                     assert!(!parts[0]["text"].as_str().unwrap().contains("## Anwendung an den drei Pilotplatten"));
                     assert!(parts[1]["text"].as_str().unwrap().contains(if style.is_some() { "supplied" } else { "catalogue" }));
+                    let input: Value = serde_json::from_str(parts[1]["text"].as_str().unwrap()).unwrap();
+                    let history = input.pointer("/medium/technique_history");
+                    if style.is_some() {
+                        assert!(history.is_none());
+                    } else {
+                        let history = history.unwrap();
+                        assert_eq!(history["recent_choices_newest_first"][0]["style_name"], "Pigment Monotype");
+                        assert_eq!(history["frequent_techniques"][0], json!({"technique":"monotype","series":2}));
+                    }
                     json!({"album_mood":"Tense","album_portrait":"Alternating marks",
-                        "style_reason":"Documented printing","style_name":"Monotype","style_direction":"Layered ink",
+                        "style_reason":"Documented printing","style_name":"Monotype","technique":"monotype","style_direction":"Layered ink",
                         "scenes":[tests::fixture_scene("First scene"),tests::fixture_scene("Second scene"),tests::fixture_scene("Third scene")]})
                 }
                 "scene_review" => {
@@ -114,6 +123,11 @@ fn run_styled_case(with_cover: bool, allow_repaint: bool, verdicts: &[(bool, boo
         base: &base,
     };
     let mut refs = VisualInputs::default();
+    let db = crate::db::open(&temp.path().join("library.db")).unwrap();
+    for name in ["Tonal Monotype", "Pigment Monotype"] {
+        crate::style_history::record(&db, name, name, None, false).unwrap();
+    }
+    refs.style_history = crate::style_history::StyleHistory::load(&db).unwrap();
     if with_cover {
         refs.cover = Some(image_part(&DynamicImage::new_rgb8(32, 32)).unwrap());
     }
@@ -128,7 +142,8 @@ fn run_styled_case(with_cover: bool, allow_repaint: bool, verdicts: &[(bool, boo
         3,
         allow_repaint,
         |_, _| {},
-        |files, medium, prompt| {
+        |files, medium, technique, prompt| {
+            assert_eq!(technique, "monotype");
             assert_eq!(medium, style.map_or("Monotype", |p| p.label));
             assert_eq!(files.len(), prompts.len() + 1);
             assert_eq!(image::image_dimensions(temp.path().join(files.last().unwrap())).unwrap(), (1920, 1080));

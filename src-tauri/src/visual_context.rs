@@ -1,4 +1,5 @@
 use crate::db::Album;
+use crate::style_history::StyleHistory;
 use base64::Engine;
 use image::{imageops, DynamicImage, RgbImage};
 use rusqlite::Connection;
@@ -9,14 +10,14 @@ use std::path::{Path, PathBuf};
 pub struct References {
     cover: Option<PathBuf>,
     paintings: Vec<String>,
-    common_styles: Vec<String>,
+    style_history: StyleHistory,
 }
 
 #[derive(Default)]
 pub struct VisualInputs {
     pub cover: Option<Value>,
     pub history: Vec<Value>,
-    pub frequent_media: Vec<String>,
+    pub style_history: StyleHistory,
 }
 
 impl References {
@@ -36,12 +37,7 @@ impl References {
         ) SELECT file FROM sample ORDER BY slot,min(priority,4),random() LIMIT 120")?;
         let paintings = query.query_map([&album.id], |r| r.get(0))?
             .collect::<rusqlite::Result<_>>()?;
-        let mut styles = db.prepare("SELECT CASE WHEN style='auto' THEN COALESCE(s.value,'') ELSE style END AS medium
-            FROM (SELECT DISTINCT album_id,style FROM atmosphere_variants) v
-            LEFT JOIN settings s ON s.key='atmos_auto_style.'||v.album_id
-            GROUP BY medium COLLATE NOCASE HAVING medium<>'' ORDER BY count(*) DESC,medium LIMIT 8")?;
-        let common_styles = styles.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
-        Ok(Self { cover, paintings, common_styles })
+        Ok(Self { cover, paintings, style_history: StyleHistory::load(db)? })
     }
 
     pub fn content(self, directory: &Path) -> VisualInputs {
@@ -70,7 +66,7 @@ impl References {
                 history.push(image);
             }
         }
-        VisualInputs { cover, history, frequent_media: self.common_styles }
+        VisualInputs { cover, history, style_history: self.style_history }
     }
 }
 

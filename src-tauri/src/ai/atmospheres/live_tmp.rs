@@ -29,7 +29,7 @@ fn live_three_albums() {
             let mut log = String::new();
             let files = generate(&key, &album, &tracks, dir.path(), &context, refs, None, 3, false,
                 |step, msg| eprintln!("[{}] {step} {msg}", album.title),
-                |files, name, prompt| { log += &format!("== {} · {name}\n{prompt}\n\n", files.len()); Ok(()) }).await?;
+                |files, name, _, prompt| { log += &format!("== {} · {name}\n{prompt}\n\n", files.len()); Ok(()) }).await?;
             std::fs::write(out.join(format!("{id}-prompts.txt")), &log).unwrap();
             for (i, f) in files.iter().enumerate() {
                 std::fs::copy(dir.path().join(f), out.join(format!("{id}-{}.jpg", i + 1))).unwrap();
