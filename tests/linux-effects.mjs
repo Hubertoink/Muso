@@ -34,6 +34,7 @@ async function exercise() {
   await img.decode();
   img.classList.add('on');
   localStorage.setItem('muso.spectrum','1');
+  localStorage.setItem('muso.eqStyle','pigment');
   let onBands, draws = 0;
   const spectrum = createSpectrumView(async () => {}, (_, receive) => { onBands = receive; }, {
     clear: art.clear, spectrum(...args) { draws++; art.spectrum(...args); },
@@ -59,7 +60,8 @@ async function exercise() {
   }
   spectrum.setPlayback(false, 1);
   art.clear('pointer');
-  return {draws,dimensions,viewHeight:bounds.height,pngMap,trace:!!trace,cleared:patches.every(c=>c.hidden),
+  const pigmentClipped = byId('pigmentBoundary').getAttribute('d') === trace + ' V0 H0 Z';
+  return {draws,dimensions,viewHeight:bounds.height,pngMap,trace:!!trace,pigmentClipped,cleared:patches.every(c=>c.hidden),
     pointerSubmitMs:times.sort((a,b)=>a-b)[10]};
 }
 try {
@@ -74,7 +76,7 @@ try {
   console.log(result);
   assert.ok(!result.error, result.error);
   assert.equal(result.draws,1);
-  assert.ok(result.trace && result.cleared && !result.pngMap);
+  assert.ok(result.trace && result.pigmentClipped && result.cleared && !result.pngMap);
   assert.ok(result.dimensions.every(p=>p.visible && p.alpha>0 && p.h<result.viewHeight));
   await fetch('http://127.0.0.1:4444'+session,{method:'DELETE'});
 } finally {

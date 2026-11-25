@@ -276,8 +276,14 @@ fn get_tracks(state: State<'_, AppState>, album_id: String) -> R<Vec<db::Track>>
 }
 
 #[tauri::command]
-fn play_track(state: State<'_, AppState>, path: String, playback_id: Option<u64>) {
-    state.player.send(audio::Cmd::Play(path, playback_id.unwrap_or_default()));
+fn play_track(state: State<'_, AppState>, path: String, playback_id: Option<u64>, vinyl_lead: Option<audio::Lead>, after_playback_id: Option<u64>, last_track: Option<bool>, runout_seconds: Option<u32>, change_at_end: Option<bool>) {
+    state.player.send(audio::Cmd::Play { path, id: playback_id.unwrap_or_default(), lead: vinyl_lead, after: after_playback_id,
+        last_track: last_track.unwrap_or(false), runout_seconds: runout_seconds.unwrap_or(0), change: change_at_end.unwrap_or(false) });
+}
+
+#[tauri::command]
+fn set_runout(state: State<'_, AppState>, playback_id: u64, seconds: u32, change_at_end: bool) {
+    state.player.send(audio::Cmd::Runout(playback_id, seconds, change_at_end));
 }
 
 #[tauri::command]
@@ -535,6 +541,7 @@ fn main() {
             has_openai_key,
             get_tracks,
             play_track,
+            set_runout,
             set_spectrum_enabled,
             pause,
             resume,

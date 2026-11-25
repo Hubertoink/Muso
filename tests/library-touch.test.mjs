@@ -28,6 +28,11 @@ beforeEach(async () => {
     };
     window.__TAURI__ = {
       core: { invoke: async (command, args) => {
+        if (command === 'remove_folder') { window.removedMusicFolder = args.path; return []; }
+        if (command === 'play_track' || command === 'set_runout') {
+          (window.audioCommands ??= []).push({command, ...args});
+          return;
+        }
         if (command === 'get_folders') { await window.folderGate; return ['test']; }
         if (command === 'get_albums') return structuredClone(albums);
         if (command === 'upgrade_cover') {
@@ -426,7 +431,7 @@ async function setApiKey(dialog, value) {
   await page.locator('#menuBtn').click();
   await page.locator('[data-action=' + dialog + ']').click();
   await page.locator('#' + dialog + ' input[type=password]').fill(value);
-  await page.locator('#' + dialog + ' .close').click();
+  await page.locator('#' + dialog).getByRole('button', {name:'Done', exact:true}).click();
 }
 
 test('the write action follows the saved key and existing articles remain readable and deletable without it', async () => {
@@ -479,7 +484,7 @@ test('the touch preference works immediately and survives a reload', async () =>
   const select = page.getByLabel('Library swipe direction');
   assert.equal(await select.inputValue(), 'opposite');
   await select.selectOption('follow');
-  await page.locator('#settings .close').click();
+  await page.getByRole('button', { name: 'Close settings' }).click();
   await down();
   await move(540);
   await up(220);
@@ -495,7 +500,7 @@ test('the touch preference works immediately and survives a reload', async () =>
   await page.locator('[data-action=settings]').click();
   assert.equal(await select.inputValue(), 'follow');
   await select.selectOption('opposite');
-  await page.locator('#settings .close').click();
+  await page.getByRole('button', { name: 'Close settings' }).click();
   await down();
   await move(540);
   await up(220);
@@ -516,9 +521,15 @@ test('the menu keeps its backdrop while Settings loads and the scrollbar clears 
     return viewport.top - shell.top >= radius && shell.bottom - viewport.bottom >= radius;
   });
   assert.ok(insideCorners);
-  await page.locator('#settings .close').scrollIntoViewIfNeeded();
+  const dismiss = page.getByRole('button', {name:'Close settings'});
+  const before = await dismiss.boundingBox();
+  assert.equal(await page.getByRole('button', {name:'Remove music folder test'}).textContent(), 'Remove');
+  await page.locator('#settings .modal-actions .close').scrollIntoViewIfNeeded();
   assert.ok(await scroll.evaluate(el => el.scrollTop > 0));
-  await page.locator('#settings .close').click();
+  assert.deepEqual(await dismiss.boundingBox(), before);
+  await dismiss.tap();
+  await page.locator('#settings').waitFor({ state: 'hidden' });
+  assert.equal(await page.evaluate(() => window.removedMusicFolder), undefined);
   await page.locator('#menuBtn').click();
   await page.locator('[data-action=eq]').click();
   await page.locator('#eq').waitFor();
@@ -739,6 +750,113 @@ test('a direct track selection ignores end and error events from the previous tr
   assert.equal(await tracks.nth(1).getAttribute('aria-current'), 'true');
 });
 
+test('five queued sleeves survive browsing, promote individually and advance in order', async () => {
+  await page.evaluate(async () => {
+    await openAlbum(state.albums[20]);
+    for (const i of [21, 22, 23, 24, 25, 26, 22]) openAlbum(state.albums[i]);
+  });
+  const covers = page.locator('.queued-cover');
+  assert.equal(await covers.count(), 5);
+  assert.equal(await page.locator('.cover-stack.fanned').count(), 1);
+  await page.locator('#backBtn').click();
+  await page.locator('#album').waitFor({state:'hidden'});
+  await page.locator('#nowPlaying').click();
+  const third = covers.nth(2);
+  const box = await third.boundingBox();
+  const x = box.x + box.width - 12, y = box.y + box.height / 2;
+  assert.equal(await page.evaluate(([x,y]) => document.elementFromPoint(x,y).closest('button')?.getAttribute('aria-label'), [x,y]), await third.getAttribute('aria-label'));
+  await touch('touchStart', x, 16, y);
+  await move(x, 90, y - 115);
+  await up();
+  for (const title of ['Record 23', 'Record 21', 'Record 22', 'Record 24', 'Record 25']) {
+    await page.waitForFunction(t => state.playing.album.title === t, title);
+    await page.evaluate(() => window.emitPlayback('track-ended', state.playing.playbackId));
+  }
+  await page.waitForFunction(() => state.playing.ended);
+  assert.equal(await covers.count(), 0);
+});
+
+test('swiping a waiting record down removes only that record and re-arms the final groove', async () => {
+  const playing = await page.evaluate(async () => {
+    document.querySelector('#vinylSounds').click();
+    await openAlbum(state.albums[20]);
+    for (const i of [21, 22, 23]) openAlbum(state.albums[i]);
+    return state.playing.playbackId;
+  });
+  const sleeves = page.locator('.queued-cover');
+  await page.locator('.cover-stack').evaluate(async stack => {
+    await new Promise(requestAnimationFrame);
+    await Promise.all(stack.getAnimations({ subtree:true }).filter(a => a instanceof CSSTransition).map(a => a.finished));
+  });
+  const middle = await sleeves.nth(1).boundingBox();
+  const x = middle.x + middle.width - 10, y = middle.y + middle.height / 2;
+  await touch('touchStart', x, 16, y);
+  await move(x, 40, y + 30);
+  const opacity = () => sleeves.nth(1).evaluate(el => Number(getComputedStyle(el).opacity));
+  const partial = await opacity();
+  assert.ok(partial > 0 && partial < 1);
+  await move(x, 40, y + 12);
+  await page.waitForFunction(initial => Number(getComputedStyle(document.querySelectorAll('.queued-cover')[1]).opacity) > initial, partial);
+  await up();
+  await page.waitForFunction(() => getComputedStyle(document.querySelectorAll('.queued-cover')[1]).opacity === '1');
+  assert.equal(await sleeves.count(), 3);
+  await touch('touchStart', x, 16, y);
+  await move(x, 90, y + 115);
+  await up();
+  assert.deepEqual(await sleeves.locator('.queue-title').allTextContents(), ['Record 21', 'Record 23']);
+  assert.equal(await page.evaluate(() => state.playing.playbackId), playing);
+  await sleeves.first().press('ArrowDown');
+  await sleeves.first().press('ArrowDown');
+  assert.equal(await sleeves.count(), 0);
+  assert.deepEqual(await page.evaluate(() => window.audioCommands.at(-1)), {
+    command:'set_runout', playbackId:playing, seconds:120, changeAtEnd:false
+  });
+});
+
+test('vinyl settings persist and select a single drop, change or finite runout at album boundaries', async () => {
+  assert.equal(await page.locator('#vinylSounds').isChecked(), false);
+  const minutes = page.locator('#runoutMinutes');
+  assert.equal(await minutes.inputValue(), '2');
+  await page.locator('#menuBtn').tap();
+  await page.locator('[data-action=settings]').tap();
+  assert.ok(await page.locator('#runoutLess').isDisabled());
+  await page.getByRole('switch', { name: 'Needle and groove sounds' }).tap();
+  await page.locator('#runoutMore').tap();
+  assert.equal(await page.evaluate(() => localStorage.getItem('muso.runoutSeconds')), '150');
+  await page.locator('#runoutLess').tap();
+  assert.equal(await minutes.inputValue(), '2');
+  await minutes.fill('1,5');
+  await minutes.press('Enter');
+  await page.reload();
+  await page.locator('#crate .sleeve[data-index="20"]').waitFor();
+  assert.equal(await page.locator('#vinylSounds').isChecked(), true);
+  await page.evaluate(async () => {
+    window.testTracks = ['a','b'].map(path => ({path, title:path}));
+    await openAlbum(state.albums[20]);
+    await next();
+    openAlbum(state.albums[21]);
+    window.emitPlayback('record-changing', state.playing.playbackId);
+  });
+  await page.waitForFunction(() => state.playing.album.title === 'Record 21');
+  const calls = await page.evaluate(() => window.audioCommands);
+  assert.deepEqual(calls.map(x => x.command), ['play_track','play_track','set_runout','play_track']);
+  assert.equal(calls[0].vinylLead, 'drop');
+  assert.equal(calls[1].vinylLead, null);
+  assert.equal(calls[1].runoutSeconds, 90);
+  assert.equal(calls[2].changeAtEnd, true);
+  assert.equal(calls[2].seconds, 0);
+  assert.equal(calls[3].afterPlaybackId, calls[1].playbackId);
+  assert.equal(calls[3].vinylLead, 'change');
+  await page.evaluate(async () => {
+    await next();
+    window.emitPlayback('runout-started', state.playing.playbackId);
+  });
+  await page.locator('#runoutLabel').waitFor();
+  await page.evaluate(() => window.emitPlayback('track-ended', state.playing.playbackId));
+  await page.waitForFunction(() => state.playing.ended);
+  await page.locator('#runoutLabel').waitFor({state:'hidden'});
+});
+
 test('accepting the sleeve behind the playing album keeps its image at the handoff', async () => {
   await down();
   await up();
@@ -749,9 +867,9 @@ test('accepting the sleeve behind the playing album keeps its image at the hando
   await settled();
   await down();
   await up();
-  const offer = page.locator('#proposedCover');
+  const offer = page.locator('.queued-cover');
   await offer.waitFor();
-  await page.evaluate(() => { window.offeredImage = document.querySelector('#proposedImg'); });
+  await page.evaluate(() => { window.offeredImage = document.querySelector('.queued-cover img'); });
   await offer.press('Enter');
   await offer.waitFor({ state: 'hidden' });
   assert.equal(await page.locator('#alTitle').textContent(), 'Record 21');
@@ -1016,6 +1134,62 @@ test('the cover waits for a decoded atmosphere and fades back on the next track'
   assert.ok(midFade.every(opacity => opacity > .4 && opacity < .6), 'both layers are visible halfway through the return fade');
 });
 
+test('rising pigment follows its vector rim at full HD and at high pixel density', async () => {
+  await page.setViewportSize({width:1920,height:1080});
+  await page.evaluate(() => {
+    localStorage.setItem('muso.spectrum','1');
+    localStorage.setItem('muso.eqStyle','pigment');
+    localStorage.setItem('muso.eqColour','#ffffff');
+    localStorage.setItem('muso.eqIntensity','100');
+    localStorage.setItem('muso.eqHeight','100');
+    const view = createSpectrumView(async () => {}, (_, receive) => { window.drawBands = receive; }, null);
+    view.setPlayback(true, 1);
+    const pigment = document.getElementById('spectrumPigment');
+    document.body.append(pigment);
+    Object.assign(pigment.style, {position:'fixed', zIndex:9999});
+    document.body.style.background = '#000';
+    document.body.querySelectorAll(':scope > :not(#spectrumPigment):not(#album)').forEach(el => { el.style.visibility = 'hidden'; });
+    // Keep the SVG clipping definitions in the render tree.
+    document.getElementById('album').classList.remove('hidden');
+    document.getElementById('album').style.opacity = '0';
+  });
+  for (const density of [1, 2]) {
+    await input.send('Emulation.setDeviceMetricsOverride', {width:1920,height:1080,deviceScaleFactor:density,mobile:false});
+    const ys = await page.evaluate(async () => {
+      window.drawBands({payload:[1,[1,.9,.3,.1,.8,.1,.4,.6,.7,.1,1,.6,.5,.2,.1,.9]]});
+      await new Promise(requestAnimationFrame);
+      const path = document.getElementById('eqTrace');
+      return Array.from({length:30}, (_, i) => {
+        const x = (40 + i + .5) / innerWidth * 1000;
+        let lo = 0, hi = path.getTotalLength();
+        for (let j=0; j<20; j++) {
+          const mid = (lo + hi) / 2;
+          if (path.getPointAtLength(mid).x < x) lo = mid; else hi = mid;
+        }
+        return path.getPointAtLength(hi).y / 100 * innerHeight;
+      });
+    });
+    const {data} = await input.send('Page.captureScreenshot', {format:'png', clip:{x:40,y:0,width:30,height:1080,scale:1}});
+    const errors = await page.evaluate(async ({data,ys,density}) => {
+      const img = await createImageBitmap(await (await fetch('data:image/png;base64,' + data)).blob());
+      const canvas = document.createElement('canvas');
+      canvas.width = img.width; canvas.height = img.height;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img,0,0);
+      const pixels = ctx.getImageData(0,0,img.width,img.height).data;
+      return ys.map((y, i) => {
+        const x = i*density + Math.floor(density/2);
+        let last = -1;
+        for (let row = 0; row < img.height; row++) {
+          if (pixels[4*(row*img.width+x)] > 100) last = row;
+        }
+        return Math.abs(last + .5 - y*density);
+      });
+    }, {data,ys,density});
+    assert.ok(Math.max(...errors) < 3, `Painted edge deviates by ${Math.max(...errors).toFixed(2)} device pixels at ${density}x (y=${ys[0]}, first error=${errors[0]}).`);
+  }
+});
+
 test('atmosphere grain keeps its pixel size across display scales and window sizes', async () => {
   await down();
   await up();
@@ -1102,7 +1276,7 @@ test('TV follows the playing track while the controller stays in the library', a
   assert.equal(await tv.locator('#artist').textContent(), 'Test');
   assert.ok(await tv.locator('aside').evaluate(el => el.classList.contains('visible')));
   const playingId = await page.evaluate(() => state.playing.playbackId);
-  const offer = page.locator('#proposedCover');
+  const offer = page.locator('.queued-cover');
   await page.evaluate(() => openAlbum(state.albums[21]));
   await offer.waitFor();
   await offer.locator('.swipe-hint').tap();
@@ -1117,7 +1291,7 @@ test('TV follows the playing track while the controller stays in the library', a
   const box = await offer.boundingBox();
   const x = box.x + box.width - 22, y = box.y + box.height / 2;
   await touch('touchStart', x, 16, y);
-  await move(x + 100, 120, y);
+  await move(x, 120, y - 100);
   await up();
   await tv.waitForFunction(() => document.querySelector('#title').textContent === 'First');
   await page.locator('#album').waitFor({state:'hidden'});

@@ -62,6 +62,17 @@ function createMiniMeter(invoke, listen, root) {
   };
 }
 
+// Join successive midpoints with quadratic curves so the rim has a continuous tangent.
+function pigmentTrace(centres) {
+  const step = 1000 / (centres.length - 1);
+  let trace = 'M0 ' + (centres[0] * 100).toFixed(3);
+  for (let i = 1; i < centres.length - 1; i++) {
+    trace += ' Q' + (i * step).toFixed(2) + ' ' + (centres[i] * 100).toFixed(3)
+      + ' ' + ((i + .5) * step).toFixed(2) + ' ' + ((centres[i] + centres[i + 1]) * 50).toFixed(3);
+  }
+  return trace + ' L1000 ' + (centres[centres.length - 1] * 100).toFixed(3);
+}
+
 function createSpectrumView(invoke, listen, localRefraction) {
   const toggle = document.getElementById('spectrumToggle');
   const control = id => document.getElementById(id);
@@ -71,6 +82,7 @@ function createSpectrumView(invoke, listen, localRefraction) {
   const style = control('eqStyle');
   const colour = control('eqColour');
   const pigment = control('spectrumPigment');
+  const boundary = control('pigmentBoundary');
   const brush = pigment.getContext('2d');
   const surface = document.getElementById('spectrumSurface');
   const line = document.getElementById('spectrumLine');
@@ -156,9 +168,11 @@ function createSpectrumView(invoke, listen, localRefraction) {
       const band = Math.floor(index);
       const t = index - band;
       const amplitude = levels[band] + (levels[Math.min(band + 1, levels.length - 1)] - levels[band]) * t * t * (3 - 2 * t);
-      const envelope = amplitude * Math.min(1, fraction * 14, (1 - fraction) * 14);
+      const edge = Math.min(1, fraction * 14, (1 - fraction) * 14);
+      const taper = painting ? edge * edge * (3 - 2 * edge) : edge;
+      const envelope = amplitude * taper;
       const center = .774 - envelope * reach * .22;
-      if (painting && envelope > .005) {
+      if (painting) {
         const base = center * pigment.height;
         const lift = Math.max(1, envelope * reach * .19 * pigment.height);
         const wash = brush.createLinearGradient(0, base, 0, base - lift);
@@ -166,11 +180,13 @@ function createSpectrumView(invoke, listen, localRefraction) {
         wash.addColorStop(.35, colour.value + 'cf');
         wash.addColorStop(1, colour.value + '00');
         brush.fillStyle = wash;
-        brush.fillRect(x, base - lift, 1, lift + .5);
+        // Extend the wash under the trace. The shared vector curve cuts its visible edge
+        // at display resolution, including between neighbouring colour samples.
+        brush.fillRect(x, base - lift, 1, pigment.height - base + lift);
       }
-      if (x % 2 === 0 || x === w - 1) points.push((fraction * 1000).toFixed(1) + ' ' + (center * 100).toFixed(1));
+      centres[x] = center;
+      if (!painting && (x % 2 === 0 || x === w - 1)) points.push((fraction * 1000).toFixed(1) + ' ' + (center * 100).toFixed(1));
       if (localRefraction) {
-        centres[x] = center;
         amplitudes[x] = envelope;
         continue;
       }
@@ -190,7 +206,9 @@ function createSpectrumView(invoke, listen, localRefraction) {
       depth.setAttribute('scale', 38 * gain);
       surface.classList.add('active');
     }
-    path.setAttribute('d', 'M' + points.join(' L'));
+    const trace = painting ? pigmentTrace(centres) : 'M' + points.join(' L');
+    path.setAttribute('d', trace);
+    if (painting) boundary.setAttribute('d', trace + ' V0 H0 Z');
     line.style.opacity = String(gain * Math.min(1, 1.65 * peak));
     if (painting) pigment.style.opacity = String(gain * Math.min(1, 2 * peak));
   }

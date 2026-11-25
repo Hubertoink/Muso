@@ -210,13 +210,34 @@
   </div>
 
   <!-- Settings -->
-  <div id="settings" class="modal animated-overlay hidden" inert>
+  <div id="settings" class="modal animated-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="settingsTitle" inert>
     <div class="modal-card">
+      <header class="settings-header">
+        <h2 id="settingsTitle">Settings</h2>
+        <button class="close settings-dismiss" type="button" aria-label="Close settings">×</button>
+      </header>
       <div class="modal-scroll">
-        <h2>Settings</h2>
         <h3>Music folders</h3>
         <ul id="folderList"></ul>
         <button id="addFolderBtn" class="link">+ Add folder</button>
+        <h3>Vinyl playback</h3>
+        <div class="vinyl-settings">
+          <label class="vinyl-toggle">
+            <span>Needle and groove sounds</span>
+            <input type="checkbox" role="switch" id="vinylSounds" />
+          </label>
+          <div class="groove-duration">
+            <label for="runoutMinutes">End groove duration</label>
+            <div class="groove-stepper">
+              <button id="runoutLess" type="button" aria-label="Decrease by half a minute" disabled>−</button>
+              <label class="groove-value">
+                <input id="runoutMinutes" type="text" inputmode="decimal" aria-label="End groove duration in minutes" autocomplete="off" spellcheck="false" value="2" disabled />
+                <span aria-hidden="true">min</span>
+              </label>
+              <button id="runoutMore" type="button" aria-label="Increase by half a minute" disabled>+</button>
+            </div>
+          </div>
+        </div>
         <h3>Touch</h3>
         <label class="style-field">Library swipe direction
           <select id="librarySwipeDirection">
@@ -354,6 +375,7 @@
     <div class="bg"><img id="bgArt" alt="" /></div>
     <svg class="filter-defs" width="0" height="0" aria-hidden="true">
       <defs>
+        <clipPath id="pigmentClip" clipPathUnits="objectBoundingBox"><path id="pigmentBoundary" transform="scale(.001 .01)"/></clipPath>
         <filter id="waterRefraction" x="0" y="0" width="100%" height="100%" primitiveUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
           <feFlood flood-color="#808080" result="rest"/>
           <feImage id="waveField" href="wave-field.png" width="1" height="1" preserveAspectRatio="none" result="wave"/>
@@ -397,15 +419,15 @@
 
     <div class="stage">
       <div class="cover-stack">
-        <button id="proposedCover" class="hidden" type="button">
-          <img id="proposedImg" alt="" draggable="false" />
-          <span class="swipe-hint">Swipe right →</span>
-        </button>
+        <template id="queueSleeve"><button class="queued-cover" type="button">
+          <img alt="" draggable="false" /><span class="queue-title"></span><span class="swipe-hint"></span>
+        </button></template>
         <div id="cover" class="cover"><img id="coverImg" alt="" /></div>
       </div>
       <div class="meta">
         <div id="alArtist" class="al-artist"></div>
         <div id="alTitle" class="al-title"></div>
+        <div id="runoutLabel" class="hidden" role="status">End groove</div>
         <nav id="alTrack" class="al-track" aria-label="Album tracks"></nav>
       </div>
       <div class="controls chrome-soft">
