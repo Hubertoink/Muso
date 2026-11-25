@@ -2,7 +2,7 @@
 
 // On WebKitGTK a live SVG displacement map can invalidate the whole player.
 // Keep the original image and repaint only a patch or a narrow frequency band.
-function createLinuxRefraction(pictures) {
+function createLinuxRefraction(pictures, fit = 'cover') {
   if (!navigator.userAgent.includes('Linux')) return null;
   const layers = [...pictures.querySelectorAll('img')].map(img => {
     const layer = document.createElement('div');
@@ -41,13 +41,14 @@ function createLinuxRefraction(pictures) {
     if (canvas.height !== h) canvas.height = h;
     Object.assign(canvas.style, {left:left+'px', top:top+'px', width:width/scale+'px', height:height/scale+'px'});
     const ctx = canvas.getContext('2d');
-    const coverScale = Math.max(bounds.width/img.naturalWidth, bounds.height/img.naturalHeight);
-    const sx = (img.naturalWidth - bounds.width/coverScale)/2 + (x-bounds.left)/coverScale;
-    const sy = (img.naturalHeight - bounds.height/coverScale)/2 + (y-bounds.top)/coverScale;
+    const size = fit === 'contain' ? Math.min : Math.max;
+    const imageScale = size(bounds.width/img.naturalWidth, bounds.height/img.naturalHeight);
+    const sx = (img.naturalWidth - bounds.width/imageScale)/2 + (x-bounds.left)/imageScale;
+    const sy = (img.naturalHeight - bounds.height/imageScale)/2 + (y-bounds.top)/imageScale;
     ctx.clearRect(0, 0, w, h);
     canvas.hidden = false;
     function sample(dx, dy, dw, dh, sourceX, sourceY, sourceW, sourceH) {
-      ctx.drawImage(img, sx + sourceX/coverScale, sy + sourceY/coverScale, sourceW/coverScale, sourceH/coverScale,
+      ctx.drawImage(img, sx + sourceX/imageScale, sy + sourceY/imageScale, sourceW/imageScale, sourceH/imageScale,
         dx*w/width, dy*h/height, dw*w/width, dh*h/height);
     }
     return { ctx, w, h, sample };

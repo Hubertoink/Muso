@@ -501,11 +501,6 @@ body:has(#coverConfirm[open]) #coverSearchStatus { visibility: hidden; }
 .filter-defs { position: absolute; pointer-events: none; }
 #lightFilter, #atmosPictures { pointer-events: none; position: absolute; inset: 0; overflow: hidden; }
 #atmosPictures.refracting { filter: url(#waterRefraction); }
-#spectrumSurface { position: absolute; inset: 0; pointer-events: none; }
-#spectrumSurface.active { filter: url(#spectrumRefraction); }
-#spectrumLine, #spectrumPigment { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; opacity: 0; }
-#spectrumPigment { clip-path: url(#pigmentClip); }
-#spectrumLine { fill: none; stroke: #fff2dc; stroke-width: 1.35; filter: drop-shadow(0 1px 2px #29231dcc); }
 .eq-slider { display: grid; grid-template-columns: 7em 1fr 3.5em; gap: 12px; align-items: center; color: var(--ink-dim); font-size: 13px; margin-top: 20px; }
 .eq-slider input { width: 100%; accent-color: var(--accent); }
 .eq-slider output { text-align: right; font-variant-numeric: tabular-nums; }
@@ -526,7 +521,7 @@ body:has(#coverConfirm[open]) #coverSearchStatus { visibility: hidden; }
   #atmosPictures.refracting { filter: none; }
 }
 #album.showing-atmos .atmos { --motion-opacity: 1; }
-#album.showing-atmos .cover { --motion-opacity: 0; pointer-events: none; }
+#album.showing-atmos .cover-stack { --motion-opacity: 0; }
 #album.showing-atmos.idle .meta, #album.showing-atmos.idle .controls, #album.showing-atmos.idle .veil { --motion-opacity: 0; }
 #album[data-preview=dreamscape] { --atmos-filter: sepia(.26) hue-rotate(318deg) saturate(.86) contrast(.92); }
 #album[data-preview=ambient] { --atmos-filter: saturate(.52) contrast(.78) brightness(1.12) blur(2px); }
@@ -573,12 +568,12 @@ body:has(#coverConfirm[open]) #coverSearchStatus { visibility: hidden; }
   width: min(60vh, 62vw); height: min(60vh, 62vw);
   --first-offset: min(46%, calc((100vw - 100%) / 2 - 10px));
   --queue-step: min(24%, calc((100vw - 100% - var(--first-offset) - 24px) / 4));
-  transition: translate .25s var(--ease);
+  opacity: var(--motion-opacity);
+  transition: translate .25s var(--ease), --motion-opacity var(--atmos-fade);
 }
 .cover-stack.fanned { translate: calc((var(--first-offset) + (var(--queue-size) - 1) * var(--queue-step)) / -2) 0; }
 #cover { z-index: 6; }
 .changing-record .outgoing-sleeve { z-index: 7; }
-#album.showing-atmos .queued-cover { visibility: hidden; }
 #album.showing-atmos .cover-stack.fanned { translate: 0; }
 #runoutLabel { margin-top: 4px; font: 11px var(--mono); }
 .cover {
@@ -588,7 +583,6 @@ body:has(#coverConfirm[open]) #coverSearchStatus { visibility: hidden; }
   box-shadow: 0 50px 100px -30px rgba(0,0,0,0.9), 0 0 0 1px rgba(255,255,255,0.05);
   animation: breathe 9s ease-in-out infinite;
   background: var(--blank, #222);
-  transition: --motion-opacity var(--atmos-fade);
   flex: none;
 }
 .cover img { width: 100%; height: 100%; object-fit: cover; display: block; animation: cover-zoom 9s ease-in-out infinite; }
@@ -640,6 +634,41 @@ body:has(#coverConfirm[open]) #coverSearchStatus { visibility: hidden; }
 .controls svg .fill { fill: var(--ink); stroke: none; }
 .controls .play { width: 58px; height: 58px; border-radius: 50%; border: 1px solid var(--ink-faint); --motion-opacity: 1; }
 .controls .play svg { width: 22px; height: 22px; }
+.volume-capsule {
+  --volume-width: 48px;
+  position: relative; isolation: isolate; overflow: hidden; border-radius: 999px;
+  width: var(--volume-width); height: 184px;
+  background: #202021; border: 1px solid rgba(255,255,255,.52);
+}
+.volume-capsule::before {
+  content: ''; position: absolute; inset: 0; pointer-events: none;
+  background: hsl(345 calc(var(--volume-factor, 0) * 100%) calc(55% - var(--volume-factor, 0) * 27%));
+  transform: scaleY(var(--volume-factor, 0)); transform-origin: bottom;
+}
+.volume-capsule input {
+  position: absolute; inset: 0; width: 100%; height: 100%; margin: 0;
+  writing-mode: vertical-lr; direction: rtl; opacity: 0; cursor: ns-resize; touch-action: none;
+}
+.volume-capsule:has(:focus-visible) { outline: 2px solid white; outline-offset: 3px; }
+#playerVolume {
+  position: absolute; bottom: max(20px, env(safe-area-inset-bottom)); right: max(20px, env(safe-area-inset-right));
+  z-index: 5; height: var(--volume-width); background: rgba(18,18,18,.36);
+  transition: height .24s var(--ease), background .22s, opacity .3s;
+}
+#playerVolume.open { height: min(200px, 42vh); background: #202021; }
+#playerVolume::before { opacity: 0; transition: opacity .18s; }
+#playerVolume.open::before { opacity: 1; }
+#volumeToggle {
+  position: absolute; bottom: 0; left: 0; width: 100%; height: calc(var(--volume-width) - 2px);
+  display: grid; place-items: center; color: #fff;
+}
+#volumeToggle svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.55; stroke-linecap: round; stroke-linejoin: round; }
+#playerVolume:not(.open) input, #playerVolume input:disabled { pointer-events: none; }
+#album.idle #playerVolume:not(.open):not(:has(:focus-visible)),
+.can-hover #album:not(:hover) #playerVolume:not(.open):not(:has(:focus-visible)) { opacity: 0; }
+@media (prefers-reduced-motion: reduce) {
+  #playerVolume, #playerVolume::before { transition: none; }
+}
 :where(.can-hover) .controls .play:hover { border-color: var(--ink); }
 #album:not(.is-paused) #icoPlay, #album.is-paused #icoPause { display: none; }
 
@@ -1086,4 +1115,34 @@ body:has(#coverConfirm[open]) #coverSearchStatus { visibility: hidden; }
 .image-tools { display: flex; gap: 22px; margin-top: 10px; }
 #imageStatus { margin-top: 12px; }
 .library-dialog button, .library-dialog select { min-height: 44px; }
+#audioDialog, #heosVolumeDialog { padding-top: 0; }
+#heosVolumeTitle { margin: 0; }
+#heosLevels { display: flex; gap: 24px; flex-wrap: wrap; }
+.heos-level { display: flex; flex-direction: column; align-items: center; gap: 8px; max-width: 140px; text-align: center; overflow-wrap: anywhere; }
+.heos-level .volume-capsule { order: -1; height: 160px; }
+.heos-level output { font: 13px var(--mono); color: var(--ink-dim); }
+#heosVolumeStatus:not(:empty) { margin-block: 12px; color: var(--ink-dim); }
+#audioDialog [hidden] { display: none; }
+#audioTitle { margin: 0; }
+.heos-heading, .heos-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.heos-heading { margin-top: 18px; }
+.heos-heading h3 { margin: 0; }
+.heos-row { border-bottom: 1px solid #373733; }
+.heos-target { min-width: 0; flex: 1; display: flex; align-items: center; gap: 12px; text-align: left; padding: 12px 0; }
+.heos-target::before { content: ''; width: 16px; height: 16px; flex: none; border-radius: 50%; border: 1px solid #77776f; }
+.heos-target[aria-pressed=true]::before { border-color: var(--accent); background: var(--accent); box-shadow: inset 0 0 0 4px #181817; }
+.heos-target strong { font-size: 15px; font-weight: 500; }
+.heos-target small { display: block; margin-top: 4px; color: var(--ink-dim); font-size: 12px; }
+.heos-target span { overflow-wrap: anywhere; }
+.heos-edit { flex: none; }
+#heosCreate { margin-top: 16px; }
+#heosManual { margin-top: 14px; font-size: 13px; }
+#heosManual summary { padding: 14px 0; cursor: pointer; color: var(--ink-dim); }
+#heosConnect { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 8px; align-items: center; }
+#heosConnect label { grid-column: 1 / -1; }
+#heosIp { background: #242422; border: 1px solid #494943; border-radius: 8px; height: 44px; padding: 0 10px; width: 100%; }
+#heosMembers label { display: flex; align-items: center; gap: 12px; min-height: 48px; border-bottom: 1px solid #373733; cursor: pointer; }
+#heosMembers input { accent-color: var(--accent); width: 18px; height: 18px; }
+#heosStatus:not(:empty) { margin-top: 12px; color: var(--ink-dim); }
+#heosDissolve { margin-right: auto; }
 .library-dialog .modal-actions .link { padding-inline: 8px; }

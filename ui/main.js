@@ -997,6 +997,7 @@ $('menu').querySelectorAll('[data-action]').forEach((b) =>
     if (act === 'eq') openEQ(false);
     if (act === 'images') openImagesDialog();
     if (act === 'presenter') openTvDialog();
+    if (act === 'audio-output') heosOutput.open();
     if (act === 'fullscreen') toggleFullscreen();
     if (act === 'refresh') {
       invoke('scan_library').then((started) => toast(started ? 'Refreshing library…' : 'Already digging…'));
@@ -1114,7 +1115,7 @@ const filterSelect = $('imageFilter');
 const rippleToggle = $('pointerRipples');
 const strengthInput = $('effectStrength');
 const localRefraction = createLinuxRefraction($('atmosPictures'));
-const spectrum = createSpectrumView(invoke, listen, localRefraction);
+const spectrum = createSpectrumView(invoke, listen, localRefraction, () => syncTv());
 const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
 let waveFrame = 0;
 let wave;
@@ -1180,7 +1181,7 @@ function drawWave(now) {
 function pointerRipple(e) {
   const album = $('album');
   if (!rippleToggle.checked || reducedMotion.matches || Number(strengthInput.value) === 0 ||
-      !album.classList.contains('showing-atmos') || e.target.closest('button, .popover, .controls, .al-track')) return;
+      !album.classList.contains('showing-atmos') || e.target.closest('button, .popover, .controls, .al-track, #playerVolume')) return;
   const image = $('atmosPictures').querySelector('img.on');
   if (!image?.complete || !image.naturalWidth) return;
   const bounds = $('atmosPictures').getBoundingClientRect();
@@ -1654,6 +1655,9 @@ for (const dialog of document.querySelectorAll('.library-dialog')) {
   });
 }
 
+const heosOutput = createHeosOutput(invoke, listen, toast, () => playerVolume.close());
+const playerVolume = createPlayerVolume(invoke, heosOutput, toast, () => { if (state.view === 'album') poke(); });
+
 /* ---------------- TV display ---------------- */
 const tvChannel = new BroadcastChannel('muso-presenter');
 let tvActive = false, tvReady = false, tvSet = null;
@@ -1690,7 +1694,8 @@ function syncTv(refresh = false) {
   }
   const track = p.tracks[p.index];
   tvChannel.postMessage({track: p.playbackId, artist: track.artist || p.album.artist, title: track.title,
-    intro: !p.introDone, paused: p.paused, files: tvSet.files, cover: p.album.art ? coverUrl(p.album, 'art') : ''});
+    intro: !p.introDone, paused: p.paused, files: tvSet.files, cover: p.album.art ? coverUrl(p.album, 'art') : '',
+    spectrum: spectrum.settings()});
 }
 tvChannel.onmessage = e => {
   if (e.data === 'ready') { tvReady = true; syncTv(); }
@@ -1831,8 +1836,8 @@ async function togglePlay() {
   if (!p) return;
   if (p.ended) return playIndex(0, 'drop');
   p.paused = !p.paused;
-  await invoke(p.paused ? 'pause' : 'resume');
   updatePlayUi();
+  await invoke(p.paused ? 'pause' : 'resume');
 }
 const next = () => state.playing && playIndex(state.playing.index + 1);
 const prev = () => state.playing && playIndex(state.playing.index - 1);
@@ -2141,7 +2146,8 @@ function animateCrateChange() {
   sleeve.append(previousImage);
   sleeve.classList.add('outgoing-sleeve');
   sleeve.style.setProperty('--blank', view.style.getPropertyValue('--blank'));
-  view.style.setProperty('--outgoing-opacity', getComputedStyle($('cover')).opacity);
+  const outgoingOpacity = Number(getComputedStyle(coverStack).opacity) > 0 ? getComputedStyle($('cover')).opacity : '0';
+  view.style.setProperty('--outgoing-opacity', outgoingOpacity);
   sleeve.setAttribute('aria-hidden', 'true');
   $('cover').after(sleeve);
 
@@ -2258,6 +2264,7 @@ function displayAlbum(a, advancing = false) {
 }
 
 function closeAlbum() {
+  playerVolume.close();
   resetCoverPull();
   inspectingQueue = false;
   const view = $('album');
@@ -2289,7 +2296,7 @@ function poke() {
   $('album').classList.remove('idle');
   clearTimeout(idleTimer);
   idleTimer = setTimeout(() => {
-    if (state.view === 'album' && !coverPull && !coverStack.querySelector('.dragging') && $('albumMenu').classList.contains('hidden')) {
+    if (state.view === 'album' && !coverPull && !coverStack.querySelector('.dragging') && !$('playerVolume').classList.contains('open') && $('albumMenu').classList.contains('hidden')) {
       $('album').classList.add('idle');
       inspectingQueue = false;
       updateAtmosView();
@@ -2351,6 +2358,12 @@ function openEQ(fromPlayer) {
   $('spectrumToggle').focus({ preventScroll: true });
 }
 $('albumEQ').addEventListener('click', () => openEQ(true));
+$('albumHeos').addEventListener('click', async () => {
+  show($('albumMenu'), false);
+  await playerVolume.settled();
+  heosOutput.openVolume();
+});
+$('heosVolumeDialog').addEventListener('close', () => { poke(); $('albumMenuBtn').focus(); });
 $('eq').querySelector('.close').addEventListener('click', () => {
   if (!$('eq').classList.contains('from-player')) { openMenu(); $('menu').querySelector('[data-action="eq"]').focus({ preventScroll: true }); }
   else { poke(); $('albumMenuBtn').focus(); }
@@ -2411,6 +2424,7 @@ function updateAtmosView() {
   const p = state.playing;
   const reveal = !coverPull && !(inspectingQueue && albumQueue.length) && p?.introDone && readyAlbum === p.album.id && state.viewAlbum?.id === readyAlbum;
   $('album').classList.toggle('showing-atmos', !!reveal);
+  coverStack.inert = !!reveal;
   spectrum.setPlayback(!!reveal && !p.paused, p?.playbackId);
   if (!reveal) stopWave();
 }
@@ -2552,7 +2566,7 @@ listen('atmos-progress', ({ payload }) => {
 window.addEventListener('keydown', (e) => {
   if (['clearSearch', 'exitFullscreen'].includes(e.target.id) && (e.key === 'Enter' || e.key === ' ')) return;
   const modalOpen = [...document.querySelectorAll('.modal')].some((m) => !m.classList.contains('hidden'));
-  if ($('tvDialog').open || $('imagesDialog').open) return;
+  if (document.querySelector('.library-dialog[open]')) return;
   if (e.key === 'F11') {
     e.preventDefault();
     if (!e.repeat) toggleFullscreen();

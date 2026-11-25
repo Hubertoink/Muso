@@ -1,5 +1,28 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Muso TV</title>
-<link rel="stylesheet" href="presenter.css"></head>
-<body><main aria-label="Album artwork"></main><aside><span id="artist"></span><strong id="title"></strong></aside>
-<script src="presenter.js"></script></body></html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Muso TV</title>
+  <link rel="stylesheet" href="spectrum.css"><link rel="stylesheet" href="presenter.css">
+</head>
+<body>
+  <main aria-label="Album artwork">
+    <svg width="0" height="0" aria-hidden="true"><defs>
+      <clipPath id="pigmentClip" clipPathUnits="objectBoundingBox"><path id="pigmentBoundary" transform="scale(.001 .01)"/></clipPath>
+      <filter id="spectrumRefraction" x="0" y="0" width="100%" height="100%" color-interpolation-filters="sRGB">
+          <feFlood flood-color="#808080" result="rest"/>
+          <feImage id="spectrumField" x="0" y="0" width="100%" height="100%" preserveAspectRatio="none" result="wave"/>
+          <feMerge result="offsets"><feMergeNode in="rest"/><feMergeNode in="wave"/></feMerge>
+          <feDisplacementMap id="spectrumDepth" in="SourceGraphic" in2="offsets" scale="0" xChannelSelector="R" yChannelSelector="G"/>
+        </filter>
+    </defs></svg>
+    <div id="spectrumSurface"><div id="tvPictures"><img alt=""><img alt=""></div></div>
+    <canvas id="spectrumPigment" width="192" height="280" aria-hidden="true"></canvas>
+      <svg id="spectrumLine" viewBox="0 0 1000 100" preserveAspectRatio="none" aria-hidden="true"><path id="eqTrace" vector-effect="non-scaling-stroke"/><g id="eqEchoes" opacity=".55"><use href="#eqTrace" transform="translate(0 1.1)"/><use href="#eqTrace" transform="translate(0 2.5)" opacity=".52"/></g></svg>
+  </main>
+  <aside><span id="artist"></span><strong id="title"></strong></aside>
+  <script src="refraction.js"></script>
+  <script src="spectrum.js"></script>
+  <script src="presenter.js"></script>
+</body>
+</html>

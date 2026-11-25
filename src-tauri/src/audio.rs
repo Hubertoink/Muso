@@ -7,6 +7,8 @@ use std::sync::{atomic::{AtomicBool, AtomicU32, Ordering}, Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 mod vinyl;
+mod output;
+pub(crate) use output::AudioBus;
 pub use vinyl::Lead;
 
 pub enum Cmd {
@@ -21,22 +23,22 @@ pub enum Cmd {
 /// Audio lives on its own thread because the output stream is not `Send`.
 pub struct Player {
     tx: Mutex<Sender<Cmd>>,
+    meter_windows: Mutex<std::collections::HashSet<String>>,
+    pub(crate) bus: AudioBus,
 }
 
 impl Player {
     pub fn new(app: AppHandle) -> Self {
         let (tx, rx) = channel::<Cmd>();
+        let bus = AudioBus::new();
+        let playback_bus = bus.clone();
         std::thread::Builder::new()
             .name("muso-audio".into())
             .spawn(move || {
-                let (_stream, handle) = match OutputStream::try_default() {
-                    Ok(s) => s,
-                    Err(e) => {
-                        let _ = app.emit("playback-error", (None::<u64>, format!("No audio device: {e}")));
-                        while rx.recv().is_ok() {}
-                        return;
-                    }
-                };
+                let local = OutputStream::try_default().map_err(crate::err).and_then(|(stream, handle)| {
+                    handle.play_raw(playback_bus.reader(0)).map_err(crate::err)?;
+                    Ok(stream)
+                });
                 let mut sink: Option<Sink> = None;
                 let mut cover_intro = None;
                 let spectrum_on = Arc::new(AtomicBool::new(false));
@@ -51,19 +53,22 @@ impl Player {
                     let metering = spectrum_on.load(Ordering::Relaxed);
                     match rx.recv_timeout(Duration::from_millis(if metering || change_armed.load(Ordering::Relaxed) { 40 } else { 250 })) {
                         Ok(Cmd::Play { path, id: playback_id, lead, after, last_track, runout_seconds, change }) => {
+                            if let Err(e) = &local {
+                                if playback_bus.local() {
+                                    let _ = app.emit("playback-error", (Some(playback_id), format!("No local audio device: {e}")));
+                                    continue;
+                                }
+                            }
                             cover_intro = None;
                             let continuing = handing_off && after == Some(current_id) && sink.is_some();
                             let outgoing = if continuing { None } else { sink.take() };
-                            let output = match sink.take() {
-                                Some(s) => Ok(s),
-                                None => Sink::try_new(&handle),
-                            };
                             handing_off = false;
                             let opened = File::open(&path)
                                 .map_err(|e| e.to_string())
                                 .and_then(|f| Decoder::new(BufReader::new(f)).map_err(|e| e.to_string()));
-                            match (opened, output) {
-                                (Ok(src), Ok(s)) => {
+                            match opened {
+                                Ok(src) => {
+                                    let s = sink.take().unwrap_or_else(|| playback_bus.sink());
                                     meter = Meter::default();
                                     current_id = playback_id;
                                     let enabled = Arc::clone(&spectrum_on);
@@ -102,11 +107,8 @@ impl Player {
                                     cover_intro = Some(playback_id);
                                     let _ = app.emit("track-started", playback_id);
                                 }
-                                (Err(e), _) => {
+                                Err(e) => {
                                     let _ = app.emit("playback-error", (Some(playback_id), e));
-                                }
-                                (_, Err(e)) => {
-                                    let _ = app.emit("playback-error", (Some(playback_id), e.to_string()));
                                 }
                             }
                         }
@@ -163,7 +165,15 @@ impl Player {
                 }
             })
             .expect("failed to spawn audio thread");
-        Self { tx: Mutex::new(tx) }
+        Self { tx: Mutex::new(tx), meter_windows: Mutex::default(), bus }
+    }
+
+    pub fn set_meter(&self, window: &str, enabled: bool) {
+        let mut windows = self.meter_windows.lock().unwrap();
+        let was_active = !windows.is_empty();
+        if enabled { windows.insert(window.to_owned()); } else { windows.remove(window); }
+        let active = !windows.is_empty();
+        if active != was_active { self.send(Cmd::Spectrum(active)); }
     }
 
     pub fn send(&self, cmd: Cmd) {
@@ -177,6 +187,23 @@ impl Player {
 mod tests {
     use super::Decoder;
     use std::io::Cursor;
+
+    #[test]
+    fn tv_keeps_the_meter_running_when_the_controller_stops_listening() {
+        let (tx, rx) = super::channel();
+        let player = super::Player {
+            tx: std::sync::Mutex::new(tx),
+            meter_windows: Default::default(),
+            bus: super::AudioBus::with_format(2, 44100),
+        };
+        player.set_meter("main", true);
+        assert!(matches!(rx.try_recv(), Ok(super::Cmd::Spectrum(true))));
+        player.set_meter("presenter", true);
+        player.set_meter("main", false);
+        assert!(rx.try_recv().is_err());
+        player.set_meter("presenter", false);
+        assert!(matches!(rx.try_recv(), Ok(super::Cmd::Spectrum(false))));
+    }
 
     #[test]
     fn silent_mp3_channels_at_the_end_of_the_bit_reservoir_play_in_full() {

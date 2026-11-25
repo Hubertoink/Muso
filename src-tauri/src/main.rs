@@ -7,6 +7,7 @@ mod covers;
 mod crates;
 mod db;
 mod genres;
+mod heos;
 mod paintings;
 mod personal_images;
 mod releases;
@@ -276,9 +277,11 @@ fn get_tracks(state: State<'_, AppState>, album_id: String) -> R<Vec<db::Track>>
 }
 
 #[tauri::command]
-fn play_track(state: State<'_, AppState>, path: String, playback_id: Option<u64>, vinyl_lead: Option<audio::Lead>, after_playback_id: Option<u64>, last_track: Option<bool>, runout_seconds: Option<u32>, change_at_end: Option<bool>) {
+async fn play_track(app: AppHandle, state: State<'_, AppState>, path: String, playback_id: Option<u64>, vinyl_lead: Option<audio::Lead>, after_playback_id: Option<u64>, last_track: Option<bool>, runout_seconds: Option<u32>, change_at_end: Option<bool>) -> R<()> {
     state.player.send(audio::Cmd::Play { path, id: playback_id.unwrap_or_default(), lead: vinyl_lead, after: after_playback_id,
         last_track: last_track.unwrap_or(false), runout_seconds: runout_seconds.unwrap_or(0), change: change_at_end.unwrap_or(false) });
+    app.state::<heos::Heos>().playback(&app, true, true).await;
+    Ok(())
 }
 
 #[tauri::command]
@@ -287,23 +290,41 @@ fn set_runout(state: State<'_, AppState>, playback_id: u64, seconds: u32, change
 }
 
 #[tauri::command]
-fn pause(state: State<'_, AppState>) {
+async fn pause(app: AppHandle, state: State<'_, AppState>) -> R<()> {
     state.player.send(audio::Cmd::Pause);
+    app.state::<heos::Heos>().playback(&app, false, false).await;
+    Ok(())
 }
 
 #[tauri::command]
-fn set_spectrum_enabled(state: State<'_, AppState>, enabled: bool) {
-    state.player.send(audio::Cmd::Spectrum(enabled));
+fn set_spectrum_enabled(window: tauri::WebviewWindow, state: State<'_, AppState>, enabled: bool) {
+    state.player.set_meter(window.label(), enabled);
 }
 
 #[tauri::command]
-fn resume(state: State<'_, AppState>) {
+async fn resume(app: AppHandle, state: State<'_, AppState>) -> R<()> {
     state.player.send(audio::Cmd::Resume);
+    app.state::<heos::Heos>().playback(&app, true, false).await;
+    Ok(())
 }
 
 #[tauri::command]
-fn stop(state: State<'_, AppState>) {
+fn stop(state: State<'_, AppState>, heos: State<'_, heos::Heos>) {
     state.player.send(audio::Cmd::Stop);
+    heos.ended();
+}
+
+#[tauri::command]
+fn local_volume(state: State<'_, AppState>, value: Option<u8>, save: Option<bool>) -> R<u8> {
+    let bus = &state.player.bus;
+    if let Some(value) = value {
+        if value > 100 { return Err("Invalid volume".into()); }
+        if save == Some(true) {
+            db::set_setting(&*state.db.lock().map_err(err)?, "local_volume", &value.to_string()).map_err(err)?;
+        }
+        bus.set_local_volume(value);
+    }
+    Ok(bus.local_volume())
 }
 
 #[tauri::command]
@@ -477,6 +498,7 @@ fn main() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .register_uri_scheme_protocol("muso", |ctx, req| serve(ctx.app_handle(), req))
         .setup(|app| {
+            app.manage(heos::Heos::default());
             #[cfg(any(windows, target_os = "linux"))]
             if let Some(window) = app.get_webview_window("main") {
                 screen::watch(window)?;
@@ -488,11 +510,15 @@ fn main() {
             if let Err(e) = paintings::rename_legacy(&mut conn, &data_dir) {
                 eprintln!("Could not rename saved paintings: {e}");
             }
+            let player = audio::Player::new(app.handle().clone());
+            if let Some(value) = db::get_setting(&conn, "local_volume")?.and_then(|value| value.parse().ok()) {
+                player.bus.set_local_volume(value);
+            }
             app.manage(AppState {
                 db: Mutex::new(conn),
                 db_path,
                 data_dir,
-                player: audio::Player::new(app.handle().clone()),
+                player,
                 scanning: Arc::new(AtomicBool::new(false)),
                 cover_search: covers::Search::new()?,
                 note_generation: tokio::sync::Mutex::new(()),
@@ -501,6 +527,7 @@ fn main() {
         })
         .on_window_event(|window, event| {
             if matches!(event, tauri::WindowEvent::Destroyed) {
+                if let Some(state) = window.try_state::<AppState>() { state.player.set_meter(window.label(), false); }
                 match window.label() {
                     "main" => if let Some(tv) = window.app_handle().get_webview_window("presenter") { let _ = tv.close(); },
                     "presenter" => { let _ = window.emit_to("main", "presenter-closed", ()); }
@@ -509,6 +536,12 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            heos::heos_rooms,
+            heos::heos_output,
+            heos::heos_group,
+            heos::heos_levels,
+            heos::heos_set_level,
+            local_volume,
             set_presenter,
             personal_images::image_inventory,
             personal_images::pick_image_folders,

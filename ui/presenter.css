@@ -1,10 +1,12 @@
 * { box-sizing: border-box; }
 html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #101010; color: white; cursor: none; }
-main img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; opacity: 0; transition: opacity 1.5s ease-in-out; }
-main img { background: #101010; }
-main img.visible, aside.visible { opacity: 1; }
+main, #tvPictures { position: absolute; inset: 0; overflow: hidden; }
+#tvPictures img, #tvPictures .painting-layer { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #101010; opacity: 0; transition: opacity 1.5s ease-in-out; }
+#tvPictures img.on, #tvPictures .painting-layer:has(> img.on), aside.visible { opacity: 1; }
+#tvPictures .painting-layer > img { opacity: 1; transition: none; }
+#tvPictures .painting-layer > canvas { position: absolute; pointer-events: none; }
 aside { position: absolute; inset: auto 0 0; padding: 12vh 6vw 6vh; background: linear-gradient(transparent,rgba(0,0,0,.78)); opacity: 0; transition: opacity 1s; font-family: system-ui,sans-serif; }
 aside span, aside strong { display: block; overflow-wrap: anywhere; }
 aside span { font-size: clamp(22px,2.2vw,54px); }
 aside strong { font-size: clamp(36px,4.5vw,110px); line-height: 1.12; margin-top: .15em; }
-@media (prefers-reduced-motion: reduce) { main img, aside { transition: none; } }
+@media (prefers-reduced-motion: reduce) { #tvPictures img, #tvPictures .painting-layer, aside { transition: none; } }

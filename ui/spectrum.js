@@ -73,14 +73,47 @@ function pigmentTrace(centres) {
   return trace + ' L1000 ' + (centres[centres.length - 1] * 100).toFixed(3);
 }
 
-function createSpectrumView(invoke, listen, localRefraction) {
-  const toggle = document.getElementById('spectrumToggle');
+function createSpectrumView(invoke, listen, localRefraction, settingsChanged) {
   const control = id => document.getElementById(id);
-  const strength = control('eqIntensity');
-  const height = control('eqHeight');
-  const sensitivity = control('eqSensitivity');
-  const style = control('eqStyle');
-  const colour = control('eqColour');
+  const toggle = control('spectrumToggle'), style = control('eqStyle'), colour = control('eqColour');
+  const strength = control('eqIntensity'), height = control('eqHeight'), sensitivity = control('eqSensitivity');
+  const view = createSpectrumRenderer(invoke, listen, localRefraction);
+  function settings() {
+    return {enabled:toggle.checked, style:style.value, colour:colour.value, intensity:Number(strength.value),
+      height:Number(height.value), sensitivity:Number(sensitivity.value)};
+  }
+  function apply() {
+    control('eqColourRow').classList.toggle('hidden', style.value !== 'pigment');
+    view.setSettings(settings());
+  }
+  toggle.checked = localStorage.getItem('muso.spectrum') === '1';
+  toggle.addEventListener('change', () => {
+    localStorage.setItem('muso.spectrum', toggle.checked ? '1' : '0');
+    apply();
+    settingsChanged?.();
+  });
+  for (const input of [style, colour, strength, height, sensitivity]) {
+    const key = 'muso.' + input.id;
+    const saved = localStorage.getItem(key);
+    if (saved !== null) input.value = saved;
+    if (input === style && !style.value) style.value = 'ripple';
+    const output = document.querySelector('output[for="' + input.id + '"]');
+    const update = () => { if (output) output.value = input.value + '%'; };
+    update();
+    input.addEventListener(input === style ? 'change' : 'input', () => {
+      localStorage.setItem(key, input.value);
+      update();
+      apply();
+      settingsChanged?.();
+    });
+  }
+  apply();
+  return {settings, setPlayback:view.setPlayback};
+}
+
+function createSpectrumRenderer(invoke, listen, localRefraction) {
+  const control = id => document.getElementById(id);
+  let settings = {enabled:false};
   const pigment = control('spectrumPigment');
   const boundary = control('pigmentBoundary');
   const brush = pigment.getContext('2d');
@@ -101,29 +134,6 @@ function createSpectrumView(invoke, listen, localRefraction) {
   let visible = false, active = false, trackId;
   let drawFrame = 0, latest;
   const centres = new Float32Array(canvas.width), amplitudes = new Float32Array(canvas.width);
-  toggle.checked = localStorage.getItem('muso.spectrum') === '1';
-  function applyStyle() {
-    control('eqColourRow').classList.toggle('hidden', style.value !== 'pigment');
-    control('eqEchoes').style.display = style.value === 'echo' ? '' : 'none';
-    pigment.style.opacity = '0';
-  }
-  for (const input of [style, colour, strength, height, sensitivity]) {
-    const key = 'muso.' + input.id;
-    const saved = localStorage.getItem(key);
-    if (saved !== null) input.value = saved;
-    if (input === style && !style.value) style.value = 'ripple';
-    const output = document.querySelector('output[for="' + input.id + '"]');
-    const update = () => { if (output) output.value = input.value + '%'; };
-    update();
-    input.addEventListener(input === style ? 'change' : 'input', () => {
-      localStorage.setItem(key, input.value);
-      update();
-      if (input === style) applyStyle();
-      sync();
-    });
-  }
-  applyStyle();
-
   function clear() {
     cancelAnimationFrame(drawFrame);
     drawFrame = 0;
@@ -135,30 +145,26 @@ function createSpectrumView(invoke, listen, localRefraction) {
     levels.fill(0);
   }
   function sync() {
-    const enabled = visible && toggle.checked && !reduce.matches && !document.hidden && Number(strength.value) > 0;
+    const enabled = visible && settings.enabled && !reduce.matches && !document.hidden && settings.intensity > 0;
     if (enabled === active) return;
     active = enabled;
     if (!enabled) clear();
     spectrumDemand(invoke, 'atmosphere', enabled).catch(() => { active = false; clear(); });
   }
-  toggle.addEventListener('change', () => {
-    localStorage.setItem('muso.spectrum', toggle.checked ? '1' : '0');
-    sync();
-  });
   reduce.addEventListener('change', sync);
   document.addEventListener('visibilitychange', sync);
 
   function draw(bands) {
-    const sensitivityGain = Number(sensitivity.value) / 100;
+    const sensitivityGain = settings.sensitivity / 100;
     for (let i = 0; i < levels.length; i++) {
       const target = Math.min(1, bands[i] * sensitivityGain);
       levels[i] += (target - levels[i]) * (target > levels[i] ? .64 : .23);
     }
     const peak = Math.max(...levels);
     if (peak < .015) { clear(); return; }
-    const gain = Number(strength.value) / 100;
-    const reach = Number(height.value) / 100;
-    const painting = style.value === 'pigment';
+    const gain = settings.intensity / 100;
+    const reach = settings.height / 100;
+    const painting = settings.style === 'pigment';
     if (painting) brush.clearRect(0, 0, pigment.width, pigment.height);
     const points = [];
     const w = canvas.width, h = canvas.height;
@@ -176,9 +182,9 @@ function createSpectrumView(invoke, listen, localRefraction) {
         const base = center * pigment.height;
         const lift = Math.max(1, envelope * reach * .19 * pigment.height);
         const wash = brush.createLinearGradient(0, base, 0, base - lift);
-        wash.addColorStop(0, colour.value);
-        wash.addColorStop(.35, colour.value + 'cf');
-        wash.addColorStop(1, colour.value + '00');
+        wash.addColorStop(0, settings.colour);
+        wash.addColorStop(.35, settings.colour + 'cf');
+        wash.addColorStop(1, settings.colour + '00');
         brush.fillStyle = wash;
         // Extend the wash under the trace. The shared vector curve cuts its visible edge
         // at display resolution, including between neighbouring colour samples.
@@ -222,6 +228,14 @@ function createSpectrumView(invoke, listen, localRefraction) {
     });
   });
   return {
+    setSettings(next) {
+      if (settings.style !== next.style) {
+        control('eqEchoes').style.display = next.style === 'echo' ? '' : 'none';
+        clear();
+      }
+      settings = next;
+      sync();
+    },
     setPlayback(display, id) {
       if (id !== trackId) clear();
       visible = display;

@@ -28,6 +28,14 @@ beforeEach(async () => {
     };
     window.__TAURI__ = {
       core: { invoke: async (command, args) => {
+        if (command.startsWith('heos_')) return window.testHeos(command,args);
+        if (command === 'local_volume') {
+          if (args?.value != null) {
+            window.localVolume = args.value;
+            if (args.save) window.savedVolume = args.value;
+          }
+          return window.localVolume ?? 100;
+        }
         if (command === 'remove_folder') { window.removedMusicFolder = args.path; return []; }
         if (command === 'play_track' || command === 'set_runout') {
           (window.audioCommands ??= []).push({command, ...args});
@@ -1079,7 +1087,7 @@ for (const preference of ['opposite', 'follow']) {
   });
 }
 
-test('the cover waits for a decoded atmosphere and fades back on the next track', async () => {
+test('the cover waits for a decoded atmosphere and fades back with every queued sleeve on the next track', async () => {
   // Use the HTTP form of Muso's image protocol so Playwright can serve a real image.
   await page.addInitScript(() => Object.defineProperty(navigator, 'userAgent', { value: 'Windows' }));
   await page.route('http://muso.localhost/atmos/**', route => route.fulfill({
@@ -1113,25 +1121,37 @@ test('the cover waits for a decoded atmosphere and fades back on the next track'
   await page.waitForFunction(() => window.decodes.length === 2);
   await page.evaluate(() => window.decodes[0]());
   assert.equal(await page.locator('#album.showing-atmos').count(), 0);
-  await page.evaluate(() => window.decodes[1]());
+  await page.evaluate(() => {
+    for (const album of state.albums.slice(21, 24)) enqueue(album);
+    layoutQueue();
+    window.decodes[1]();
+  });
   const painting = page.locator('#album.showing-atmos #atmosPictures img.on');
   await painting.waitFor();
   assert.ok(await page.locator('#showAtmosBtn').isEnabled());
   assert.match(await painting.getAttribute('src'), /replacement\.svg$/);
   const midFade = await page.evaluate(async () => {
-    const layers = [document.querySelector('.atmos'), document.getElementById('cover')];
+    const stack = document.querySelector('.cover-stack');
+    const layers = [document.querySelector('.atmos'), stack];
     await Promise.all(layers.flatMap(el => el.getAnimations()
       .filter(a => a instanceof CSSTransition).map(a => a.finished)));
+    if (!stack.inert || Number(getComputedStyle(stack).opacity) !== 0) throw Error('Queue should be hidden in Atmosphere');
     window.emitPlayback('track-ended', state.playing.playbackId);
     for (const layer of layers) {
-      const fade = layer.getAnimations().find(a => a instanceof CSSTransition);
+      const fade = layer.getAnimations().find(a => a.transitionProperty === '--motion-opacity');
       fade.pause();
       fade.currentTime = 900;
     }
-    return layers.map(el => +getComputedStyle(el).opacity);
+    if (stack.inert) throw Error('Queue should be interactive in the cover view');
+    const stackOpacity = Number(getComputedStyle(stack).opacity);
+    return [Number(getComputedStyle(layers[0]).opacity), ...Array.from(stack.querySelectorAll('#cover, .queued-cover'), el => {
+      const style = getComputedStyle(el);
+      return style.visibility === 'visible' ? stackOpacity * Number(style.opacity) : 0;
+    })];
   });
   assert.equal(await page.locator('#alTrack [aria-current]').textContent(), '02Second');
-  assert.ok(midFade.every(opacity => opacity > .4 && opacity < .6), 'both layers are visible halfway through the return fade');
+  assert.equal(midFade.length, 5);
+  assert.ok(midFade.every(opacity => opacity > .4 && opacity < .6), 'the painting, main sleeve and three queued sleeves are visible halfway through the return fade');
 });
 
 test('rising pigment follows its vector rim at full HD and at high pixel density', async () => {
@@ -1251,29 +1271,205 @@ test('a large crate finishes folding before its stack reappears', async () => {
   assert.ok(await stack.isVisible());
 });
 
+test('audio output lists rooms and groups, applies grouping explicitly and routes to the leader', async () => {
+  await page.evaluate(() => {
+    const snapshot = {host:'192.0.2.4',output:null,groups:[],players:[
+      {pid:-12,name:'Kitchen',model:'Denon Home 150'}, {pid:34,name:'Library',model:'Denon CEOL'},
+      {pid:56,name:'Bedroom',model:'Denon Home 150'}
+    ]};
+    window.heosWrites = [];
+    window.testHeos = async (cmd,args) => {
+      if (cmd === 'heos_group') {
+        window.heosWrites.push(args.members);
+        snapshot.groups = args.members.length === 1 ? [] : [{gid:args.members[0],name:'Library group',
+          players:args.members.map((pid,i)=>({pid,role:i?'member':'leader'}))}];
+      }
+      if (cmd === 'heos_output') snapshot.output = args.pid;
+      return structuredClone(snapshot);
+    };
+  });
+  await page.locator('#menuBtn').tap();
+  await page.getByRole('button',{name:'Audio output',exact:true}).tap();
+  const ui = page.getByRole('dialog',{name:'Audio output'});
+  assert.equal(await ui.getByRole('button',{name:/This computer/}).getAttribute('aria-pressed'),'true');
+  await ui.getByRole('button',{name:'Create group'}).tap();
+  await page.getByLabel('Main room').selectOption('34');
+  await page.getByRole('checkbox',{name:'Kitchen'}).check();
+  assert.deepEqual(await page.evaluate(()=>window.heosWrites),[]);
+  await page.getByRole('button',{name:'Save group'}).tap();
+  const target = ui.locator('.heos-target').filter({hasText:'Library group'});
+  await target.tap();
+  assert.equal(await target.getAttribute('aria-pressed'),'true');
+  await ui.getByRole('button',{name:'Edit group Library group'}).tap();
+  assert.equal(await page.getByLabel('Main room').isDisabled(),true);
+  await page.getByRole('checkbox',{name:'Bedroom'}).check();
+  await page.getByRole('button',{name:'Save group'}).tap();
+  await ui.getByRole('button',{name:'Edit group Library group'}).tap();
+  await page.getByRole('button',{name:'Ungroup all'}).tap();
+  assert.equal(await ui.locator('.heos-target').filter({hasText:'Library'}).getAttribute('aria-pressed'),'true');
+  await ui.getByRole('button',{name:/This computer/}).tap();
+  assert.deepEqual(await page.evaluate(()=>window.heosWrites),[[34,-12],[34,-12,56],[34]]);
+  await ui.getByRole('button',{name:'Close audio output'}).tap();
+  await ui.waitFor({state:'hidden'});
+});
+
+test('corner volume expands upwards and controls local output with touch and keyboard', async () => {
+  await down(); await up();
+  const button = page.locator('#volumeToggle'), capsule = page.locator('#playerVolume');
+  await button.waitFor();
+  await page.locator('#album').evaluate(el => Promise.all(el.getAnimations().map(a => a.finished)));
+  const bottom = () => capsule.evaluate(el => el.offsetTop + el.offsetHeight);
+  const before = await bottom();
+  await button.tap();
+  const slider = page.getByRole('slider',{name:'Muso volume'});
+  await page.waitForFunction(() => document.querySelector('#playerVolume').offsetHeight === 200);
+  const after = await capsule.boundingBox();
+  assert.ok(Math.abs(before - await bottom()) <= 1);
+  assert.ok(Math.abs(after.width - 48) < 1);
+  assert.equal(await slider.inputValue(), '100');
+  const fillColour = () => capsule.evaluate(el => {
+    const ctx = document.createElement('canvas').getContext('2d');
+    ctx.fillStyle = getComputedStyle(el, '::before').backgroundColor;
+    ctx.fillRect(0, 0, 1, 1);
+    return Array.from(ctx.getImageData(0, 0, 1, 1).data).slice(0, 3);
+  });
+  const [red, green, blue] = await fillColour();
+  assert.ok(red > 100 && red < 170 && red > blue && blue > green && green < 15);
+  await slider.press('Home');
+  await slider.press('PageUp');
+  assert.equal(await slider.inputValue(), '10');
+  const quiet = await fillColour();
+  assert.ok(quiet[0] > quiet[1] && Math.max(...quiet) - Math.min(...quiet) < 30);
+  const x = after.x + after.width / 2;
+  await page.touchscreen.tap(x, after.y + after.height * .75);
+  const low = Number(await slider.inputValue());
+  assert.ok(low > 15 && low < 35);
+  await slider.press('ArrowUp');
+  await page.waitForFunction(v => window.savedVolume === v, low + 1);
+  await slider.press('Escape');
+  assert.equal(await button.getAttribute('aria-expanded'), 'false');
+  await button.press('Enter');
+  assert.equal(await slider.inputValue(), String(low + 1));
+  await page.touchscreen.tap(100,100);
+  assert.equal(await button.getAttribute('aria-expanded'), 'false');
+});
+
+test('player menu exposes HEOS volume only on HEOS and controls a group or an individual room', async () => {
+  await page.evaluate(() => {
+    const rooms = {players:[{pid:-2,name:'Desk'},{pid:4,name:'Kitchen'}],groups:[
+      {gid:9,name:'Both rooms',players:[{pid:-2,role:'leader'},{pid:4,role:'member'}]}],output:null};
+    const levels = {session:'123',controls:[
+      {id:9,group:true,name:'Both rooms',value:23},{id:-2,group:false,name:'Desk',value:19},{id:4,group:false,name:'Kitchen',value:27}]};
+    window.volumeWrites = [];
+    window.testHeos = async (command,args) => {
+      if (command === 'heos_output') rooms.output = args.pid;
+      if (command === 'heos_levels') return structuredClone(levels);
+      if (command === 'heos_set_level') {
+        window.volumeWrites.push(args);
+        levels.controls.find(c => c.id === args.id && c.group === args.group).value = args.value;
+        return structuredClone(levels);
+      }
+      return structuredClone(rooms);
+    };
+  });
+  assert.ok(await page.locator('#albumHeos').evaluate(el => el.classList.contains('hidden')));
+  await page.locator('#menuBtn').tap();
+  await page.locator('[data-action=audio-output]').tap();
+  await page.locator('.heos-target').filter({hasText:'Both rooms'}).tap();
+  await page.locator('#audioClose').tap();
+  await down(); await up();
+  await page.locator('#volumeToggle').tap();
+  const quick = page.getByRole('slider',{name:'Volume · Both rooms'});
+  assert.equal(await quick.inputValue(),'23');
+  await quick.press('ArrowUp');
+  await quick.press('Escape');
+  await page.evaluate(async () => { await playerVolume.settled(); });
+  assert.ok(await page.evaluate(() => window.volumeWrites.every(w => w.id === 9 && w.group && w.value === 24) && window.volumeWrites.length > 0));
+  await page.evaluate(() => { window.volumeWrites = []; });
+  await page.locator('#albumMenuBtn').tap();
+  await page.getByRole('button',{name:'HEOS volume', exact:true}).tap();
+  const dialog = page.getByRole('dialog',{name:'HEOS volume'});
+  const kitchen = dialog.getByRole('slider',{name:'Kitchen'});
+  assert.equal(await kitchen.inputValue(),'27');
+  assert.deepEqual(await page.evaluate(() => window.volumeWrites),[]);
+  await kitchen.press('ArrowLeft');
+  await dialog.getByRole('slider',{name:'Group · Both rooms'}).press('ArrowRight');
+  await page.waitForFunction(() => window.volumeWrites.length === 2);
+  assert.deepEqual(await page.evaluate(() => window.volumeWrites),[
+    {session:'123',id:4,group:false,value:26},{session:'123',id:9,group:true,value:25}]);
+  await page.keyboard.press('Escape');
+  assert.ok(await dialog.isHidden());
+  await page.locator('#albumMenuBtn').tap();
+  await page.getByRole('button',{name:'HEOS volume', exact:true}).tap();
+  await page.evaluate(() => window.emitPlayback('heos-disconnected'));
+  assert.ok(await dialog.isHidden());
+  await page.locator('#albumMenuBtn').tap();
+  assert.ok(await page.locator('#albumHeos').isHidden());
+});
+
 test('TV follows the playing track while the controller stays in the library', async () => {
+  await page.addInitScript(() => Object.defineProperty(navigator, 'userAgent', {value:'Windows'}));
+  await page.reload();
+  await page.locator('#crate .sleeve[data-index="20"]').waitFor();
   await page.evaluate(() => {
     const primary = { name:'Laptop', position:{x:0,y:0}, size:{width:1920,height:1080} };
     const tv = { name:'TV', position:{x:-1920,y:0}, size:{width:1920,height:1080} };
     Object.assign(window.__TAURI__.window, { availableMonitors:async () => [primary,tv], currentMonitor:async () => primary });
     window.testTracks = [{title:'First', artist:'Guest', path:'a'}, {title:'Second',path:'b'}];
+    window.testPaintings = ['atmos/tv.svg'];
   });
   await page.locator('#menuBtn').click();
   await page.locator('[data-action=presenter]').click();
   assert.equal(await page.locator('#tvDisplay').inputValue(), '[-1920,0]');
   await page.locator('#tvStart').click();
   const tv = await page.context().newPage();
+  await tv.addInitScript(() => {
+    window.__TAURI__ = {
+      core:{invoke:async (cmd,args) => { if (cmd === 'set_spectrum_enabled') window.meterEnabled = args.enabled; }},
+      event:{listen:async (event,receive) => { if (event === 'audio-spectrum') window.sendBands = id => receive({payload:[id,Array(16).fill(.7)]}); }},
+    };
+  });
+  await tv.route('http://muso.localhost/atmos/tv.svg', route => route.fulfill({
+    contentType:'image/svg+xml', body:'<svg xmlns="http://www.w3.org/2000/svg" width="64" height="32"><rect width="64" height="32" fill="navy"/></svg>',
+  }));
   await tv.goto(new URL('../ui/presenter.html', import.meta.url).href);
   await page.waitForFunction(() => tvReady);
   await page.evaluate(() => openAlbum(focused()));
   await tv.waitForFunction(() => document.querySelector('#title').textContent === 'First');
   assert.equal(await page.evaluate(() => state.view), 'library');
   assert.equal(await tv.locator('#artist').textContent(), 'Guest');
+  await page.evaluate(() => document.getElementById('spectrumToggle').click());
+  await tv.waitForFunction(() => window.meterEnabled && !!document.querySelector('#tvPictures img.on'));
+  const firstId = await page.evaluate(() => state.playing.playbackId);
+  await tv.evaluate(id => window.sendBands(id), firstId);
+  await tv.waitForFunction(() => Number(getComputedStyle(document.getElementById('spectrumLine')).opacity) > 0);
+  await page.evaluate(() => {
+    const style = document.getElementById('eqStyle');
+    style.value = 'pigment';
+    style.dispatchEvent(new Event('change'));
+  });
+  await tv.waitForFunction(() => current.spectrum.style === 'pigment');
+  await tv.evaluate(id => window.sendBands(id), firstId);
+  await tv.waitForFunction(() => Number(getComputedStyle(document.getElementById('spectrumPigment')).opacity) > 0);
+  await page.evaluate(() => togglePlay());
+  await tv.waitForFunction(() => !window.meterEnabled && getComputedStyle(document.getElementById('spectrumLine')).opacity === '0');
+  await page.evaluate(() => togglePlay());
+  await tv.waitForFunction(() => window.meterEnabled);
   await page.evaluate(() => window.emitPlayback('cover-intro-ended', state.playing.playbackId));
   await tv.waitForFunction(() => !document.querySelector('aside').classList.contains('visible'));
   await page.evaluate(() => next());
   await tv.waitForFunction(() => document.querySelector('#title').textContent === 'Second');
   assert.equal(await tv.locator('#artist').textContent(), 'Test');
+  await tv.evaluate(async id => { window.sendBands(id); await new Promise(requestAnimationFrame); }, firstId);
+  assert.equal(await tv.locator('#spectrumLine').evaluate(el => getComputedStyle(el).opacity),'0');
+  await page.evaluate(() => {
+    const style = document.getElementById('eqStyle');
+    style.value = 'echo';
+    style.dispatchEvent(new Event('change'));
+  });
+  await tv.waitForFunction(() => current.spectrum.style === 'echo' && getComputedStyle(document.getElementById('eqEchoes')).display !== 'none');
+  await page.evaluate(() => document.getElementById('spectrumToggle').click());
+  await tv.waitForFunction(() => !window.meterEnabled);
   assert.ok(await tv.locator('aside').evaluate(el => el.classList.contains('visible')));
   const playingId = await page.evaluate(() => state.playing.playbackId);
   const offer = page.locator('.queued-cover');

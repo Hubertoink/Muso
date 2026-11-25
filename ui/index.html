@@ -4,6 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Muso</title>
+  <link rel="stylesheet" href="spectrum.css" />
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
@@ -154,6 +155,7 @@
       </div>
       <div class="menu-group" role="group" aria-labelledby="menuPlayback">
         <h2 id="menuPlayback">Playback &amp; display</h2>
+        <button data-action="audio-output">Audio output</button>
         <button data-action="eq">EQ</button>
         <button data-action="presenter">TV display</button>
         <button data-action="fullscreen" class="fullscreen-label">Enter fullscreen</button>
@@ -169,6 +171,46 @@
       </div>
     </nav>
   </div>
+
+  <dialog id="audioDialog" class="modal-card library-dialog" aria-labelledby="audioTitle">
+    <header class="settings-header">
+      <h2 id="audioTitle">Audio output</h2>
+      <button type="button" class="settings-dismiss" id="audioClose" aria-label="Close audio output">×</button>
+    </header>
+    <div class="modal-scroll">
+      <section id="outputChoices">
+        <div id="localOutput"></div>
+        <div class="heos-heading"><h3>HEOS rooms</h3><button id="heosRefresh" class="link">Refresh</button></div>
+        <div id="heosRooms"></div>
+        <button class="pill" id="heosCreate" hidden>Create group</button>
+        <details id="heosManual"><summary>Connect by IP address</summary>
+          <form id="heosConnect"><label for="heosIp">Speaker IP address</label><input type="text" id="heosIp" placeholder="192.168.1.42" autocomplete="off" spellcheck="false" required /><button class="pill">Connect</button></form>
+        </details>
+      </section>
+      <section id="groupEditor" hidden>
+        <label class="style-field">Main room<select id="heosLeader"></select></label>
+        <h3>Play together with</h3>
+        <div id="heosMembers"></div>
+        <div class="modal-actions">
+          <button class="link" id="heosDissolve">Ungroup all</button>
+          <button class="link" id="heosCancel">Cancel</button>
+          <button class="pill" id="heosSave">Save group</button>
+        </div>
+      </section>
+      <p id="heosStatus" role="status" aria-live="polite"></p>
+    </div>
+  </dialog>
+
+  <dialog id="heosVolumeDialog" class="modal-card library-dialog" aria-labelledby="heosVolumeTitle">
+    <header class="settings-header">
+      <h2 id="heosVolumeTitle">HEOS volume</h2>
+      <button type="button" class="settings-dismiss" id="heosVolumeClose" aria-label="Close HEOS volume">×</button>
+    </header>
+    <div class="modal-scroll">
+      <div id="heosLevels"></div>
+      <p id="heosVolumeStatus" role="status"></p>
+    </div>
+  </dialog>
 
   <dialog id="tvDialog" class="modal-card library-dialog" aria-labelledby="tvTitle">
     <div class="modal-scroll">
@@ -397,6 +439,12 @@
     </div>
     <div class="veil"></div>
     <div id="coverSearchStatus" role="status" hidden></div>
+    <div id="playerVolume" class="volume-capsule">
+      <button type="button" id="volumeToggle" aria-label="Volume" aria-expanded="false" aria-controls="playerVolumeRange">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9h4l5-4v14l-5-4H3z"/><path d="M16 9a5 5 0 0 1 0 6m3-9a9 9 0 0 1 0 12"/></svg>
+      </button>
+      <input id="playerVolumeRange" type="range" min="0" max="100" step="1" aria-label="Volume" aria-orientation="vertical" disabled />
+    </div>
 
     <button id="backBtn" class="chrome corner-left" aria-label="Back">
       <svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7" /></svg>
@@ -407,6 +455,7 @@
     <div id="albumMenu" class="popover hidden">
       <button id="fullscreenBtn"><svg aria-hidden="true"><use class="fullscreen-icon" href="icons/lucide.svg#maximize"/></svg><span class="fullscreen-label">Enter fullscreen</span></button>
       <button id="albumEQ"><svg aria-hidden="true"><use href="icons/lucide.svg#audio-lines"/></svg>EQ Settings</button>
+      <button id="albumHeos" type="button" class="hidden" aria-haspopup="dialog" aria-controls="heosVolumeDialog"><svg aria-hidden="true" viewBox="0 0 24 24"><rect x="5" y="2" width="14" height="20" rx="2"/><circle cx="12" cy="15" r="4"/><circle cx="12" cy="7" r="1"/></svg>HEOS volume</button>
       <button id="showAtmosBtn" aria-pressed="false" disabled><svg aria-hidden="true"><use href="icons/lucide.svg#gallery-vertical-end"/></svg>Show Visual Atmospheres<svg class="check-icon" aria-hidden="true"><use href="icons/lucide.svg#check"/></svg></button>
       <button id="findAlbumCover"><svg aria-hidden="true"><use href="icons/lucide.svg#scan-search"/></svg>Find a higher-resolution cover</button>
       <p id="coverSearchResult" hidden></p>
@@ -451,6 +500,8 @@
 
   <script src="refraction.js"></script>
   <script src="spectrum.js"></script>
+  <script src="heos.js"></script>
+  <script src="player-volume.js"></script>
   <script src="crates.js"></script>
   <script src="genres.js"></script>
   <script src="sleeve-gestures.js"></script>

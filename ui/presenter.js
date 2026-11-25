@@ -1,9 +1,15 @@
 'use strict';
 const channel = new BroadcastChannel('muso-presenter');
-const stage = document.querySelector('main');
+const pictures = document.getElementById('tvPictures');
+const slots = [...pictures.querySelectorAll('img')];
+const spectrum = createSpectrumRenderer(window.__TAURI__.core.invoke, window.__TAURI__.event.listen,
+  createLinuxRefraction(pictures, 'contain'));
 const caption = document.querySelector('aside');
 const failed = new Set();
 let current = null, desired = '', shown = '', timer = null;
+function syncSpectrum() {
+  spectrum.setPlayback(!!shown && !!current?.track && !current.paused, current?.track);
+}
 function candidates() {
   return (current?.files || []).filter(url => !failed.has(url));
 }
@@ -17,10 +23,15 @@ function schedule() {
 }
 async function display(url) {
   desired = url;
-  if (!url) { shown = ''; stage.replaceChildren(); clearTimeout(timer); return; }
+  if (!url) {
+    shown = '';
+    for (const img of slots) { img.classList.remove('on'); img.removeAttribute('src'); }
+    clearTimeout(timer);
+    syncSpectrum();
+    return;
+  }
   if (url === shown) { schedule(); return; }
-  const image = new Image();
-  image.alt = '';
+  const image = slots.find(img => !img.classList.contains('on'));
   image.src = url;
   try { await image.decode(); } catch {
     if (desired !== url) return;
@@ -30,11 +41,8 @@ async function display(url) {
   }
   if (desired !== url) return;
   shown = url;
-  const previous = stage.lastElementChild;
-  stage.append(image);
-  image.getBoundingClientRect();
-  image.classList.add('visible');
-  if (previous) { previous.classList.remove('visible'); setTimeout(() => previous.remove(), 1550); }
+  for (const img of slots) img.classList.toggle('on', img === image);
+  syncSpectrum();
   schedule();
 }
 channel.onmessage = ({data}) => {
@@ -44,6 +52,8 @@ channel.onmessage = ({data}) => {
   const filesChanged = JSON.stringify(current?.files) !== JSON.stringify(data.files);
   if (changed || filesChanged) failed.clear();
   current = data;
+  if (data.spectrum) spectrum.setSettings(data.spectrum);
+  syncSpectrum();
   document.querySelector('#artist').textContent = data.artist || '';
   document.querySelector('#title').textContent = data.title || '';
   caption.classList.toggle('visible', !!data.track && data.intro);

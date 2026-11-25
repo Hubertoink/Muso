@@ -1,0 +1,5 @@
+#spectrumSurface { position: absolute; inset: 0; pointer-events: none; }
+#spectrumSurface.active { filter: url(#spectrumRefraction); }
+#spectrumLine, #spectrumPigment { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; opacity: 0; }
+#spectrumPigment { clip-path: url(#pigmentClip); }
+#spectrumLine { fill: none; stroke: #fff2dc; stroke-width: 1.35; filter: drop-shadow(0 1px 2px #29231dcc); }
