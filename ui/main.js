@@ -1534,10 +1534,13 @@ playImageCount.addEventListener('change', () => localStorage.setItem('muso.playI
 function prepareAi() {
   $('atmosToggle').checked = atmosEnabled();
   $('repaintToggle').checked = repaintEnabled();
+  $('artistPersonas').checked = artistPersonasEnabled();
   $('researchToggle').checked = researchEnabled();
   showStyle((state.viewAlbum || focused())?.id);
 }
 const repaintEnabled = () => localStorage.getItem('muso.repaint') === '1';
+const artistPersonasEnabled = () => localStorage.getItem('muso.artistPersonas') === '1';
+$('artistPersonas').addEventListener('change', (e) => localStorage.setItem('muso.artistPersonas', e.target.checked ? '1' : '0'));
 $('repaintToggle').addEventListener('change', (e) => localStorage.setItem('muso.repaint', e.target.checked ? '1' : '0'));
 const researchEnabled = () => localStorage.getItem('muso.research') === '1';
 $('researchToggle').addEventListener('change', (e) => localStorage.setItem('muso.research', e.target.checked ? '1' : '0'));
@@ -2422,7 +2425,7 @@ async function generate(a, automatic = false) {
   generating.add(a.id);
   if (!automatic) toast(`Composing atmospheres for ${a.title}…`);
   try {
-    const files = await invoke('generate_atmospheres', { albumId: a.id, research: researchEnabled(), allowRepaint: repaintEnabled(), style,
+    const files = await invoke('generate_atmospheres', { albumId: a.id, research: researchEnabled(), allowRepaint: repaintEnabled(), artistPersonas: artistPersonasEnabled(), style,
       onlyIfEmpty: automatic, count: automatic ? Number(playImageCount.value) : 3 });
     if (!files.length) return;
     paintingReady({ albumId: a.id, style, files });

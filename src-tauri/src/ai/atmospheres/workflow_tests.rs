@@ -29,10 +29,10 @@ fn read_request(stream: &TcpStream) -> Option<Value> {
 
 /// Each verdict is (near_duplicate, grounded, craft_ok). An empty `expected` means the set must fail.
 fn run_case(with_cover: bool, allow_repaint: bool, verdicts: &[(bool, bool, bool)], expected_paints: usize, expected: &[&str]) {
-    run_styled_case(with_cover, allow_repaint, verdicts, expected_paints, expected, None);
+    run_styled_case(with_cover, allow_repaint, verdicts, expected_paints, expected, None, None);
 }
 
-fn run_styled_case(with_cover: bool, allow_repaint: bool, verdicts: &[(bool, bool, bool)], expected_paints: usize, expected: &[&str], style: Option<Preset>) {
+fn run_styled_case(with_cover: bool, allow_repaint: bool, verdicts: &[(bool, bool, bool)], expected_paints: usize, expected: &[&str], style: Option<Preset>, persona: Option<&'static personas::Persona>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     let base = format!("http://{addr}");
@@ -51,6 +51,15 @@ fn run_styled_case(with_cover: bool, allow_repaint: bool, verdicts: &[(bool, boo
             steps.push(stage.to_owned());
             assert_eq!(body["model"], if stage == "paint" { "gpt-image-2.6-flare" } else { "gpt-6.2-sol" });
             let parts = &body["messages"][1]["content"];
+            if let Some(artist) = persona {
+                let brief = if stage == "album_scenes" { artist.planning_brief(style.is_some()) } else { artist.commission() };
+                let request = match stage {
+                    "paint" => &body["prompt"],
+                    "image_review" => &parts[0]["text"],
+                    _ => &parts[1]["text"],
+                };
+                assert!(request.as_str().unwrap().contains(&brief), "Artist commission missing at {stage}");
+            }
             let response = match stage {
                 "album_scenes" => {
                     assert_eq!(parts.as_array().unwrap().iter().any(|v| v["type"] == "image_url"), with_cover && style.is_none());
@@ -59,6 +68,7 @@ fn run_styled_case(with_cover: bool, allow_repaint: bool, verdicts: &[(bool, boo
                     assert!(parts[1]["text"].as_str().unwrap().contains(if style.is_some() { "supplied" } else { "catalogue" }));
                     let input: Value = serde_json::from_str(parts[1]["text"].as_str().unwrap()).unwrap();
                     let history = input.pointer("/medium/technique_history");
+                    assert_eq!(input.get("artist_commission").is_some(), persona.is_some());
                     if style.is_some() {
                         assert!(history.is_none());
                     } else {
@@ -141,6 +151,7 @@ fn run_styled_case(with_cover: bool, allow_repaint: bool, verdicts: &[(bool, boo
         style,
         3,
         allow_repaint,
+        persona,
         |_, _| {},
         |files, medium, technique, prompt| {
             assert_eq!(technique, "monotype");
@@ -222,5 +233,12 @@ fn every_render_has_the_full_ordered_series_and_one_target() {
 
 #[test]
 fn manual_style_applies_its_look_and_surface_even_when_the_planner_proposes_another_medium() {
-    run_styled_case(true, false, &[(false, true, true); 3], 3, &["Scene 1", "Scene 2", "Scene 3"], preset("landscapephoto"));
+    run_styled_case(true, false, &[(false, true, true); 3], 3, &["Scene 1", "Scene 2", "Scene 3"], preset("landscapephoto"), Some(personas::draw()));
+}
+
+#[test]
+fn automatic_series_keeps_its_commission_through_a_repaint() {
+    let ok = (false, true, true);
+    run_styled_case(true, true, &[(true, true, true), ok, ok, ok], 4,
+        &["Revised scene", "Scene 2", "Scene 3"], None, Some(personas::draw()));
 }

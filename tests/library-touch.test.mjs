@@ -761,10 +761,12 @@ test('accepting the sleeve behind the playing album keeps its image at the hando
 test('automatic painting is opt-in, persists its count and checks only once per playing album', async () => {
   assert.ok(await page.locator('#playImageCount').isDisabled());
   assert.equal(await page.locator('#repaintToggle').isChecked(), false);
+  assert.equal(await page.locator('#artistPersonas').isChecked(), false);
   await page.evaluate(() => {
     sessionStorage.setItem('test.envKey', 'yes');
     document.querySelector('#generateOnPlay').click();
     document.querySelector('#repaintToggle').click();
+    document.querySelector('#artistPersonas').click();
     const select = document.querySelector('#playImageCount');
     select.value = '5';
     select.dispatchEvent(new Event('change'));
@@ -785,6 +787,7 @@ test('automatic painting is opt-in, persists its count and checks only once per 
   assert.equal(calls[0].onlyIfEmpty, true);
   assert.equal(calls[0].count, 5);
   assert.equal(calls[0].allowRepaint, true);
+  assert.equal(calls[0].artistPersonas, true);
 });
 
 test('AI style is a default that an album can override, remember and restore', async () => {

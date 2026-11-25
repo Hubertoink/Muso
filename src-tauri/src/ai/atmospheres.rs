@@ -3,6 +3,7 @@ use crate::visual_context::{image_part, VisualInputs};
 use base64::Engine;
 use image::DynamicImage;
 use std::path::Path;
+mod personas;
 
 #[derive(Deserialize, Serialize)]
 struct Scene {
@@ -270,6 +271,7 @@ async fn plan_series(
     anchors: &[String],
     names: &[String],
     count: usize,
+    persona: Option<&personas::Persona>,
 ) -> Result<ScenePlan, String> {
     let string = json!({"type":"string"});
     let scene = object(json!({
@@ -288,9 +290,13 @@ async fn plan_series(
         None => json!({"auto":true,"catalogue":presets().map(|p| p.label).collect::<Vec<_>>(),
             "technique_history":refs.style_history}),
     };
+    let mut context = json!({"evidence":evidence,"count":count,"medium":medium});
+    if let Some(artist) = persona {
+        context["artist_commission"] = Value::String(artist.planning_brief(style.is_some()));
+    }
     let mut parts = vec![
         text_part(genre_taxonomy()),
-        text_part(json!({"evidence":evidence,"count":count,"medium":medium}).to_string()),
+        text_part(context.to_string()),
     ];
     if style.is_none() {
         if let Some(cover) = &refs.cover {
@@ -439,6 +445,7 @@ pub async fn generate(
     style: Option<Preset>,
     count: usize,
     allow_repaint: bool,
+    artist_personas: bool,
     progress: impl Fn(usize, &str),
     publish: impl FnMut(&[String], &str, &str, &str) -> Result<(), String>,
 ) -> Result<Vec<String>, String> {
@@ -460,7 +467,8 @@ pub async fn generate(
     let evidence = json!({"artist":album.artist,"album":album.title,"year":album.year,"file_tag":album.genre,
         "tracks":tracks,"research":research,"article":context.article,
         "muso_genre":context.genre,"parent_genre":context.parent_genre});
-    generate_set(&api, &album.title, &evidence, &refs, data_dir, style, count, allow_repaint, progress, publish).await
+    let persona = artist_personas.then(personas::draw);
+    generate_set(&api, &album.title, &evidence, &refs, data_dir, style, count, allow_repaint, persona, progress, publish).await
 }
 
 async fn generate_set(
@@ -472,6 +480,7 @@ async fn generate_set(
     style: Option<Preset>,
     count: usize,
     allow_repaint: bool,
+    persona: Option<&personas::Persona>,
     progress: impl Fn(usize, &str),
     mut publish: impl FnMut(&[String], &str, &str, &str) -> Result<(), String>,
 ) -> Result<Vec<String>, String> {
@@ -489,14 +498,21 @@ async fn generate_set(
         .filter(|s| s.split_whitespace().count() > 1)
         .map(normalized)
         .collect();
-    progress(0, "Planning scenes from the music");
-    let mut plan = plan_series(api, evidence, style.as_ref(), refs, &anchors, &names, count).await?;
+    match persona {
+        Some(artist) => progress(0, &format!("Planning scenes · {}", artist.name)),
+        None => progress(0, "Planning scenes from the music"),
+    }
+    let mut plan = plan_series(api, evidence, style.as_ref(), refs, &anchors, &names, count, persona).await?;
     let (style_name, look, surface) = match style {
         Some(p) => (p.label.to_owned(), p.look.to_owned(), p.surface),
         None => (plan.style_name.trim().to_owned(), plan.style_direction.trim().to_owned(), CUSTOM_SURFACE),
     };
     let framing = style.map_or("Compose one coherent image in the chosen medium.", |p| composition(Some(p.key)));
-    let medium = format!("{look} {framing}");
+    let mut medium = format!("{look} {framing}");
+    if let Some(artist) = persona {
+        medium.push('\n');
+        medium.push_str(&artist.commission());
+    }
     progress(0, "Checking musical details and visual references");
     review_plan(api, &mut plan, evidence, refs, &medium, &names).await?;
     let look = Look { medium, surface, portrait: plan.album_portrait.clone() };

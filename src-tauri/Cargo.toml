@@ -1,6 +1,6 @@
 [package]
 name = "muso"
-version = "0.1.32"
+version = "0.1.33"
 description = "Muso – a minimalist digital record crate"
 edition = "2021"
 license = "MIT"
@@ -25,6 +25,7 @@ httpdate = "1"
 base64 = "0.22"
 percent-encoding = "2"
 tempfile = "3"
+fastrand = "2"
 zip = { version = "9.7", default-features = false }
 open = "5"
 tokio = { version = "1", features = ["time", "sync"] }

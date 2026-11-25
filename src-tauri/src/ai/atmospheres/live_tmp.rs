@@ -27,7 +27,7 @@ fn live_three_albums() {
             context.research = research_album(&key, &album, &tracks, &context).await?;
             std::fs::write(out.join(format!("{id}-research.txt")), &context.research).unwrap();
             let mut log = String::new();
-            let files = generate(&key, &album, &tracks, dir.path(), &context, refs, None, 3, false,
+            let files = generate(&key, &album, &tracks, dir.path(), &context, refs, None, 3, false, false,
                 |step, msg| eprintln!("[{}] {step} {msg}", album.title),
                 |files, name, _, prompt| { log += &format!("== {} · {name}\n{prompt}\n\n", files.len()); Ok(()) }).await?;
             std::fs::write(out.join(format!("{id}-prompts.txt")), &log).unwrap();
