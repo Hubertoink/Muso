@@ -1,9 +1,42 @@
 'use strict';
 
+// Use the painted capsule as the pointer track. A native range thumb uses
+// platform-specific travel and insets, especially under WebKitGTK.
+function bindVolumePointer(capsule, range) {
+  let pointer = null, changed = false;
+  function position(e) {
+    const box = capsule.getBoundingClientRect();
+    if (!box.height) return;
+    const value = Math.round(100 * Math.max(0, Math.min(1, (box.bottom - e.clientY) / box.height)));
+    if (value === range.valueAsNumber) return;
+    changed = true;
+    range.value = value;
+    range.dispatchEvent(new Event('input', {bubbles:true}));
+  }
+  capsule.addEventListener('pointerdown', e => {
+    if (range.disabled || !e.isPrimary || e.button !== 0 || pointer !== null) return;
+    e.preventDefault();
+    pointer = e.pointerId;
+    changed = false;
+    capsule.setPointerCapture(pointer);
+    range.focus({preventScroll:true});
+    position(e);
+  });
+  capsule.addEventListener('pointermove', e => { if (e.pointerId === pointer) position(e); });
+  function finish(e) {
+    if (e.pointerId !== pointer) return;
+    pointer = null;
+    if (e.type === 'pointerup') position(e);
+    if (changed) range.dispatchEvent(new Event('change', {bubbles:true}));
+  }
+  for (const event of ['pointerup', 'pointercancel', 'lostpointercapture']) capsule.addEventListener(event, finish);
+}
+
 function createPlayerVolume(invoke, heos, toast, onClose) {
   const capsule = document.getElementById('playerVolume');
   const button = document.getElementById('volumeToggle');
   const range = document.getElementById('playerVolumeRange');
+  bindVolumePointer(capsule, range);
   let visit = 0, target = null, pending = null, sending = null;
 
   function paint(value) {

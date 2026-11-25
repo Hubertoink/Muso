@@ -343,6 +343,11 @@ fn get_atmospheres(state: State<'_, AppState>, album_id: String, style: Option<S
 }
 
 #[tauri::command]
+fn painting_credit(state: State<'_, AppState>, album_id: String, style: String, file: String) -> R<Option<paintings::Credit>> {
+    paintings::credit(&*state.db.lock().map_err(err)?, &album_id, &style, &file).map_err(err)
+}
+
+#[tauri::command]
 fn open_image_folder(state: State<'_, AppState>, album_id: String) -> R<()> {
     let dir = state.data_dir.join("atmos");
     if !dir.is_dir() {
@@ -582,6 +587,7 @@ fn main() {
             get_setting,
             set_setting,
             get_atmospheres,
+            painting_credit,
             open_image_folder,
             generate_atmospheres
         ])

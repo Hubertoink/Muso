@@ -79,6 +79,7 @@ beforeEach(async () => {
         }
         if (command === 'image_inventory') return {folders:[],total:0,pending:0,unreadable:0};
         if (command === 'get_atmospheres') return window.testPaintings ?? [];
+        if (command === 'painting_credit') return window.testCredits?.[args.file] ?? null;
         if (command === 'generate_atmospheres') {
           (window.generationRequests ??= []).push(args);
           return [];
@@ -1098,6 +1099,7 @@ test('the cover waits for a decoded atmosphere and fades back with every queued 
   await page.locator('#crate .sleeve[data-index="20"]').waitFor();
   await page.evaluate(() => {
     window.testPaintings = ['atmos/first.svg'];
+    window.testCredits = {'atmos/replacement.svg':{title:'Record 20 · 01', style:'Tape Decay', persona:'Graphic designer'}};
     window.testTracks = [{path:'first', title:'First'}, {path:'second', title:'Second'}];
     window.decodes = [];
     const decode = HTMLImageElement.prototype.decode;
@@ -1130,6 +1132,14 @@ test('the cover waits for a decoded atmosphere and fades back with every queued 
   await painting.waitFor();
   assert.ok(await page.locator('#showAtmosBtn').isEnabled());
   assert.match(await painting.getAttribute('src'), /replacement\.svg$/);
+  const credit = page.locator('#paintingCredit');
+  await credit.waitFor();
+  assert.equal(await page.locator('#paintingTitle').textContent(),'Record 20 · 01');
+  assert.equal(await page.locator('#paintingByline').textContent(),'Tape Decay · Graphic designer');
+  await page.locator('#album').evaluate(el => el.classList.add('idle'));
+  await credit.waitFor({state:'hidden'});
+  await page.locator('#album').evaluate(el => el.classList.remove('idle'));
+  await credit.waitFor();
   const midFade = await page.evaluate(async () => {
     const stack = document.querySelector('.cover-stack');
     const layers = [document.querySelector('.atmos'), stack];
@@ -1421,6 +1431,7 @@ test('TV follows the playing track while the controller stays in the library', a
   await page.locator('#menuBtn').click();
   await page.locator('[data-action=presenter]').click();
   assert.equal(await page.locator('#tvDisplay').inputValue(), '[-1920,0]');
+  await page.clock.install();
   await page.locator('#tvStart').click();
   const tv = await page.context().newPage();
   await tv.addInitScript(() => {
@@ -1429,7 +1440,7 @@ test('TV follows the playing track while the controller stays in the library', a
       event:{listen:async (event,receive) => { if (event === 'audio-spectrum') window.sendBands = id => receive({payload:[id,Array(16).fill(.7)]}); }},
     };
   });
-  await tv.route('http://muso.localhost/atmos/tv.svg', route => route.fulfill({
+  await page.context().route('http://muso.localhost/atmos/tv.svg', route => route.fulfill({
     contentType:'image/svg+xml', body:'<svg xmlns="http://www.w3.org/2000/svg" width="64" height="32"><rect width="64" height="32" fill="navy"/></svg>',
   }));
   await tv.goto(new URL('../ui/presenter.html', import.meta.url).href);
@@ -1441,6 +1452,30 @@ test('TV follows the playing track while the controller stays in the library', a
   await page.evaluate(() => document.getElementById('spectrumToggle').click());
   await tv.waitForFunction(() => window.meterEnabled && !!document.querySelector('#tvPictures img.on'));
   const firstId = await page.evaluate(() => state.playing.playbackId);
+  const saver = page.locator('#librarySaver');
+  const savedPosition = await position();
+  await page.mouse.move(30, 50);
+  await page.clock.fastForward(59000);
+  assert.equal(await saver.isVisible(), false);
+  await page.mouse.move(32, 50);
+  await page.clock.fastForward(59000);
+  assert.equal(await saver.isVisible(), false);
+  await page.clock.fastForward(1000);
+  await saver.locator('img.on').waitFor();
+  assert.equal(await saver.locator('img.on').getAttribute('src'), await tv.locator('#tvPictures img.on').getAttribute('src'));
+  await page.touchscreen.tap(600, 350);
+  await saver.waitFor({state:'hidden'});
+  assert.equal(await position(), savedPosition);
+  assert.equal(await page.evaluate(() => state.view), 'library');
+  await page.locator('#menuBtn').click();
+  await page.clock.fastForward(61000);
+  assert.equal(await saver.isVisible(), false);
+  await page.keyboard.press('Escape');
+  await page.clock.fastForward(60000);
+  await saver.waitFor();
+  await page.mouse.move(50, 60);
+  await saver.waitFor({state:'hidden'});
+  assert.equal(await page.evaluate(() => state.playing.playbackId), firstId);
   await tv.evaluate(id => window.sendBands(id), firstId);
   await tv.waitForFunction(() => Number(getComputedStyle(document.getElementById('spectrumLine')).opacity) > 0);
   await page.evaluate(() => {
@@ -1493,6 +1528,12 @@ test('TV follows the playing track while the controller stays in the library', a
   await page.locator('#album').waitFor({state:'hidden'});
   assert.equal(await page.evaluate(() => state.playing.album.title), 'Record 21');
   assert.equal(await page.evaluate(() => state.view), 'library');
+  await page.clock.fastForward(60000);
+  await saver.waitFor();
+  await page.evaluate(() => window.emitPlayback('presenter-closed'));
+  await saver.waitFor({state:'hidden'});
+  await page.clock.fastForward(61000);
+  assert.equal(await saver.isVisible(), false);
   await tv.close();
 });
 

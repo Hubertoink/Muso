@@ -1,5 +1,38 @@
 use percent_encoding::percent_decode_str;
 use std::borrow::Cow;
+use rusqlite::{Connection, OptionalExtension};
+
+#[derive(serde::Serialize)]
+pub struct Credit {
+    title: String,
+    style: Option<String>,
+    persona: Option<String>,
+}
+
+pub fn credit(c: &Connection, album: &str, style: &str, file: &str) -> rusqlite::Result<Option<Credit>> {
+    if let Some(token) = file.strip_prefix("personal/") {
+        let Some((id, rev)) = token.split_once('-') else { return Ok(None) };
+        let source = c.query_row("SELECT source FROM personal_images WHERE id=?1 AND rev=?2",
+            (id, rev), |r| r.get::<_, String>(0)).optional()?;
+        return Ok(source.and_then(|path| Some(Credit {
+            title: std::path::Path::new(&path).file_stem()?.to_str()?.to_owned(),
+            style: None, persona: None,
+        })));
+    }
+    let files = crate::db::atmospheres(c, album, style)?;
+    let Some(index) = files.iter().position(|f| f == file) else { return Ok(None) };
+    let Some(record) = crate::db::album(c, album)? else { return Ok(None) };
+    let medium = if style == "auto" {
+        crate::db::get_setting(c, &format!("atmos_auto_style.{album}"))?
+    } else { style_label(style).map(str::to_owned) };
+    let prompt = c.query_row("SELECT prompt FROM painting_prompts WHERE file=?1", [file], |r| r.get::<_, String>(0)).optional()?;
+    let persona = prompt.as_deref().and_then(|text| text.lines().find_map(|line| {
+        let commission = line.strip_prefix("You are the ")?;
+        let (artist, _) = commission.split_once(" commissioned for this entire album series.")?;
+        Some(artist.to_owned())
+    }));
+    Ok(Some(Credit { title: format!("{} · {:02}", record.title, index + 1), style: medium, persona }))
+}
 
 pub fn style_label(style: &str) -> Option<&'static str> {
     Some(match style {
@@ -99,6 +132,26 @@ pub fn rename_legacy(conn: &mut rusqlite::Connection, data_dir: &std::path::Path
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn credits_follow_the_saved_series_and_only_show_a_commissioned_persona() {
+        let c = crate::db::open(std::path::Path::new(":memory:")).unwrap();
+        c.execute("INSERT INTO albums(id,artist,title,sort_key) VALUES('a','Artist','Album','a')", []).unwrap();
+        let files = ["atmos/first.jpg".into(), "atmos/second.jpg".into()];
+        crate::db::replace_atmospheres(&c,"a","auto",&files).unwrap();
+        crate::db::set_setting(&c,"atmos_auto_style.a","Silver ink").unwrap();
+        c.execute("INSERT INTO painting_prompts(file,prompt) VALUES(?1,?2)",
+            (&files[1], "Medium: Ink\nYou are the Editorial illustrator commissioned for this entire album series. Brush ink.")).unwrap();
+        let caption = credit(&c,"a","auto",&files[1]).unwrap().unwrap();
+        assert_eq!(caption.title, "Album · 02");
+        assert_eq!(caption.style.as_deref(), Some("Silver ink"));
+        assert_eq!(caption.persona.as_deref(), Some("Editorial illustrator"));
+        assert!(credit(&c,"a","auto",&files[0]).unwrap().unwrap().persona.is_none());
+        assert!(credit(&c,"a","tape",&files[1]).unwrap().is_none());
+        c.execute("INSERT INTO personal_images(id,source,stamp) VALUES(17,'photos/Winter dusk.png','1')",[]).unwrap();
+        let own = credit(&c,"a","personal","personal/17-1").unwrap().unwrap();
+        assert_eq!(own.title, "Winter dusk");
+        assert!(own.style.is_none() && own.persona.is_none());
+    }
     #[test]
     fn old_paintings_keep_their_bytes_and_actual_ai_style() {
         let dir = tempfile::tempdir().unwrap();

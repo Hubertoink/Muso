@@ -1661,6 +1661,7 @@ const playerVolume = createPlayerVolume(invoke, heosOutput, toast, () => { if (s
 /* ---------------- TV display ---------------- */
 const tvChannel = new BroadcastChannel('muso-presenter');
 let tvActive = false, tvReady = false, tvSet = null;
+const librarySaver = createLibrarySaver(() => tvActive && state.view === 'library');
 async function savedPaintingSet(albumId, style) {
   for (const candidate of new Set([style, ...Object.keys(styleNames), 'auto'])) {
     const files = await invoke('get_atmospheres', { albumId, style: candidate });
@@ -1684,7 +1685,11 @@ async function savedPaintingSet(albumId, style) {
 function syncTv(refresh = false) {
   if (!tvActive || !tvReady) return;
   const p = state.playing;
-  if (!p || p.ended || !p.playbackId) { tvChannel.postMessage({track: null}); return; }
+  if (!p || p.ended || !p.playbackId) {
+    librarySaver.setPicture('');
+    tvChannel.postMessage({track: null});
+    return;
+  }
   const style = albumStyle(p.album.id);
   if (refresh || tvSet?.id !== p.album.id || tvSet.style !== style) {
     const entry = tvSet = {id: p.album.id, style, files: tvSet?.id === p.album.id ? tvSet.files : []};
@@ -1698,10 +1703,20 @@ function syncTv(refresh = false) {
     spectrum: spectrum.settings()});
 }
 tvChannel.onmessage = e => {
+  if (tvActive && e.data?.type === 'picture' && e.data.track === state.playing?.playbackId && !state.playing?.ended) {
+    librarySaver.setPicture(e.data.url);
+  }
   if (e.data === 'ready') { tvReady = true; syncTv(); }
   if (e.data === 'close' && tvActive) invoke('set_presenter', {display:null}).catch(e => toast(String(e)));
 };
-listen('presenter-closed', () => { tvActive = false; tvReady = false; tvSet = null; show($('tvStop'), false); });
+listen('presenter-closed', () => {
+  tvActive = false;
+  tvReady = false;
+  tvSet = null;
+  librarySaver.sync();
+  librarySaver.setPicture('');
+  show($('tvStop'), false);
+});
 async function openTvDialog() {
   try {
     const api = window.__TAURI__.window;
@@ -1735,6 +1750,7 @@ $('tvStart').onclick = async () => {
     localStorage.setItem('muso.tvDisplay', value);
     $('tvDialog').close();
     if (state.view === 'album') closeAlbum();
+    librarySaver.sync();
     syncTv();
   } catch (e) { toast(String(e)); }
   finally { $('tvStart').disabled = false; }
@@ -2491,6 +2507,13 @@ async function loadPainting(set, file) {
   set.pending = false;
   set.shown = file;
   set.since = performance.now();
+  $('paintingCredit').hidden = true;
+  invoke('painting_credit', { albumId:set.albumId, style:set.style, file }).then(credit => {
+    if (playlist !== set || set.shown !== file || !credit) return;
+    $('paintingTitle').textContent = credit.title;
+    $('paintingByline').textContent = [credit.style, credit.persona].filter(Boolean).join(' · ');
+    $('paintingCredit').hidden = false;
+  }).catch(() => {});
   readyAlbum = set.albumId;
   $('album').dataset.preview = set.style === 'personal' || set.style === albumStyle(set.albumId) ? '' : albumStyle(set.albumId);
   img.classList.add('on');
@@ -2506,6 +2529,7 @@ function stopAtmospheres() {
   clearTimeout(atmosTimer);
   atmosTimer = null;
   readyAlbum = null;
+  $('paintingCredit').hidden = true;
   updateAtmosView();
   $('showAtmosBtn').disabled = true;
   $('showAtmosBtn').setAttribute('aria-pressed', 'false');

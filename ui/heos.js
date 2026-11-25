@@ -194,6 +194,7 @@ function createHeosOutput(invoke, listen, toast, outputChanged) {
         const capsule = document.createElement('span');
         capsule.className = 'volume-capsule';
         capsule.append(input);
+        bindVolumePointer(capsule, input);
         sliders.set(key(c), {input, output, capsule});
         input.oninput = () => {
           ++revision;

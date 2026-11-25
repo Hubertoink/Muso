@@ -78,6 +78,24 @@ try {
   assert.equal(result.draws,1);
   assert.ok(result.trace && result.pigmentClipped && result.cleared && !result.pngMap);
   assert.ok(result.dimensions.every(p=>p.visible && p.alpha>0 && p.h<result.viewHeight));
+  const box = await command(session+'/execute/sync', {args:[], script:`
+    const capsule = document.getElementById('playerVolume'), range = document.getElementById('playerVolumeRange');
+    document.getElementById('album').style.transform = 'none';
+    capsule.classList.add('open');
+    capsule.style.transition = 'none';
+    range.disabled = false;
+    bindVolumePointer(capsule, range);
+    const r = capsule.getBoundingClientRect();
+    return {x: Math.round(r.left+r.width/2), bottom:r.bottom, height:r.height};`});
+  for (const [pointerType, start, end] of [['mouse',75,25],['touch',10,90]]) {
+    const move = v => ({type:'pointerMove',duration:0,x:box.x,y:Math.round(box.bottom-box.height*v/100)});
+    const send = actions => command(session+'/actions', {actions:[{type:'pointer',id:pointerType,parameters:{pointerType},actions}]});
+    await send([move(start),{type:'pointerDown',button:0}]);
+    const value = () => command(session+'/execute/sync',{args:[],script:"return document.getElementById('playerVolumeRange').valueAsNumber"});
+    assert.ok(Math.abs(await value()-start)<=1);
+    await send([move(end),{type:'pointerUp',button:0}]);
+    assert.ok(Math.abs(await value()-end)<=1);
+  }
   await fetch('http://127.0.0.1:4444'+session,{method:'DELETE'});
 } finally {
   driver.kill();

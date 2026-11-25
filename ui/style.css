@@ -635,7 +635,7 @@ body:has(#coverConfirm[open]) #coverSearchStatus { visibility: hidden; }
 .controls .play { width: 58px; height: 58px; border-radius: 50%; border: 1px solid var(--ink-faint); --motion-opacity: 1; }
 .controls .play svg { width: 22px; height: 22px; }
 .volume-capsule {
-  --volume-width: 48px;
+  --volume-width: 48px; touch-action: none;
   position: relative; isolation: isolate; overflow: hidden; border-radius: 999px;
   width: var(--volume-width); height: 184px;
   background: #202021; border: 1px solid rgba(255,255,255,.52);
@@ -647,7 +647,7 @@ body:has(#coverConfirm[open]) #coverSearchStatus { visibility: hidden; }
 }
 .volume-capsule input {
   position: absolute; inset: 0; width: 100%; height: 100%; margin: 0;
-  writing-mode: vertical-lr; direction: rtl; opacity: 0; cursor: ns-resize; touch-action: none;
+  writing-mode: vertical-lr; direction: rtl; opacity: 0; pointer-events: none;
 }
 .volume-capsule:has(:focus-visible) { outline: 2px solid white; outline-offset: 3px; }
 #playerVolume {
@@ -663,7 +663,8 @@ body:has(#coverConfirm[open]) #coverSearchStatus { visibility: hidden; }
   display: grid; place-items: center; color: #fff;
 }
 #volumeToggle svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.55; stroke-linecap: round; stroke-linejoin: round; }
-#playerVolume:not(.open) input, #playerVolume input:disabled { pointer-events: none; }
+#playerVolume.open #volumeToggle { pointer-events: none; }
+.heos-level .volume-capsule, #playerVolume.open { cursor: ns-resize; }
 #album.idle #playerVolume:not(.open):not(:has(:focus-visible)),
 .can-hover #album:not(:hover) #playerVolume:not(.open):not(:has(:focus-visible)) { opacity: 0; }
 @media (prefers-reduced-motion: reduce) {
@@ -732,6 +733,17 @@ body:has(#coverConfirm[open]) #coverSearchStatus { visibility: hidden; }
 #defaultStyleChoice[aria-pressed=true]::before { content: '✓ '; color: var(--accent); }
 #stylePicker button:focus-visible { outline: 2px solid var(--ink); outline-offset: -3px; }
 #atmosStatus { position: absolute; left: 0; right: 0; bottom: 18px; text-align: center; z-index: 5; }
+#paintingCredit {
+  position: absolute; bottom: max(20px, env(safe-area-inset-bottom)); left: max(20px, env(safe-area-inset-left));
+  max-width: min(32vw, 32em); z-index: 4; pointer-events: none;
+  color: #f1eeea; text-shadow: 0 1px 6px #000; font-size: 14px; line-height: 1.4;
+  opacity: var(--motion-opacity); --motion-opacity: 0; visibility: hidden;
+  transition: --motion-opacity .45s, visibility 0s .45s;
+}
+#album.showing-atmos:not(.idle) #paintingCredit { --motion-opacity: 1; visibility: visible; transition-delay: 0s; }
+#paintingCredit span { display: block; overflow-wrap: anywhere; }
+#paintingByline:not(:empty) { margin-top: 3px; font-size: 12px; color: #c2bebb; }
+@media (prefers-reduced-motion: reduce) { #paintingCredit { transition: none; } }
 
 /* ---------- Toast ---------- */
 #toast {
@@ -1146,3 +1158,18 @@ body:has(#coverConfirm[open]) #coverSearchStatus { visibility: hidden; }
 #heosStatus:not(:empty) { margin-top: 12px; color: var(--ink-dim); }
 #heosDissolve { margin-right: auto; }
 .library-dialog .modal-actions .link { padding-inline: 8px; }
+#librarySaver {
+  position: fixed; inset: 0; z-index: 80; overflow: hidden;
+  background: #101010; cursor: none; touch-action: none;
+  visibility: hidden; opacity: 0;
+  transition: opacity .6s ease, visibility 0s linear .6s;
+}
+#librarySaver.on { visibility: visible; opacity: 1; transition-delay: 0s; }
+#librarySaver img {
+  position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain;
+  opacity: 0; transition: opacity 1s ease;
+}
+#librarySaver img.on { opacity: 1; }
+@media (prefers-reduced-motion: reduce) {
+  #librarySaver, #librarySaver img { transition: none; }
+}

@@ -2,7 +2,7 @@ use rodio::{buffer::SamplesBuffer, Decoder, Source};
 use std::io::Cursor;
 use std::sync::{
     atomic::{AtomicBool, AtomicU32, Ordering},
-    Arc, OnceLock,
+    Arc, Mutex, OnceLock,
 };
 use std::time::Duration;
 
@@ -16,7 +16,7 @@ fn decode(bytes: &'static [u8]) -> Clip {
     let decoder = Decoder::new(Cursor::new(bytes)).expect("bundled vinyl recording");
     let (channels, rate) = (decoder.channels(), decoder.sample_rate());
     let mut samples: Vec<_> = decoder.collect();
-    // Both recordings have MP3 encoder silence before the needle touches down.
+    // Trim MP3 encoder silence before the needle touches down.
     let start = samples
         .chunks_exact(channels.into())
         .position(|frame| frame.iter().any(|s| s.unsigned_abs() > 12))
@@ -36,28 +36,46 @@ pub enum Lead {
     Change,
 }
 
+// All six lead recordings are stereo at 44.1 kHz. Prepare them off the
+// mixer thread so an armed change can choose at the actual record boundary.
+fn recordings() -> &'static [Clip; 6] {
+    static CLIPS: OnceLock<[Clip; 6]> = OnceLock::new();
+    const BYTES: [&[u8]; 6] = [
+        include_bytes!("../../../assets/Muso_VinylDrop_Beginn.mp3"),
+        include_bytes!("../../../assets/Muso_Needle_Change_LP.mp3"),
+        include_bytes!("../../../assets/Muso_Needle_drop2.mp3"),
+        include_bytes!("../../../assets/Muso_Needle_drop3.mp3"),
+        include_bytes!("../../../assets/Muso_Needle_drop4.mp3"),
+        include_bytes!("../../../assets/Muso_Needle_drop5.mp3"),
+    ];
+    CLIPS.get_or_init(|| BYTES.map(|bytes| {
+        let mut clip = decode(bytes);
+        let fade = clip.rate as usize / 100 * usize::from(clip.channels);
+        for (i, sample) in clip.samples.iter_mut().rev().take(fade).enumerate() {
+            *sample = (f32::from(*sample) * (i as f32 / fade as f32)) as i16;
+        }
+        clip
+    }))
+}
+
 impl Lead {
+    fn choose(self, previous: Option<usize>) -> usize {
+        let mut choices = [match self { Self::Drop => 0, Self::Change => 1 }, 2, 3, 4, 5];
+        let mut count = choices.len();
+        if let Some(index) = choices.iter().position(|id| Some(*id) == previous) {
+            count -= 1;
+            choices.swap(index, count);
+        }
+        choices[fastrand::usize(..count)]
+    }
+
     fn clip(self) -> &'static Clip {
-        static DROP: OnceLock<Clip> = OnceLock::new();
-        static CHANGE: OnceLock<Clip> = OnceLock::new();
-        let (cache, bytes): (_, &[u8]) = match self {
-            Self::Drop => (
-                &DROP,
-                include_bytes!("../../../assets/Muso_VinylDrop_Beginn.mp3"),
-            ),
-            Self::Change => (
-                &CHANGE,
-                include_bytes!("../../../assets/Muso_Needle_Change_LP.mp3"),
-            ),
-        };
-        cache.get_or_init(|| {
-            let mut clip = decode(bytes);
-            let fade = clip.rate as usize / 100 * usize::from(clip.channels);
-            for (i, sample) in clip.samples.iter_mut().rev().take(fade).enumerate() {
-                *sample = (f32::from(*sample) * (i as f32 / fade as f32)) as i16;
-            }
-            clip
-        })
+        static LAST: Mutex<Option<usize>> = Mutex::new(None);
+        let clips = recordings();
+        let mut previous = LAST.lock().unwrap();
+        let index = self.choose(*previous);
+        *previous = Some(index);
+        &clips[index]
     }
 
     pub(super) fn sound(self) -> SamplesBuffer<i16> {
@@ -66,52 +84,37 @@ impl Lead {
     }
 }
 
-// Decide at the audio boundary, so a record added during the last track can follow it.
+// Decide at the audio boundary, so an unused change doesn't consume a drop.
 pub(super) struct Change {
-    sound: SamplesBuffer<i16>,
+    samples: Option<std::slice::Iter<'static, i16>>,
     armed: Arc<AtomicBool>,
     pub started: Arc<AtomicBool>,
-    first: bool,
 }
 
 impl Change {
     pub(super) fn new(armed: Arc<AtomicBool>, started: Arc<AtomicBool>) -> Self {
-        Self {
-            sound: Lead::Change.sound(),
-            armed,
-            started,
-            first: true,
-        }
+        recordings();
+        Self { samples: None, armed, started }
     }
 }
 
 impl Iterator for Change {
     type Item = i16;
     fn next(&mut self) -> Option<i16> {
-        if self.first {
-            if !self.armed.load(Ordering::Relaxed) {
-                return None;
-            }
+        if self.samples.is_none() {
+            if !self.armed.load(Ordering::Relaxed) { return None; }
+            self.samples = Some(Lead::Change.clip().samples.iter());
             self.started.store(true, Ordering::Relaxed);
-            self.first = false;
         }
-        self.sound.next()
+        self.samples.as_mut()?.next().copied()
     }
 }
 
 impl Source for Change {
-    fn current_frame_len(&self) -> Option<usize> {
-        None
-    }
-    fn channels(&self) -> u16 {
-        self.sound.channels()
-    }
-    fn sample_rate(&self) -> u32 {
-        self.sound.sample_rate()
-    }
-    fn total_duration(&self) -> Option<Duration> {
-        None
-    }
+    fn current_frame_len(&self) -> Option<usize> { None }
+    fn channels(&self) -> u16 { recordings()[1].channels }
+    fn sample_rate(&self) -> u32 { recordings()[1].rate }
+    fn total_duration(&self) -> Option<Duration> { None }
 }
 
 pub(super) struct Groove {
@@ -201,17 +204,26 @@ mod tests {
         assert_eq!(output.next(), Some(17));
         armed.store(true, Ordering::Relaxed);
         assert_eq!(output.next(), Some(17));
-        let mut change = Lead::Change.sound();
-        assert_eq!(output.next(), change.next());
+        let first = output.next().unwrap();
         assert!(started.load(Ordering::Relaxed));
         input.append(track(42));
-        assert!(output.eq(change.chain([42, 42])));
+        let rendered: Vec<_> = std::iter::once(first).chain(output).collect();
+        let (change, next_track) = rendered.split_at(rendered.len() - 2);
+        assert_eq!(next_track, [42, 42]);
+        assert!(recordings()[1..].iter().any(|clip| change == clip.samples));
     }
 
     #[test]
     fn bundled_recordings_decode_and_groove_loops_to_the_exact_deadline() {
-        let drop = Lead::Drop.sound();
-        assert!(drop.total_duration().unwrap() > Duration::from_secs(1));
+        for clip in recordings() {
+            assert_eq!((clip.channels, clip.rate), (2, 44100));
+            assert!(clip.samples.len() > 4410);
+        }
+        for previous in 0..6 {
+            for lead in [Lead::Drop, Lead::Change] {
+                assert!((0..64).all(|_| lead.choose(Some(previous)) != previous));
+            }
+        }
         let seconds = Arc::new(AtomicU32::new(8));
         let mut groove = Groove::new(seconds.clone());
         let rate = usize::from(groove.channels()) * groove.sample_rate() as usize;

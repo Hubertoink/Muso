@@ -7,6 +7,9 @@ const spectrum = createSpectrumRenderer(window.__TAURI__.core.invoke, window.__T
 const caption = document.querySelector('aside');
 const failed = new Set();
 let current = null, desired = '', shown = '', timer = null;
+function sharePicture() {
+  channel.postMessage({type: 'picture', track: current?.track, url: shown});
+}
 function syncSpectrum() {
   spectrum.setPlayback(!!shown && !!current?.track && !current.paused, current?.track);
 }
@@ -25,6 +28,7 @@ async function display(url) {
   desired = url;
   if (!url) {
     shown = '';
+    sharePicture();
     for (const img of slots) { img.classList.remove('on'); img.removeAttribute('src'); }
     clearTimeout(timer);
     syncSpectrum();
@@ -41,6 +45,7 @@ async function display(url) {
   }
   if (desired !== url) return;
   shown = url;
+  sharePicture();
   for (const img of slots) img.classList.toggle('on', img === image);
   syncSpectrum();
   schedule();
@@ -59,6 +64,7 @@ channel.onmessage = ({data}) => {
   caption.classList.toggle('visible', !!data.track && data.intro);
   const files = candidates();
   const url = files.includes(desired) ? desired : files[0] || (!failed.has(data.cover) && data.cover) || '';
+  if (changed && shown && shown === url) sharePicture();
   if (url !== desired) display(url);
   else if (changed || pausedChanged || filesChanged) schedule();
 };
