@@ -12,6 +12,7 @@ mod paintings;
 mod personal_images;
 mod releases;
 mod scanner;
+mod album_titles;
 #[cfg(any(windows, target_os = "linux"))]
 mod screen;
 mod spectrum;
@@ -32,6 +33,7 @@ struct AppState {
     player: audio::Player,
     scanning: Arc<AtomicBool>,
     cover_search: covers::Search,
+    cover_install: Mutex<()>,
     note_generation: tokio::sync::Mutex<()>,
 }
 
@@ -92,7 +94,7 @@ fn get_albums(state: State<'_, AppState>) -> R<Vec<db::LibraryAlbum>> {
 }
 
 #[tauri::command]
-async fn upgrade_cover(app: AppHandle, state: State<'_, AppState>, album_id: String, step: covers::Step) -> R<covers::Outcome> {
+async fn upgrade_cover(app: AppHandle, state: State<'_, AppState>, album_id: String, step: covers::Step, write_mp3_covers: Option<bool>) -> R<covers::Outcome> {
     use covers::{Outcome, Step};
     let album = db::album(&*state.db.lock().map_err(err)?, &album_id).map_err(err)?;
     let album = album.ok_or("This album is no longer in your library.")?;
@@ -129,11 +131,17 @@ async fn upgrade_cover(app: AppHandle, state: State<'_, AppState>, album_id: Str
     tauri::async_runtime::spawn_blocking(move || {
         let img = covers::decode(&bytes)?;
         let state = app.state::<AppState>();
+        let _install = state.cover_install.lock().map_err(err)?;
         let mut db = state.db.lock().map_err(err)?;
-        Ok(match covers::install(&mut db, &state.data_dir, &album.id, &img, &source)? {
-            Some(file) => Outcome::Updated { file, source },
-            None => Outcome::AlreadyLargeEnough,
-        })
+        let tracks = if write_mp3_covers == Some(true) {
+            db::tracks(&db, &album.id).map_err(err)?
+        } else { Vec::new() };
+        let Some(file) = covers::install(&mut db, &state.data_dir, &album.id, &img, &source)? else {
+            return Ok(Outcome::AlreadyLargeEnough);
+        };
+        drop(db);
+        let tags = covers::write_mp3_covers(&tracks, &state.data_dir.join("art").join(&file));
+        Ok(Outcome::Updated { file, source, tags })
     }).await.map_err(err)?
 }
 
@@ -526,6 +534,7 @@ fn main() {
                 player,
                 scanning: Arc::new(AtomicBool::new(false)),
                 cover_search: covers::Search::new()?,
+                cover_install: Mutex::new(()),
                 note_generation: tokio::sync::Mutex::new(()),
             });
             Ok(())

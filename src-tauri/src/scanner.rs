@@ -56,6 +56,16 @@ fn clean(o: Option<Cow<'_, str>>) -> Option<String> {
     o.map(|c| c.trim().to_string()).filter(|s| !s.is_empty())
 }
 
+// Some ID3v2.3 writers used Windows-1252 for fields marked as Latin-1.
+// Decode the ellipsis before trimming: U+0085 also counts as whitespace.
+pub(super) fn album_title(raw: &str) -> String {
+    raw.replace('\u{85}', "…").trim().to_owned()
+}
+
+pub(super) fn album_id(artist: &str, title: &str) -> String {
+    fnv(&format!("{}\0{}", artist.to_lowercase(), title.to_lowercase()))
+}
+
 fn ext_of(p: &Path) -> Option<String> {
     p.extension().map(|e| e.to_string_lossy().to_ascii_lowercase())
 }
@@ -76,7 +86,11 @@ fn read_track(p: &Path) -> TrackInfo {
         .as_ref()
         .map(|t| t.properties().duration().as_secs_f64())
         .unwrap_or(0.0);
-    let tag = tf.as_ref().and_then(|t| t.primary_tag().or_else(|| t.first_tag()));
+    let primary = tf.as_ref().and_then(|t| t.primary_tag().or_else(|| t.first_tag()));
+    // An MP3 may keep its track metadata in APE and its new front cover in ID3.
+    let tag = primary.filter(|t| t.items().next().is_some()).or_else(|| {
+        tf.as_ref()?.tags().iter().find(|t| t.items().next().is_some())
+    });
 
     let artist = tag.and_then(|t| clean(t.artist())).or_else(|| {
         tf.as_ref()?.tags().iter().find_map(|t| clean(t.artist()))
@@ -91,7 +105,7 @@ fn read_track(p: &Path) -> TrackInfo {
     let album_artist = tagged_album_artist.or_else(|| artist.clone())
         .unwrap_or_else(|| "Unknown Artist".into());
 
-    let picture = tag.and_then(|t| {
+    let picture = primary.and_then(|t| {
         let pics = t.pictures();
         pics.iter()
             .find(|p| p.pic_type() == PictureType::CoverFront)
@@ -104,7 +118,8 @@ fn read_track(p: &Path) -> TrackInfo {
         artist,
         album_artist,
         has_album_artist,
-        album: tag.and_then(|t| clean(t.album())).unwrap_or(dir_name),
+        album: tag.and_then(|t| t.album()).map(|s| album_title(&s))
+            .filter(|s| !s.is_empty()).unwrap_or_else(|| album_title(&dir_name)),
         year: tag.and_then(|t| t.year()),
         genre: tag.and_then(|t| clean(t.genre())),
         track_no: tag.and_then(|t| t.track()),
@@ -133,7 +148,9 @@ fn recover_mp3_tags(path: &Path, info: &mut TrackInfo) -> Option<()> {
     let album_artist = text(Key::AlbumArtist);
     info.has_album_artist = album_artist.is_some();
     if let Some(artist) = album_artist.or_else(|| info.artist.clone()) { info.album_artist = artist; }
-    if let Some(album) = text(Key::Album) { info.album = album; }
+    if let Some(album) = text(Key::Album).map(|s| album_title(&s)).filter(|s| !s.is_empty()) {
+        info.album = album;
+    }
     if let Some(title) = text(Key::TrackTitle) { info.title = title; }
     let number = |key| text(key)?.split('/').next()?.trim().parse::<u32>().ok();
     info.track_no = info.track_no.or_else(|| number(Key::TrackNumber));
@@ -233,20 +250,25 @@ fn repair_unknown_albums(tx: &rusqlite::Transaction<'_>, roots: &[String]) -> ru
     let pairs = moves.query_map([], |r| Ok((r.get::<_,String>(0)?, r.get::<_,String>(1)?)))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     for (old, new) in pairs {
-        tx.execute("UPDATE OR IGNORE album_notes SET album_id=?2 WHERE album_id=?1", [&old,&new])?;
-        tx.execute("UPDATE OR IGNORE album_research SET album_id=?2 WHERE album_id=?1", [&old,&new])?;
-        tx.execute("UPDATE atmospheres SET album_id=?2 WHERE album_id=?1 AND NOT EXISTS
-            (SELECT 1 FROM atmospheres WHERE album_id=?2) AND NOT EXISTS
-            (SELECT 1 FROM atmosphere_variants WHERE album_id=?2 AND style='cinematic')", [&old,&new])?;
-        tx.execute("UPDATE atmosphere_variants SET album_id=?2 WHERE album_id=?1 AND style NOT IN
-            (SELECT style FROM atmosphere_variants WHERE album_id=?2 UNION SELECT 'cinematic' FROM atmospheres WHERE album_id=?2)",
-            [&old,&new])?;
-        tx.execute("UPDATE OR IGNORE settings SET key='atmos_auto_style.'||?2 WHERE key='atmos_auto_style.'||?1",
-            [&old,&new])?;
-        tx.execute("UPDATE albums AS dest SET has_art=1,cover_file=coalesce(src.cover_file,src.id||'.jpg')
-            FROM albums AS src WHERE dest.id=?2 AND src.id=?1 AND src.has_art=1 AND dest.cover_file IS NULL
-            AND (src.cover_file IS NOT NULL OR dest.has_art=0)", [&old,&new])?;
+        move_saved_work(tx, &old, &new)?;
     }
+    Ok(())
+}
+
+pub(super) fn move_saved_work(tx: &rusqlite::Transaction<'_>, old: &str, new: &str) -> rusqlite::Result<()> {
+    tx.execute("UPDATE OR IGNORE album_notes SET album_id=?2 WHERE album_id=?1", [old, new])?;
+    tx.execute("UPDATE OR IGNORE album_research SET album_id=?2 WHERE album_id=?1", [old, new])?;
+    tx.execute("UPDATE atmospheres SET album_id=?2 WHERE album_id=?1 AND NOT EXISTS
+        (SELECT 1 FROM atmospheres WHERE album_id=?2) AND NOT EXISTS
+        (SELECT 1 FROM atmosphere_variants WHERE album_id=?2 AND style='cinematic')", [old, new])?;
+    tx.execute("UPDATE atmosphere_variants SET album_id=?2 WHERE album_id=?1 AND style NOT IN
+        (SELECT style FROM atmosphere_variants WHERE album_id=?2 UNION SELECT 'cinematic' FROM atmospheres WHERE album_id=?2)",
+        [old, new])?;
+    tx.execute("UPDATE OR IGNORE settings SET key='atmos_auto_style.'||?2 WHERE key='atmos_auto_style.'||?1",
+        [old, new])?;
+    tx.execute("UPDATE albums AS dest SET has_art=1,cover_file=coalesce(src.cover_file,src.id||'.jpg')
+        FROM albums AS src WHERE dest.id=?2 AND src.id=?1 AND src.has_art=1 AND dest.cover_file IS NULL
+        AND (src.cover_file IS NOT NULL OR dest.has_art=0)", [old, new])?;
     Ok(())
 }
 
@@ -314,11 +336,7 @@ pub fn scan(db_path: &Path, data_dir: &Path, progress: impl Fn(Progress)) -> Res
 
             let info = read_track(path);
             changed = true;
-            let album_id = fnv(&format!(
-                "{}\u{0}{}",
-                info.album_artist.to_lowercase(),
-                info.album.to_lowercase()
-            ));
+            let album_id = album_id(&info.album_artist, &info.album);
             tx.execute(
                 "INSERT INTO albums(id, artist, title, year, genre, has_art, sort_key)
                  VALUES(?1, ?2, ?3, ?4, ?5, 0, ?6)
@@ -400,6 +418,16 @@ pub fn scan(db_path: &Path, data_dir: &Path, progress: impl Fn(Progress)) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_ellipsis_matches_unicode_before_trimming_and_hashing() {
+        for raw in ["Then\u{85}Now", "Then\u{85}", "\u{85}Now"] {
+            let unicode = raw.replace('\u{85}', "…");
+            assert_eq!(album_title(raw), unicode);
+            assert_eq!(album_id("Artist", &album_title(raw)), album_id("Artist", &unicode));
+        }
+        assert_ne!(album_id("Artist", "Then...Now"), album_id("Artist", "Then…Now"));
+    }
 
     #[test]
     fn scan_retires_cached_mp4_but_keeps_audio_and_the_original_file() {

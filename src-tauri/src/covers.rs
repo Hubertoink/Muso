@@ -25,7 +25,7 @@ pub enum Outcome {
     OfferResearch { reason: Option<String> },
     ReviewCovers { choices: Vec<Candidate> },
     Ambiguous,
-    Updated { file: String, source: Origin },
+    Updated { file: String, source: Origin, tags: TagWrites },
     AlreadyLargeEnough,
     NoMatch,
     NoFrontCover,
@@ -705,6 +705,68 @@ pub fn install(
     Ok(Some(file))
 }
 
+#[derive(Default, Serialize)]
+pub struct TagWrites {
+    written: usize,
+    failed: usize,
+    first_error: Option<String>,
+}
+
+pub fn write_mp3_covers(tracks: &[db::Track], art: &Path) -> TagWrites {
+    let mut report = TagWrites::default();
+    let mut jpeg = None;
+    for track in tracks {
+        let path = Path::new(&track.path);
+        if !path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("mp3")) { continue; }
+        let bytes = jpeg.get_or_insert_with(|| std::fs::read(art).map_err(crate::err));
+        match bytes.as_ref().map_err(Clone::clone).and_then(|bytes| write_front_cover(path, bytes)) {
+            Ok(()) => report.written += 1,
+            Err(error) => {
+                report.failed += 1;
+                report.first_error.get_or_insert_with(|| format!("{}: {error}", path.display()));
+            }
+        }
+    }
+    report
+}
+
+fn write_front_cover(path: &Path, jpeg: &[u8]) -> R<()> {
+    use id3::{frame::{Picture, PictureType}, Tag, TagLike};
+    use lofty::config::ParseOptions;
+    use lofty::file::AudioFile;
+    use lofty::mpeg::MpegFile;
+    use std::io::Seek;
+
+    let path = path.canonicalize().map_err(crate::err)?;
+    let mut source = std::fs::File::open(&path).map_err(crate::err)?;
+    let metadata = source.metadata().map_err(crate::err)?;
+    if metadata.permissions().readonly() { return Err("File is read-only".into()); }
+    // Replace the original only after its complete tagged copy is on disk.
+    let mut copy = tempfile::NamedTempFile::new_in(path.parent().ok_or("Missing parent folder")?).map_err(crate::err)?;
+    let file = copy.as_file_mut();
+    std::io::copy(&mut source, file).map_err(crate::err)?;
+    drop(source);
+    file.rewind().map_err(crate::err)?;
+    MpegFile::read_from(file, ParseOptions::new().read_tags(false)).map_err(crate::err)?;
+    file.rewind().map_err(crate::err)?;
+    let mut tag = id3::no_tag_ok(id3::v1v2::read_from(&mut *file)).map_err(crate::err)?.unwrap_or_else(Tag::new);
+    tag.remove_picture_by_type(PictureType::CoverFront);
+    tag.add_frame(Picture {
+        picture_type: PictureType::CoverFront, mime_type: "image/jpeg".into(),
+        description: String::new(), data: jpeg.to_vec(),
+    });
+    file.rewind().map_err(crate::err)?;
+    tag.write_to_file(&mut *file, tag.version()).map_err(crate::err)?;
+    file.set_permissions(metadata.permissions()).map_err(crate::err)?;
+    file.sync_all().map_err(crate::err)?;
+    let current = std::fs::metadata(&path).map_err(crate::err)?;
+    if current.len() != metadata.len() || current.modified().ok() != metadata.modified().ok() {
+        return Err("File changed while updating its cover".into());
+    }
+    copy.persist(&path).map_err(crate::err)?;
+    Ok(())
+}
+
 impl Origin {
     pub fn save(&self, conn: &rusqlite::Connection, file: &str) -> rusqlite::Result<()> {
         conn.execute(
@@ -718,6 +780,77 @@ impl Origin {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn front_cover_writes_preserve_audio_other_pictures_and_text_and_report_partial_failures() {
+        use id3::TagLike;
+        use lofty::config::ParseOptions;
+        use lofty::file::AudioFile;
+        use lofty::id3::v2::{Frame, Id3v2Version};
+        use lofty::mpeg::MpegFile;
+        use lofty::picture::PictureType;
+        use lofty::tag::Accessor;
+        use std::fs;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("track.MP3");
+        let original = include_bytes!("../../assets/Muso_Needle_drop2.mp3");
+        fs::write(&path, original).unwrap();
+        let art = dir.path().join("art.jpg");
+        scanner::save_jpeg(&DynamicImage::new_rgb8(24, 24), 24, &art).unwrap();
+        let jpeg = fs::read(&art).unwrap();
+        let mut tag = id3::Tag::new();
+        tag.set_title("Keep title");
+        for kind in [id3::frame::PictureType::CoverFront, id3::frame::PictureType::CoverBack] {
+            tag.add_frame(id3::frame::Picture {
+                picture_type: kind, mime_type: "image/jpeg".into(), description: String::new(), data: jpeg.clone(),
+            });
+        }
+        tag.write_to_path(&path, id3::Version::Id3v23).unwrap();
+        scanner::save_jpeg(&DynamicImage::new_rgb8(64, 64), 64, &art).unwrap();
+        let tracks: Vec<_> = ["track.MP3", "unavailable.mp3", "other.flac"].iter().map(|name| db::Track {
+            path: dir.path().join(name).to_string_lossy().into_owned(), title: String::new(),
+            artist: None, track_no: None, disc_no: None, duration: None,
+        }).collect();
+        let report = write_mp3_covers(&tracks, &art);
+        assert_eq!((report.written, report.failed), (1, 1), "{:?}", report.first_error);
+        let tag = MpegFile::read_from(&mut fs::File::open(&path).unwrap(), ParseOptions::new())
+            .unwrap().remove_id3v2().unwrap();
+        assert_eq!(tag.original_version(), Id3v2Version::V3);
+        assert_eq!(tag.title().unwrap(), "Keep title");
+        let pics: Vec<_> = (&tag).into_iter().filter_map(|f| if let Frame::Picture(p) = f { Some(&p.picture) } else { None }).collect();
+        assert_eq!(pics.len(), 2);
+        assert_eq!(pics.iter().find(|p| p.pic_type() == PictureType::CoverBack).unwrap().data(), jpeg);
+        assert_eq!(pics.iter().find(|p| p.pic_type() == PictureType::CoverFront).unwrap().data(), fs::read(&art).unwrap());
+        let audio_offset = if original.starts_with(b"ID3") {
+            10 + original[6..10].iter().fold(0usize, |n, b| (n << 7) | *b as usize)
+        } else { 0 };
+        assert!(fs::read(path).unwrap().ends_with(&original[audio_offset..]));
+    }
+
+    #[test]
+    fn an_artwork_only_id3_tag_keeps_ape_albums_in_the_library() {
+        use lofty::{config::WriteOptions, tag::{Accessor, Tag, TagExt, TagType}};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("track.mp3");
+        std::fs::write(&path, include_bytes!("../../assets/Muso_Needle_drop2.mp3")).unwrap();
+        id3::Tag::remove_from_path(&path).unwrap();
+        let mut ape = Tag::new(TagType::Ape);
+        ape.set_artist("Artist".into());
+        ape.set_album("Album".into());
+        ape.set_title("Track".into());
+        ape.save_to_path(&path, WriteOptions::default()).unwrap();
+        let art = dir.path().join("front.jpg");
+        scanner::save_jpeg(&DynamicImage::new_rgb8(24, 24), 24, &art).unwrap();
+        write_front_cover(&path, &std::fs::read(art).unwrap()).unwrap();
+        let index = dir.path().join("index.db");
+        let conn = db::open(&index).unwrap();
+        db::add_folder(&conn, dir.path().to_str().unwrap()).unwrap();
+        scanner::scan(&index, dir.path(), |_| {}).unwrap();
+        let album = db::albums(&conn).unwrap().remove(0).album;
+        assert_eq!((album.artist.as_str(), album.title.as_str()), ("Artist", "Album"));
+        assert_eq!(db::tracks(&conn, &album.id).unwrap()[0].title, "Track");
+    }
 
     #[test]
     fn audiodb_only_offers_distinct_album_covers_with_matching_credits() {

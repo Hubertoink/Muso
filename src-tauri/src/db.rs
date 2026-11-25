@@ -86,6 +86,10 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
     if !has_arrivals {
         tx.execute("UPDATE album_arrivals SET first_seen=0", [])?;
     }
+    if get_setting(&tx, "scanner.album_ellipsis_v1")?.is_none() {
+        crate::album_titles::repair(&tx)?;
+        set_setting(&tx, "scanner.album_ellipsis_v1", "1")?;
+    }
     tx.commit()?;
     c.execute_batch("CREATE TEMP VIEW resolved_albums AS SELECT a.id,a.artist,a.title,a.year,a.genre,
         (a.has_art=1 OR COALESCE(s.has_art,0)=1) AS has_art,

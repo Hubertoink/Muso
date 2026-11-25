@@ -129,6 +129,118 @@ test('cover lookup distinguishes missing artwork and reserves AI offers for an i
   assert.equal(await page.evaluate(() => window.coverRequest.step.offer_ai), false);
 });
 
+test('MP3 cover writing is opt-in, persists, and reports tag errors after a cover upgrade', async () => {
+  const run = async single => page.evaluate(async single => {
+    window.coverResult = {status:'updated', file:'new.jpg', source:{provider:'Test'},
+      tags: single ? {written:2, failed:1, first_error:'locked.mp3'} : {}};
+    await findCovers([focused()], single);
+    return window.coverRequest.writeMp3Covers;
+  }, single);
+  assert.equal(await run(false), false);
+  await page.locator('#menuBtn').click();
+  await page.locator('[data-action=settings]').click();
+  await page.locator('#writeMp3Covers').check();
+  await page.reload();
+  await page.locator('#crate .sleeve').first().waitFor();
+  assert.equal(await run(true), true);
+  assert.match(await page.locator('#coverProgress').textContent(), /2 MP3 tag\(s\) updated.*1 MP3 tag\(s\) failed.*locked.mp3/);
+  assert.equal(await run(false), true);
+});
+
+test('the bottom fan browses a crate across navigation, playback and refresh, then restores the library', async () => {
+  await page.evaluate(async () => {
+    fillCrate(3);
+    dateAlbum(2, Date.now()/1000);
+    dateAlbum(19, Date.now()/1000);
+    await loadAlbums();
+    await albumCrates.load();
+  });
+  await page.locator('#cratePeek').tap();
+  await page.getByRole('button', {name:'Records, 3 records'}).tap();
+  assert.equal(await page.locator('#libraryCrateName').textContent(), 'Records');
+  assert.equal(await page.locator('#counter').textContent(), '0001 / 0003');
+  await page.locator('#newAlbums').click();
+  assert.deepEqual(await page.evaluate(() => state.albums.map(a => a.title)), ['Record 2']);
+  await page.locator('#newAlbums').click();
+  await page.locator('#indexMode').click();
+  await page.keyboard.press('ArrowRight');
+  await settled();
+  await down(); await up();
+  await page.locator('#alTrack button').waitFor();
+  assert.equal(await page.locator('#alTitle').textContent(), 'Record 1');
+  await page.locator('#backBtn').click();
+  await page.evaluate(() => refreshLibrary());
+  assert.equal(await page.locator('#counter').textContent(), '0002 / 0003');
+  await page.locator('#closeLibraryCrate').click();
+  assert.equal(await page.evaluate(() => focused().title), 'Record 20');
+  assert.equal(await page.evaluate(() => state.albums.length), 80);
+});
+
+test('crate sleeves fly from the chosen stack to their slots and return to its bottom preview', async () => {
+  await page.evaluate(async () => { fillCrate(4); await albumCrates.load(); });
+  await page.locator('#cratePeek').tap();
+  const choice = page.locator('#browseCrates button').first();
+  const passage = await choice.evaluate(async b => {
+    await Promise.allSettled(b.parentNode.getAnimations({subtree:true}).map(a => a.finished));
+    const centre = el => {
+      const r = el.getBoundingClientRect();
+      return [r.left + r.width / 2, r.top + r.height / 2];
+    };
+    const source = centre(b.querySelector('.cc[data-album-id="000000"]'));
+    b.click();
+    const record = document.querySelector('#crate .sleeve[data-index="0"]');
+    const animation = record.getAnimations()[0];
+    animation.pause();
+    animation.currentTime = 0;
+    const start = centre(record);
+    animation.currentTime = 300;
+    const lifted = centre(record);
+    await Promise.all(crateMotion.flights.map(f => { f.finish(); return f.finished; }));
+    const slot = centre(record);
+    $('closeLibraryCrate').click();
+    const back = record.getAnimations()[0];
+    back.pause();
+    back.currentTime = 0;
+    const returning = centre(record);
+    back.currentTime = back.effect.getComputedTiming().endTime;
+    const landed = centre(record);
+    const preview = centre(document.querySelector('#cratePeek .cc[data-album-id="000000"]'));
+    for (const f of crateMotion.flights) f.finish();
+    return {source, start, lifted, slot, returning, landed, preview};
+  });
+  const near = (a,b) => Math.hypot(a[0]-b[0], a[1]-b[1]) < 2;
+  assert.ok(near(passage.start, passage.source));
+  assert.ok(passage.lifted[1] < passage.start[1] && passage.lifted[1] > passage.slot[1]);
+  assert.ok(near(passage.returning, passage.slot));
+  assert.ok(near(passage.landed, passage.preview));
+  await page.locator('.returning-sleeves').waitFor({state:'detached'});
+  assert.equal(await page.evaluate(() => focused().title), 'Record 20');
+});
+
+test('reduced motion opens and closes a filled crate immediately', async () => {
+  await page.emulateMedia({reducedMotion:'reduce'});
+  await page.evaluate(async () => { fillCrate(3); await albumCrates.load(); });
+  await page.locator('#cratePeek').tap();
+  await page.locator('#browseCrates button').first().tap();
+  assert.equal(await page.locator('#crate').evaluate(el => el.getAnimations({subtree:true}).length), 0);
+  await page.locator('#closeLibraryCrate').tap();
+  assert.equal(await page.locator('.returning-sleeves').count(), 0);
+  assert.equal(await page.evaluate(() => focused().title), 'Record 20');
+});
+
+test('empty crates survive a library refresh and can be closed with the keyboard', async () => {
+  await page.evaluate(async () => { fillCrate(0); await albumCrates.load(); });
+  await page.locator('#cratePeek').focus();
+  await page.keyboard.press('Enter');
+  await page.keyboard.press('Space');
+  await page.evaluate(() => refreshLibrary());
+  assert.equal(await page.locator('#capTitle').textContent(), 'This crate is empty');
+  assert.equal(await page.locator('#crate .sleeve').count(), 0);
+  assert.ok(await page.locator('#onboard').isHidden());
+  await page.keyboard.press('Enter');
+  assert.equal(await page.evaluate(() => focused().title), 'Record 20');
+});
+
 test('cover research and using its match each require confirmation in the player', async () => {
   await page.route('https://coverartarchive.org/**', route => route.request().url().endsWith('/front')
     ? route.fulfill({ contentType:'image/svg+xml', body:'<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="900"/>' })
@@ -515,6 +627,49 @@ test('the touch preference works immediately and survives a reload', async () =>
   await up(220);
   assert.equal(await settled(), 18);
 });
+
+for (const [id, title] of [['settings', 'Settings'], ['ai', 'AI Features']]) {
+  test(title + ' keeps its header visible and its controls usable with touch and keyboard', async () => {
+    await page.setViewportSize({width:820, height:560});
+    await page.locator('#menuBtn').tap();
+    await page.locator('[data-action=' + id + ']').tap();
+    const dialog = page.getByRole('dialog', {name:title, exact:true});
+    const close = dialog.getByRole('button', {name:'Close ' + title.toLowerCase()});
+    await close.waitFor();
+    assert.ok(await close.evaluate(el => el === document.activeElement));
+    const bounds = await close.boundingBox();
+    const sizes = await dialog.evaluate(el => [...el.querySelectorAll('button, input, select, summary')].map(control => {
+      const r = control.getBoundingClientRect();
+      return [control.id || control.textContent.trim(), r.width, r.height];
+    }));
+    for (const [name, width, height] of sizes) {
+      assert.ok(width >= 44 && height >= 44, name + ' has a touch target of ' + width + ' × ' + height);
+    }
+    assert.ok(await dialog.locator('.modal-scroll').evaluate(el => el.scrollWidth === el.clientWidth));
+    const switches = dialog.getByRole('switch');
+    assert.ok(await switches.count() >= 3);
+    for (const toggle of await switches.all()) {
+      assert.ok(await toggle.evaluate(el => Math.abs(el.getBoundingClientRect().right - el.labels[0].getBoundingClientRect().right) < 1));
+    }
+    const toggle = switches.first();
+    const before = await toggle.isChecked();
+    await toggle.locator('..').locator('span').tap();
+    assert.equal(await toggle.isChecked(), !before);
+    await toggle.focus();
+    await page.keyboard.press('Space');
+    assert.equal(await toggle.isChecked(), before);
+    await close.focus();
+    await page.keyboard.press('Shift+Tab');
+    assert.ok(await dialog.getByRole('button', {name:'Done'}).evaluate(el => el === document.activeElement));
+    assert.deepEqual(await close.boundingBox(), bounds);
+    await page.keyboard.press('Tab');
+    assert.ok(await close.evaluate(el => el === document.activeElement));
+    await dialog.locator('input[type=password]').focus();
+    await page.keyboard.press('Escape');
+    await dialog.waitFor({state:'hidden'});
+    assert.ok(await page.locator('#menuBtn').evaluate(el => el === document.activeElement));
+  });
+}
 
 test('the menu keeps its backdrop while Settings loads and the scrollbar clears both corners', async () => {
   await page.evaluate(() => { window.folderGate = new Promise(resolve => { window.readyFolders = resolve; }); });
@@ -1229,7 +1384,7 @@ test('atmosphere grain keeps its pixel size across display scales and window siz
     album.dataset.filter = 'film';
     album.classList.add('showing-atmos');
   });
-  assert.equal(await page.locator('#atmosGrain').evaluate(el => getComputedStyle(el).animationName), 'none');
+  assert.equal(await page.locator('#atmosGrain').evaluate(el => getComputedStyle(el).animationName), 'film-grain');
   for (const [width, height, density] of [[1200, 800, 1], [1280, 800, 2], [930, 620, 1.5]]) {
     await input.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: density, mobile: false });
     await page.waitForFunction(dpr => {
@@ -1238,6 +1393,46 @@ test('atmosphere grain keeps its pixel size across display scales and window siz
         canvas.width === Math.round(canvas.clientWidth * dpr) && canvas.height === Math.round(canvas.clientHeight * dpr);
     }, density);
   }
+});
+
+test('light, haze and grain move on visible atmospheres and respect reduced motion', async () => {
+  await page.addInitScript(() => Object.defineProperty(navigator, 'userAgent', { value: 'Windows' }));
+  await page.route('http://muso.localhost/atmos/filter.svg', route => route.fulfill({
+    contentType: 'image/svg+xml',
+    body: '<svg xmlns="http://www.w3.org/2000/svg" width="80" height="60"><rect width="80" height="60" fill="#888"/></svg>',
+  }));
+  await page.reload();
+  await page.locator('#crate .sleeve[data-index="20"]').waitFor();
+  await page.evaluate(() => { window.testPaintings = ['atmos/filter.svg']; });
+  await down(); await up();
+  await page.locator('#alTrack button').waitFor();
+  await page.evaluate(() => emitPlayback('cover-intro-ended', state.playing.playbackId));
+  await page.locator('#album.showing-atmos #atmosPictures img.on').waitFor();
+  await page.waitForFunction(() => getComputedStyle(document.querySelector('.atmos')).opacity === '1');
+  const region = {x: 212, y: 412, width: 96, height: 64};
+  for (const [filter, layer] of [['light','lightFilter'], ['haze','lightFilter'], ['film','atmosGrain']]) {
+    await page.evaluate(async ([filter, layer]) => {
+      filterSelect.value = filter;
+      filterSelect.dispatchEvent(new Event('change'));
+      const animation = $(layer).getAnimations()[0];
+      await animation.ready;
+      if (animation.playState !== 'running') throw Error('Filter is paused');
+      animation.pause();
+      animation.currentTime = 0;
+    }, [filter, layer]);
+    const first = await page.screenshot({clip:region});
+    await page.evaluate(([filter, layer]) => {
+      $(layer).getAnimations()[0].currentTime = filter === 'film' ? 270 : 12000;
+      $(layer).getAnimations()[0].play();
+    }, [filter, layer]);
+    assert.ok(!first.equals(await page.screenshot({clip:region})), filter + ' changes the rendered image');
+  }
+  await page.mouse.move(215, 415);
+  await page.waitForFunction(() => $('atmosPictures').classList.contains('refracting') && Number($('waveDepth').getAttribute('scale')) > 0);
+  await page.emulateMedia({reducedMotion:'reduce'});
+  assert.equal(await page.locator('#atmosGrain').evaluate(el => el.getAnimations().length), 0);
+  await page.evaluate(() => { filterSelect.value = 'light'; applyEffects(); });
+  assert.ok(await page.locator('#lightFilter').isHidden());
 });
 
 test('a queued record keeps the outgoing artwork until the incoming cover is ready', async () => {

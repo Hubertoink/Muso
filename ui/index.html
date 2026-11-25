@@ -20,7 +20,10 @@
 
   <!-- Library / crate -->
   <section id="library" class="screen hidden">
-    <div id="crate"></div>
+    <div id="crate" tabindex="-1"></div>
+    <div id="libraryCrateHeading" class="hidden"><span id="libraryCrateName"></span>
+      <button type="button" id="closeLibraryCrate" aria-label="Close crate and return to the library">×</button>
+    </div>
     <nav id="libraryIndex" aria-label="Browse the library by initial">
       <button id="indexMode" type="button"><span id="indexModeLabel">Artist</span><span aria-hidden="true">⇄</span></button>
       <button id="newAlbums" type="button" aria-pressed="false" aria-description="Albums added in the last 28 days" disabled>NEU</button>
@@ -44,6 +47,10 @@
     </button>
     <div id="libStatus" class="status"></div>
     <button id="genreHint" class="hidden" type="button"></button>
+    <div id="crateDock" class="hidden">
+      <button type="button" id="cratePeek" aria-label="Browse crates" aria-description="Browse crates" aria-controls="browseCrates" aria-expanded="false"></button>
+      <div id="browseCrates" role="group" aria-label="Browse crates" inert></div>
+    </div>
   </section>
 
   <!-- Crates page -->
@@ -253,23 +260,22 @@
   </div>
 
   <!-- Settings -->
-  <div id="settings" class="modal animated-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="settingsTitle" inert>
+  <div id="settings" class="modal preferences animated-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="settingsTitle" inert>
     <div class="modal-card">
       <header class="settings-header">
         <h2 id="settingsTitle">Settings</h2>
         <button class="close settings-dismiss" type="button" aria-label="Close settings">×</button>
       </header>
       <div class="modal-scroll">
-        <h3>Music folders</h3>
-        <ul id="folderList"></ul>
-        <button id="addFolderBtn" class="link">+ Add folder</button>
-        <h3>Vinyl playback</h3>
-        <div class="vinyl-settings">
-          <label class="vinyl-toggle">
-            <span>Needle and groove sounds</span>
-            <input type="checkbox" role="switch" id="vinylSounds" />
-          </label>
-          <div class="groove-duration">
+        <section>
+          <h3>Music folders</h3>
+          <ul id="folderList"></ul>
+          <div class="pref-actions"><button id="addFolderBtn">+ Add folder</button></div>
+        </section>
+        <section>
+          <h3>Vinyl playback</h3>
+          <label class="pref-row"><span>Needle and groove sounds</span><input type="checkbox" role="switch" id="vinylSounds" /></label>
+          <div class="pref-row">
             <label for="runoutMinutes">End groove duration</label>
             <div class="groove-stepper">
               <button id="runoutLess" type="button" aria-label="Decrease by half a minute" disabled>−</button>
@@ -280,38 +286,45 @@
               <button id="runoutMore" type="button" aria-label="Increase by half a minute" disabled>+</button>
             </div>
           </div>
-        </div>
-        <h3>Touch</h3>
-        <label class="style-field">Library swipe direction
-          <select id="librarySwipeDirection">
+        </section>
+        <section>
+          <h3>Touch</h3>
+          <label class="pref-row"><span>Library swipe direction</span><select id="librarySwipeDirection">
             <option value="opposite">Covers move opposite to finger</option>
             <option value="follow">Covers follow finger</option>
-          </select>
-        </label>
-        <h3>Album covers</h3>
-        <p class="muted">Find front covers in the Cover Art Archive and TheAudioDB. Missing covers and higher-resolution matches are saved in Muso.</p>
-        <button id="findCovers" class="link setting-action">Find better covers</button>
-        <p id="coverProgress" class="muted" role="status"></p>
-        <h3>Collection archive</h3>
-        <p class="muted">Transfer album articles, covers, atmosphere images and your genres. On the other computer, scan your music folders before importing.</p>
-        <button class="link setting-action" id="exportArchive">Export archive…</button>
-        <button class="link setting-action" id="importArchive">Import archive…</button>
-        <p id="archiveStatus" role="status" class="muted"></p>
-        <h3>Atmosphere effects</h3>
-        <label class="style-field">Animated filter
-          <select id="imageFilter">
+          </select></label>
+        </section>
+        <section>
+          <h3>Album covers</h3>
+          <p class="muted">Find front covers in the Cover Art Archive and TheAudioDB. Missing covers and higher-resolution matches are saved in Muso.</p>
+          <label class="pref-row"><span>Also write updated front covers to the album’s MP3 files</span><input type="checkbox" role="switch" id="writeMp3Covers" /></label>
+          <div class="pref-actions"><button id="findCovers">Find better covers</button></div>
+          <p id="coverProgress" class="muted" role="status"></p>
+        </section>
+        <section>
+          <h3>Collection archive</h3>
+          <p class="muted">Transfer album articles, covers, atmosphere images and your genres. On the other computer, scan your music folders before importing.</p>
+          <div class="pref-actions"><button id="exportArchive">Export archive…</button> <button id="importArchive">Import archive…</button></div>
+          <p id="archiveStatus" class="muted" role="status"></p>
+        </section>
+        <section>
+          <h3>Atmosphere effects</h3>
+          <p class="muted">Effects appear on atmosphere images during playback.</p>
+          <label class="pref-row"><span>Animated filter</span><select id="imageFilter">
             <option value="off">Off</option>
             <option value="light">Drifting light</option>
             <option value="film">Film grain</option>
             <option value="haze">Colour haze</option>
-          </select>
-        </label>
-        <label class="check"><input type="checkbox" id="pointerRipples" /> Ripples under the pointer or fingertip</label>
-        <label class="style-field effect-strength">Effect strength <input type="range" id="effectStrength" min="0" max="100" step="5" /></label>
-        <h3>OpenAI account <span class="muted">optional</span></h3>
-        <p class="muted">Album articles and Visual Atmospheres use your OpenAI API key. Generating new content uses API billing.</p>
-        <button class="link setting-action openai-keys">Open my OpenAI API keys ↗</button>
-        <input id="keyInput" type="password" aria-label="OpenAI API key" placeholder="Paste API key" spellcheck="false" autocomplete="off" />
+          </select></label>
+          <label class="pref-row"><span>Ripples under the pointer or fingertip</span><input type="checkbox" role="switch" id="pointerRipples" /></label>
+          <label class="pref-row"><span>Effect strength</span><input type="range" id="effectStrength" min="0" max="100" step="5" /></label>
+        </section>
+        <section>
+          <h3>OpenAI account <span class="muted">optional</span></h3>
+          <p class="muted">Album articles and Visual Atmospheres use your OpenAI API key. Generating new content uses API billing.</p>
+          <label class="pref-key"><span>API key</span><input id="keyInput" type="password" aria-label="OpenAI API key" placeholder="Paste API key" spellcheck="false" autocomplete="off" /></label>
+          <div class="pref-actions"><button class="openai-keys">Open my OpenAI API keys ↗</button></div>
+        </section>
         <div class="modal-actions"><button class="pill close">Done</button></div>
       </div>
     </div>
@@ -383,32 +396,48 @@
     </div>
   </dialog>
 
-  <div id="ai" class="modal animated-overlay hidden" inert>
+  <div id="ai" class="modal preferences animated-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="aiTitle" inert>
     <div class="modal-card">
+      <header class="settings-header">
+        <h2 id="aiTitle">AI Features</h2>
+        <button class="close settings-dismiss" type="button" aria-label="Close ai features">×</button>
+      </header>
       <div class="modal-scroll">
-        <h2>Visual Atmospheres</h2>
-        <p class="muted">Muso sends album notes, genre and track details to OpenAI. AI choice can use the cover to choose a visual style for the series. Scene review compares the plan with the cover and up to six earlier paintings. Each image is generated with the full series plan and checked against the cover and its musical cue. Images are saved locally at 1920 × 1080.</p>
-        <h3>OpenAI API key</h3>
-        <button class="link setting-action openai-keys">Open my OpenAI API keys ↗</button>
-        <input id="keyInput2" type="password" aria-label="OpenAI API key" placeholder="Paste API key" spellcheck="false" autocomplete="off" />
-        <label class="check"><input id="atmosToggle" type="checkbox" /> Show atmospheres during playback</label>
-        <label class="check"><input id="generateOnPlay" type="checkbox" /> Generate on playback for albums without atmospheres</label>
-        <label class="style-field">Images per album <select id="playImageCount" disabled><option>3</option><option>4</option><option>5</option></select></label>
-        <label class="check"><input id="repaintToggle" type="checkbox" /> Allow one automatic repaint per scene</label>
-        <p class="muted">Every image is reviewed. A repaint adds one paid high-quality generation and another review. Scenes that fail the publication criteria are skipped.</p>
-        <label class="check"><input id="autoStyle" type="checkbox" /> Use AI choice as the default atmosphere style</label>
-        <label class="check"><input id="artistPersonas" type="checkbox" aria-describedby="artistPersonasHelp" /> Commission a random artist persona for each series</label>
-        <p class="muted" id="artistPersonasHelp">A documentary photographer, experimental material artist, editorial illustrator, scenographer, observational painter or graphic designer takes on the whole series. With AI choice they help choose the medium. With your own style they work within it.</p>
-        <div class="style-field"><span id="aiStyleLabel">Style for this album</span><button type="button" id="aiStyle" class="style-trigger" aria-haspopup="dialog" aria-controls="stylePicker" aria-labelledby="aiStyleLabel aiStyle"></button></div>
-        <label class="check"><input id="researchToggle" type="checkbox" /> Research the artist and album before generating</label>
-        <p class="muted">New research can use up to five web searches. Muso saves the findings and writes a missing article when generating images with research on. Saved research and articles also guide images when web research is off.</p>
-        <h3>Genres</h3>
-        <p class="muted">Tidy up your genre tags, merge near-duplicates and let the AI sort albums from broad categories into finer genres. Muso stores the result itself and leaves your files untouched.</p>
-        <button id="openGenres" class="link setting-action" type="button">Organise genres…</button>
-        <div class="modal-actions">
-          <button id="aiGenerateBtn" class="link">Generate for the focused album</button>
-          <button class="pill close">Done</button>
-        </div>
+        <section>
+          <h3>Visual Atmospheres</h3>
+          <p class="muted">Generating images sends album notes, genre and track details to OpenAI and uses API billing.</p>
+          <label class="pref-row"><span>Show atmospheres during playback</span><input id="atmosToggle" type="checkbox" role="switch" /></label>
+          <label class="pref-row"><span>Generate on playback for albums without atmospheres</span><input id="generateOnPlay" type="checkbox" role="switch" /></label>
+          <label class="pref-row"><span>Images per album</span><select id="playImageCount" disabled><option>3</option><option>4</option><option>5</option></select></label>
+        </section>
+        <section>
+          <h3>Atmosphere style</h3>
+          <label class="pref-row"><span>Use AI choice as the default atmosphere style</span><input id="autoStyle" type="checkbox" role="switch" /></label>
+          <label class="pref-row"><span>Commission a random artist persona for each series</span><input id="artistPersonas" type="checkbox" role="switch" aria-describedby="artistPersonasHelp" /></label>
+          <p class="muted" id="artistPersonasHelp">A documentary photographer, experimental material artist, editorial illustrator, scenographer, observational painter or graphic designer takes on the whole series. With AI choice they help choose the medium. With your own style they work within it.</p>
+          <div class="pref-row"><span id="aiStyleLabel">Style for this album</span><button type="button" id="aiStyle" class="style-trigger" aria-haspopup="dialog" aria-controls="stylePicker" aria-labelledby="aiStyleLabel aiStyle"></button></div>
+        </section>
+        <section>
+          <h3>Image generation</h3>
+          <label class="pref-row"><span>Research the artist and album before generating</span><input id="researchToggle" type="checkbox" role="switch" aria-describedby="researchHelp" /></label>
+          <p class="muted" id="researchHelp">New research can use up to five web searches. Muso saves the findings and writes a missing article when generating images with research on. Saved research and articles also guide images when web research is off.</p>
+          <label class="pref-row"><span>Allow one automatic repaint per scene</span><input id="repaintToggle" type="checkbox" role="switch" aria-describedby="repaintHelp" /></label>
+          <p class="muted" id="repaintHelp">Every image is reviewed. A repaint adds one paid high-quality generation and another review. Scenes that fail the publication criteria are skipped.</p>
+          <details class="pref-details"><summary>How images are generated</summary><p class="muted">AI choice can use the cover to choose a visual style for the series. Scene review compares the plan with the cover and up to six earlier paintings. Each image is generated with the full series plan and checked against the cover and its musical cue. Images are saved locally at 1920 × 1080.</p></details>
+          <div class="pref-actions"><button id="aiGenerateBtn">Generate for the focused album</button></div>
+        </section>
+        <section>
+          <h3>Genres</h3>
+          <p class="muted">Tidy up your genre tags, merge near-duplicates and let the AI sort albums from broad categories into finer genres. Muso stores the result itself and leaves your files untouched.</p>
+          <div class="pref-actions"><button id="openGenres" type="button">Organise genres…</button></div>
+        </section>
+        <section>
+          <h3>OpenAI account <span class="muted">optional</span></h3>
+          <p class="muted">Album articles and Visual Atmospheres use your OpenAI API key. Generating new content uses API billing.</p>
+          <label class="pref-key"><span>API key</span><input id="keyInput2" type="password" aria-label="OpenAI API key" placeholder="Paste API key" spellcheck="false" autocomplete="off" /></label>
+          <div class="pref-actions"><button class="openai-keys">Open my OpenAI API keys ↗</button></div>
+        </section>
+        <div class="modal-actions"><button class="pill close">Done</button></div>
       </div>
     </div>
   </div>

@@ -2063,6 +2063,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "id3"
+version = "1.17.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "978b6fd2b9abc73c8b8db74f2d011dfa04f0f3497b2f7789852dbae51fe5f9ae"
+dependencies = [
+ "bitflags 2.13.2",
+ "byteorder",
+ "flate2",
+]
+
+[[package]]
 name = "ident_case"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2741,7 +2752,7 @@ checksum = "743fb55ba31b18fb1ecef6bdc9aa2743314978ac084044301a7eee33fb99a20d"
 
 [[package]]
 name = "muso"
-version = "0.1.37"
+version = "0.1.38"
 dependencies = [
  "audio2mp3-core",
  "axum",
@@ -2749,6 +2760,7 @@ dependencies = [
  "fastrand",
  "gtk",
  "httpdate",
+ "id3",
  "if-addrs",
  "image",
  "lofty",

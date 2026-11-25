@@ -83,6 +83,7 @@ window.addEventListener('blur', () => setTooltipTarget(null));
 
 const crate = $('crate');
 const pool = new Map();
+let crateMotion = null;
 const libraryIndex = $('libraryIndex');
 const indexLetters = $('indexLetters');
 const letters = '#ABCDEFGHIJKLMNOPQRSTUVWXYZ';
@@ -100,6 +101,13 @@ let currentLetter;
 const newButton = $('newAlbums');
 const recentWindow = 28 * 24 * 60 * 60 * 1000;
 let browsingNew = false, recentAlbums = [], expiryTimer;
+let activeCrate = null, cratePosition = null, libraryReturn = null;
+const crateKey = 'muso.browsedCrate';
+function scopedAlbums(normal) {
+  if (!activeCrate) return normal;
+  const ids = new Set(activeCrate.albums.map(a => a.id));
+  return [...albumsById.values()].filter(a => ids.has(a.id));
+}
 
 function albumInitial(album) {
   const name = indexMode === 'album' ? album.title.trim() : album.artist.trim().replace(/^the /i, '').trimStart();
@@ -337,6 +345,10 @@ function rememberPosition() {
   if (browsingNew) return;
   const index = Math.round(state.target);
   const id = state.albums[index]?.id;
+  if (activeCrate) {
+    if (id) cratePosition = { id, index };
+    return;
+  }
   if (!id || (savedPosition?.id === id && savedPosition.index === index)) return;
   savedPosition = { id, index };
   localStorage.setItem(positionKey, JSON.stringify(savedPosition));
@@ -345,6 +357,7 @@ window.addEventListener('pagehide', rememberPosition);
 document.addEventListener('visibilitychange', () => { if (document.hidden) rememberPosition(); });
 
 function layout() {
+  finishCrateMotion();
   state.size = Math.round(clamp(Math.min(window.innerHeight * 0.52, window.innerWidth * 0.36), 220, 640));
   document.documentElement.style.setProperty('--size', state.size + 'px');
   render();
@@ -382,6 +395,7 @@ function fillBlank(el, a) {
 }
 
 function clearCrate() {
+  finishCrateMotion();
   for (const el of pool.values()) el.remove();
   pool.clear();
 }
@@ -550,7 +564,18 @@ for (const [button, importing] of [['exportArchive',false],['importArchive',true
 }
 function updateCaption(force) {
   const n = state.albums.length;
-  if (!n) return;
+  if (!n) {
+    clearTimeout(noteTimer);
+    ++noteRequest;
+    visibleNote = null;
+    show($('notePreview'), false);
+    $('capArtist').textContent = '';
+    $('capTitle').textContent = activeCrate ? (activeCrate.albums.length ? 'No available records in this crate' : 'This crate is empty') : '';
+    $('counter').textContent = '0000 / 0000';
+    letterButtons.get(currentLetter)?.removeAttribute('aria-current');
+    currentLetter = undefined;
+    return;
+  }
   const i = clamp(Math.round(state.pos), 0, n - 1);
   if (i === lastCaption && !force) return;
   lastCaption = i;
@@ -609,6 +634,7 @@ function kick() {
   frame = requestAnimationFrame(tick);
 }
 function go(index, time = defaultSettleTime) {
+  finishCrateMotion();
   const n = state.albums.length;
   if (!n) return;
   const t = clamp(Math.round(index), 0, n - 1);
@@ -626,6 +652,7 @@ let wheelAcc = 0;
 crate.addEventListener('wheel', (e) => {
   e.preventDefault();
   if (state.view !== 'library' || libraryGestures.active || !state.albums.length) return;
+  finishCrateMotion();
   const raw = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
   const d = e.deltaMode === 1 ? raw * 40 : raw;
   wheelAcc += d;
@@ -642,8 +669,112 @@ crate.addEventListener('wheel', (e) => {
 
 // drag / swipe
 let albumsById = new Map();
+function finishCrateMotion() {
+  if (!crateMotion) return;
+  for (const flight of crateMotion.flights) flight.cancel();
+  crateMotion.layer?.remove();
+  crateMotion = null;
+}
+
+function flyCrateSleeves(records, origin, layer = null) {
+  const closing = !!layer;
+  const first = records[0].sleeve;
+  const stage = first.parentElement.getBoundingClientRect();
+  const size = first.offsetWidth;
+  const anchorX = stage.left + first.offsetLeft + size / 2;
+  const anchorY = stage.top + first.offsetTop + size / 2;
+  const flights = [];
+  const duration = closing ? 500 : 620;
+  records.forEach(({ sleeve, id, from }, i) => {
+    const card = origin.cards.get(id);
+    const rect = card?.rect ?? origin.rect;
+    const x = rect.left + rect.width / 2 - anchorX;
+    const y = rect.top + rect.height / 2 - anchorY;
+    const scale = rect.width / size;
+    const tilt = card?.tilt ?? 0;
+    const slot = new DOMMatrixReadOnly(sleeve.style.transform);
+    const packed = `translate3d(${x}px,${y}px,0) rotateY(0deg) rotateZ(${tilt}deg) scale(${scale})`;
+    const lifted = `translate3d(${x + (slot.m41 - x) * .22}px,${y * .55}px,0) rotateY(0deg) rotateZ(${tilt + Math.sign(slot.m41 - x) * 5}deg) scale(${scale + (1 - scale) * .24})`;
+    const ends = closing ? [from, packed] : [packed, sleeve.style.transform];
+    const delay = Math.min(closing ? records.length - 1 - i : i, 8) * 30;
+    flights.push(sleeve.animate([
+      { transform: ends[0] }, { transform: lifted, offset: closing ? .68 : .32 }, { transform: ends[1] },
+    ], {
+      duration, delay,
+      easing: closing ? 'cubic-bezier(.36,.04,.28,1)' : 'cubic-bezier(.2,.64,.24,1)', fill: 'both',
+    }));
+    if (card) {
+      const handoff = closing ? [{ opacity: 0 }, { opacity: 1 }] : [{ opacity: 1 }, { opacity: 0 }];
+      flights.push(card.node.animate(handoff, { duration: 75, delay: closing ? delay + duration - 75 : delay, fill: 'both' }));
+    }
+  });
+  if (closing) {
+    flights.push(crate.animate([{ opacity: 0 }, { opacity: 0, offset: .55 }, { opacity: 1 }],
+      { duration: 500 + Math.min(records.length - 1, 8) * 30, fill: 'both' }));
+  }
+  const motion = crateMotion = { layer, flights };
+  Promise.allSettled(flights.map(f => f.finished)).then(() => {
+    if (crateMotion === motion) finishCrateMotion();
+  });
+}
+
+function crateFlightRecords() {
+  if (reducedMotion.matches || document.hidden) return [];
+  return [...pool].filter(([, sleeve]) => {
+    const r = sleeve.getBoundingClientRect();
+    return r.right > 0 && r.left < innerWidth && Number(sleeve.style.opacity) > 0;
+  }).map(([i, sleeve]) => ({ sleeve, id: state.albums[i].id, from: getComputedStyle(sleeve).transform }));
+}
+
+function browseCrate(list) {
+  if (!activeCrate && list) libraryReturn = { album: focused(), index: state.target, recent: browsingNew };
+  activeCrate = list;
+  cratePosition = null;
+  if (list) localStorage.setItem(crateKey, list.id);
+  else localStorage.removeItem(crateKey);
+  closeSearch();
+  browsingNew = !list && !!libraryReturn?.recent;
+  refreshRecent();
+  if (!recentAlbums.length) browsingNew = false;
+  const previous = list ? null : libraryReturn?.album ?? albumsById.get(savedPosition?.id);
+  applyLibraryOrder(previous, list ? 0 : libraryReturn?.index ?? savedPosition?.index);
+  if (!list) libraryReturn = null;
+}
+$('closeLibraryCrate').addEventListener('click', () => {
+  if (!activeCrate) return;
+  const records = crateFlightRecords();
+  let layer, origin;
+  if (records.length) {
+    origin = albumCrates.returnOrigin(activeCrate);
+    layer = document.createElement('div');
+    layer.className = 'returning-sleeves';
+    layer.setAttribute('aria-hidden', 'true');
+    crate.after(layer);
+    for (const { sleeve } of records) {
+      pool.delete(Number(sleeve.dataset.index));
+      layer.append(sleeve);
+    }
+  }
+  browseCrate(null);
+  if (layer) flyCrateSleeves(records, origin, layer);
+  crate.focus({ preventScroll: true });
+});
 const albumCrates = createAlbumCrates({
   invoke, lookup: id => albumsById.get(id), toast, coverUrl, blankColor,
+  browse: (list, origin) => {
+    browseCrate(list);
+    const records = crateFlightRecords();
+    if (records.length) flyCrateSleeves(records, origin);
+    (state.albums.length ? crate : $('closeLibraryCrate')).focus({ preventScroll: true });
+  },
+  changed: lists => {
+    const list = lists.find(c => String(c.id) === localStorage.getItem(crateKey));
+    if (activeCrate && !list) browseCrate(null);
+    else if (list && JSON.stringify(list) !== JSON.stringify(activeCrate)) {
+      activeCrate = list;
+      if (albumsById.size) { refreshRecent(); applyLibraryOrder(); }
+    }
+  },
   play: albums => {
     leaveCrates();
     const [album, ...remaining] = albums;
@@ -672,7 +803,7 @@ swipeDirection.addEventListener('change', () => localStorage.setItem('muso.libra
 const libraryGestures = bindSleeveGestures(crate, state, {
   spacing: sleeveSpacing,
   lastIndex: () => state.albums.length - 1,
-  hold: () => { wheelAcc = 0; },
+  hold: () => { finishCrateMotion(); wheelAcc = 0; },
   render: kick,
   navigate: go,
   activate: sleeve => openAlbum(state.albums[Number(sleeve.dataset.index)]),
@@ -721,13 +852,14 @@ async function loadAlbums() {
     return !groupedMembers.has(a.id) || compilationMembers.has(a.id);
   });
   titleAlbums = albums.filter(a => !represented.has(a.id));
+  albumCrates.renderDock();
   refreshRecent();
   applyLibraryOrder();
 }
 function refreshRecent() {
   clearTimeout(expiryTimer);
   const now = Date.now();
-  recentAlbums = titleAlbums.filter(a => a.first_seen * 1000 + recentWindow > now)
+  recentAlbums = scopedAlbums(titleAlbums).filter(a => a.first_seen * 1000 + recentWindow > now)
     .sort((a, b) => b.first_seen - a.first_seen || titleOrder.compare(a.title, b.title));
   newButton.disabled = !recentAlbums.length;
   if (recentAlbums.length) {
@@ -742,7 +874,8 @@ function expireRecent() {
 }
 function leaveNew() {
   browsingNew = false;
-  applyLibraryOrder(albumsById.get(savedPosition?.id) ?? null, savedPosition?.index);
+  const position = activeCrate ? cratePosition : savedPosition;
+  applyLibraryOrder(albumsById.get(position?.id) ?? null, position?.index);
 }
 newButton.addEventListener('click', () => {
   if (libraryGestures.active) return;
@@ -754,10 +887,12 @@ newButton.addEventListener('click', () => {
   browsingNew = true;
   applyLibraryOrder(recentAlbums[0]);
 });
-function applyLibraryOrder(previous = focused(), fallback = state.albums.length ? Math.round(state.target) : savedPosition?.index) {
+function applyLibraryOrder(previous = focused(), fallback = state.albums.length ? Math.round(state.target) : (activeCrate ? 0 : savedPosition?.index)) {
   if (browsingNew && !recentAlbums.length) return leaveNew();
-  const keepId = previous?.id ?? savedPosition?.id;
-  const ordered = indexAlbums(modeAlbums());
+  const keepId = previous?.id ?? (activeCrate ? cratePosition?.id : savedPosition?.id);
+  const ordered = indexAlbums(scopedAlbums(modeAlbums()));
+  $('libraryCrateName').textContent = activeCrate?.name ?? '';
+  show($('libraryCrateHeading'), !!activeCrate);
   state.albums = browsingNew ? recentAlbums : ordered;
   newButton.setAttribute('aria-pressed', String(browsingNew));
   clearCrate();
@@ -871,7 +1006,7 @@ async function boot() {
     return;
   }
   await loadAlbums();
-  if (state.albums.length) showLibrary();
+  if (albumsById.size) showLibrary();
   else { showOnboard('Looking for music…'); }
   invoke('scan_library'); // quiet incremental refresh
 }
@@ -912,7 +1047,7 @@ listen('scan-done', async ({ payload }) => {
   const unsortedBefore = unsortedIds();
   await loadAlbums();
   announceUnsorted(unsortedBefore);
-  if (state.albums.length) {
+  if (albumsById.size) {
     if (state.view === 'onboard') showLibrary();
   } else if (state.view !== 'album') {
     showOnboard();
@@ -986,6 +1121,8 @@ $('menu').querySelectorAll('[data-action]').forEach((b) =>
         if (act === 'settings') renderFolders(folders);
         else prepareAi();
         show($(act));
+        $(act).querySelector('.modal-scroll').scrollTop = 0;
+        $(act).querySelector('.settings-dismiss').focus({ preventScroll: true });
       } catch (error) {
         if (selection === menuSelection) toast(String(error));
         return;
@@ -1117,6 +1254,7 @@ const strengthInput = $('effectStrength');
 const localRefraction = createLinuxRefraction($('atmosPictures'));
 const spectrum = createSpectrumView(invoke, listen, localRefraction, () => syncTv());
 const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
+reducedMotion.addEventListener('change', e => { if (e.matches) finishCrateMotion(); });
 let waveFrame = 0;
 let wave;
 filterSelect.value = localStorage.getItem('muso.imageFilter') || 'light';
@@ -1125,6 +1263,7 @@ rippleToggle.checked = localStorage.getItem('muso.pointerRipples') !== 'off';
 strengthInput.value = localStorage.getItem('muso.effectStrength') ?? '40';
 function applyEffects() {
   $('album').dataset.filter = filterSelect.value;
+  $('album').classList.toggle('zero-effect', Number(strengthInput.value) === 0);
   $('album').style.setProperty('--effect-strength', Number(strengthInput.value) / 100);
   if (!rippleToggle.checked || Number(strengthInput.value) === 0) stopWave();
 }
@@ -1229,7 +1368,7 @@ listen('cover-search-progress', ({ payload }) => {
 
 function applyCover(id, file) {
   const updated = new Set();
-  for (const a of [...artistAlbums, ...titleAlbums, state.viewAlbum, state.playing?.album]) {
+  for (const a of [...albumsById.values(), state.viewAlbum, state.playing?.album]) {
     const inherited = a?.members?.includes(id) && (a.cover_file === id + '.jpg' || a.cover_file?.startsWith(id + '_'));
     if (a && (a.id === id || inherited)) {
       Object.assign(a, { art: true, cover_file: file });
@@ -1240,6 +1379,7 @@ function applyCover(id, file) {
     if (updated.has(state.albums[i]?.id)) { sleeve.remove(); pool.delete(i); }
   }
   render();
+  albumCrates.renderDock();
   if (updated.has(state.viewAlbum?.id)) {
     for (const el of [$('coverImg'), $('bgArt')]) {
       el.src = coverUrl(state.viewAlbum, 'art');
@@ -1326,8 +1466,11 @@ function confirmCover(album, title, text, action, choices = []) {
   });
 }
 
+const writeMp3Covers = $('writeMp3Covers');
+writeMp3Covers.checked = localStorage.getItem('muso.writeMp3Covers') === 'on';
+writeMp3Covers.addEventListener('change', () => localStorage.setItem('muso.writeMp3Covers', writeMp3Covers.checked ? 'on' : 'off'));
 async function findAlbumCover(album, single) {
-  const run = step => invoke('upgrade_cover', { albumId: album.id, step });
+  const run = step => invoke('upgrade_cover', { albumId: album.id, step, writeMp3Covers: writeMp3Covers.checked });
   let result = await run({ type: 'lookup', offer_ai: single });
   if (!single) return result;
   if (result.status === 'offer_research') {
@@ -1356,6 +1499,7 @@ async function findCovers(albums, single = false) {
   $('findAlbumCover').disabled = true;
   let checked = 0, updated = 0, ambiguous = 0, failed = 0, consecutiveErrors = 0;
   let lastError = '';
+  let tagsWritten = 0, tagsFailed = 0, firstTagError = '';
   const messages = {
     updated: 'Cover updated',
     already_large_enough: 'Front cover found. Keeping your current resolution.',
@@ -1380,6 +1524,9 @@ async function findCovers(albums, single = false) {
           applyCover(album.id, result.file);
           updated++;
           resultMessage += ' · ' + result.source.provider;
+          tagsWritten += result.tags?.written || 0;
+          tagsFailed += result.tags?.failed || 0;
+          firstTagError ||= result.tags?.first_error || '';
         }
         if (result.status === 'ambiguous') ambiguous++;
         consecutiveErrors = 0;
@@ -1393,14 +1540,16 @@ async function findCovers(albums, single = false) {
     }
     let summary = `${checked} of ${albums.length} checked · ${updated} updated`;
     if (ambiguous) summary += ` · ${ambiguous} with multiple editions`;
+    const tagSummary = (tagsWritten ? ` · ${tagsWritten} MP3 tag(s) updated` : '') +
+      (tagsFailed ? ` · ${tagsFailed} MP3 tag(s) failed. ${firstTagError}` : '');
     if (single && currentCoverSearch) {
-      summary = failed ? lastError : resultMessage;
+      summary = (failed ? lastError : resultMessage) + tagSummary;
       const sources = [...currentCoverSearch.sources];
       const detail = sources.length ? summary + ' · Checked: ' + sources.join(', ') : summary;
       coverSearchResults.set(currentCoverSearch.id, detail);
       summary = detail;
     }
-    else if (failed) summary += ` · ${failed} failed. ${lastError}`;
+    else summary += (failed ? ` · ${failed} failed. ${lastError}` : '') + tagSummary;
     $('coverProgress').textContent = summary;
     if (single || $('settings').classList.contains('hidden')) toast(summary, 4500);
   } finally {
@@ -1557,8 +1706,25 @@ $('aiGenerateBtn').addEventListener('click', () => {
 });
 
 document.querySelectorAll('.modal').forEach((m) => {
-  m.addEventListener('click', (e) => { if (e.target === m) show(m, false); });
-  m.querySelectorAll('.close').forEach(button => button.addEventListener('click', () => show(m, false)));
+  function dismiss() {
+    show(m, false);
+    if (m.classList.contains('preferences')) $('menuBtn').focus({ preventScroll: true });
+  }
+  m.addEventListener('click', (e) => { if (e.target === m) dismiss(); });
+  m.querySelectorAll('.close').forEach(button => button.addEventListener('click', dismiss));
+  if (m.classList.contains('preferences')) {
+    const first = m.querySelector('.settings-dismiss'), last = m.querySelector('.modal-actions .close');
+    m.addEventListener('keydown', e => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        dismiss();
+      } else if (e.key === 'Tab' && (e.shiftKey ? e.target === first : e.target === last)) {
+        e.preventDefault();
+        (e.shiftKey ? last : first).focus();
+      }
+    });
+  }
 });
 
 /* ---------------- personal image folders ---------------- */
@@ -2636,12 +2802,14 @@ window.addEventListener('keydown', (e) => {
     if (modalOpen) document.querySelectorAll('.modal').forEach((m) => show(m, false));
     else if (!$('menu').classList.contains('hidden')) closeMenu();
     else if (!$('search').classList.contains('hidden')) closeSearch();
+    else if (state.view === 'library' && albumCrates.dismissDock()) return;
     else if (state.view === 'crates') albumCrates.escape();
     else if (state.view === 'genres') genresView.escape();
     else if (state.view === 'album') closeAlbum();
     return;
   }
   if (modalOpen || !$('menu').classList.contains('hidden')) return;
+  if (e.target.closest('#crateDock, #libraryCrateHeading') && [' ', 'Enter'].includes(e.key)) return;
   if (e.target === $('noteAction') && (e.key === ' ' || e.key === 'Enter')) return;
   if (libraryIndex.contains(e.target) && (e.key === 'Enter' || e.key === ' ')) return;
   if (e.key === 'f' && state.view === 'album') {

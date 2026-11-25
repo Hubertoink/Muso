@@ -82,6 +82,29 @@ impl Collection {
     }
 }
 
+pub(super) fn relink_album(db: &Connection, old: &str, new: &str) -> rusqlite::Result<()> {
+    let Some(json) = db::get_setting(db, "library.crates")? else { return Ok(()) };
+    if !json.contains(old) { return Ok(()) }
+    let mut crates: Collection = serde_json::from_str(&json).map_err(|e|
+        rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e)))?;
+    let (artist, title): (String, String) = db.query_row(
+        "SELECT artist,title FROM albums WHERE id=?1", [new], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    for list in &mut crates.lists {
+        let mut seen = false;
+        list.albums.retain_mut(|entry| {
+            if entry.id != old && entry.id != new { return true }
+            if seen { return false }
+            seen = true;
+            entry.id = new.into();
+            entry.artist.clone_from(&artist);
+            entry.title.clone_from(&title);
+            true
+        });
+    }
+    let json = serde_json::to_string(&crates).map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+    db::set_setting(db, "library.crates", &json)
+}
+
 #[tauri::command]
 pub fn library_crates(state: State<'_, AppState>, change: Option<Edit>) -> R<Collection> {
     let mut conn = state.db.lock().map_err(crate::err)?;

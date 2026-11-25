@@ -1,4 +1,4 @@
-function createAlbumCrates({ invoke, lookup, play, back, toast, coverUrl, blankColor }) {
+function createAlbumCrates({ invoke, lookup, play, browse, changed, back, toast, coverUrl, blankColor }) {
   const el = id => document.getElementById(id);
   const page = el('cratesPage'), shelf = el('crateShelf'), tray = el('crateTray');
   const fan = el('crateFan'), fanCovers = el('fanCovers');
@@ -10,7 +10,12 @@ function createAlbumCrates({ invoke, lookup, play, back, toast, coverUrl, blankC
   const listById = id => data.lists.find(c => c.id === id);
 
   function update(change) {
-    const run = pending.then(async () => { data = await invoke('library_crates', { change }); return data; });
+    const run = pending.then(async () => {
+      data = await invoke('library_crates', { change });
+      renderDock();
+      changed(data.lists);
+      return data;
+    });
     pending = run.catch(e => { toast(String(e), 4500); });
     return run;
   }
@@ -50,6 +55,7 @@ function createAlbumCrates({ invoke, lookup, play, back, toast, coverUrl, blankC
     if (!top.length) s.classList.add('empty');
     top.forEach((entry, i) => {
       const c = cover(entry);
+      c.dataset.albumId = entry.id;
       c.style.setProperty('--i', i);
       c.style.setProperty('--r', (i ? tilt(entry.id) * 0.9 : tilt(entry.id) * 0.3) + 'deg');
       s.prepend(c);
@@ -59,6 +65,67 @@ function createAlbumCrates({ invoke, lookup, play, back, toast, coverUrl, blankC
   function label(list) {
     const n = list.albums.length;
     return n === 1 ? '1 record' : n + ' records';
+  }
+
+  const dock = el('crateDock'), peek = el('cratePeek'), choices = el('browseCrates');
+  function stackOriginForLibrary(s) {
+    const cards = new Map([...s.children].map(c => [c.dataset.albumId, {
+      node: c, rect: c.getBoundingClientRect(), tilt: parseFloat(c.style.getPropertyValue('--r')),
+    }]));
+    return { rect: s.getBoundingClientRect(), cards };
+  }
+  function peekStack(list) {
+    const s = stack(list, 65);
+    s.dataset.id = list.id;
+    s.setAttribute('aria-hidden', 'true');
+    return s;
+  }
+  function returnOrigin(list) {
+    expandDock(false);
+    let s = [...peek.children].find(node => node.dataset.id === String(list.id));
+    if (!s) {
+      s = peekStack(list);
+      // Keep the actual destination visible even for a crate beyond the five previews.
+      if (peek.lastElementChild) peek.lastElementChild.replaceWith(s);
+      else peek.append(s);
+    }
+    return stackOriginForLibrary(s);
+  }
+  function expandDock(open) {
+    dock.classList.toggle('expanded', open);
+    peek.setAttribute('aria-expanded', String(open));
+    choices.inert = !open;
+    if (open) choices.querySelector('button')?.focus({ preventScroll: true });
+  }
+  function renderDock() {
+    dock.classList.toggle('hidden', !data.lists.length);
+    if (!data.lists.length) expandDock(false);
+    peek.replaceChildren(...data.lists.slice(0, 5).map(peekStack));
+    choices.replaceChildren(...data.lists.map((list, i) => {
+      const b = trayItem(list, list.name, 86, 'button');
+      b.style.setProperty('--fold-offset', clamp((data.lists.length - 1) / 2 - i, -4, 4) * 42 + 'px');
+      b.type = 'button';
+      b.setAttribute('aria-label', list.name + ', ' + label(list));
+      b.addEventListener('click', () => {
+        const origin = stackOriginForLibrary(b.querySelector('.stack'));
+        expandDock(false);
+        browse(list, origin);
+      });
+      return b;
+    }));
+  }
+  peek.addEventListener('click', () => expandDock(!dock.classList.contains('expanded')));
+  dock.addEventListener('focusout', e => {
+    if (e.relatedTarget && !dock.contains(e.relatedTarget)) expandDock(false);
+  });
+  document.addEventListener('pointerdown', e => {
+    if (dock.classList.contains('expanded') && !dock.contains(e.target)) expandDock(false);
+  }, true);
+  function dismissDock() {
+    if (!dock.classList.contains('expanded')) return false;
+    expandDock(false);
+    peek.focus({ preventScroll: true });
+    return true;
   }
 
   /* ---------------- filing tray ---------------- */
@@ -77,8 +144,8 @@ function createAlbumCrates({ invoke, lookup, play, back, toast, coverUrl, blankC
     items.push(trayItem(null, 'New crate', size));
     box.replaceChildren(...items);
   }
-  function trayItem(list, name, size) {
-    const item = document.createElement('div');
+  function trayItem(list, name, size, tag = 'div') {
+    const item = document.createElement(tag);
     item.className = 'tray-crate' + (list ? '' : ' new');
     item.dataset.id = list ? list.id : '';
     const n = document.createElement('div');
@@ -641,6 +708,6 @@ function createAlbumCrates({ invoke, lookup, play, back, toast, coverUrl, blankC
 
   return {
     load: () => update(null).catch(() => {}),
-    begin, drag, end, dismissPlayerTray, bindFilingSleeve, open, close, isOpen, escape,
+    begin, drag, end, dismissPlayerTray, bindFilingSleeve, open, close, isOpen, escape, renderDock, dismissDock, returnOrigin,
   };
 }
