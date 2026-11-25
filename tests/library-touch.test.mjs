@@ -1574,6 +1574,34 @@ test('personal images are shared by both views and generated album sets take pri
   assert.equal(result.requests[0].matching,false);
 });
 
+test('Images can mix the shared folder selection through the saved series and remember the choice', async () => {
+  await page.locator('#menuBtn').click();
+  await page.locator('[data-action=images]').click();
+  const mix = page.locator('#imageMix');
+  assert.equal(await mix.isChecked(), false);
+  await mix.check();
+  await page.reload();
+  await page.locator('#crate .sleeve[data-index="20"]').waitFor();
+  assert.ok(await mix.isChecked());
+  const result = await page.evaluate(async () => {
+    window.testPaintings = ['atmos/1', 'atmos/2', 'atmos/3'];
+    window.personalFiles = Array.from({length: 5}, (_, i) => 'personal/' + i);
+    const id = focused().id;
+    const [player, tv] = await Promise.all([savedPaintingSet(id, 'auto'), savedPaintingSet(id, 'auto')]);
+    document.getElementById('imageMix').click();
+    const plain = await savedPaintingSet(id, 'auto');
+    window.testPaintings = [];
+    const fallback = await savedPaintingSet(id, 'auto');
+    return {player, tv, plain, fallback, requests: window.personalRequests.length};
+  });
+  assert.deepEqual(result.player.files, ['atmos/1','personal/0','personal/1','atmos/2','personal/2','atmos/3','personal/3','personal/4']);
+  assert.deepEqual(result.tv, result.player);
+  assert.deepEqual(result.plain.files, ['atmos/1','atmos/2','atmos/3']);
+  assert.equal(result.player.style, 'auto');
+  assert.equal(result.fallback.files.length, 5);
+  assert.equal(result.requests, 2);
+});
+
 test('clearing search removes the results and keeps typing in the field', async () => {
   await page.keyboard.type('R');
   const field = page.getByRole('textbox', {name:'Search the crate'});

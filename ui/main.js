@@ -1564,6 +1564,12 @@ document.querySelectorAll('.modal').forEach((m) => {
 /* ---------------- personal image folders ---------------- */
 const personalSets = new Map();
 let imageInventory = null, imageBusy = false, classifying = false, stopClassification = false;
+const imageMix = $('imageMix');
+imageMix.checked = localStorage.getItem('muso.imageMix') === '1';
+imageMix.onchange = () => {
+  localStorage.setItem('muso.imageMix', imageMix.checked ? '1' : '0');
+  refreshPersonalPlayback();
+};
 $('imageMatch').checked = localStorage.getItem('muso.imageMatch') === '1';
 $('imageOnline').checked = localStorage.getItem('muso.imageOnline') === '1';
 $('imageOnline').disabled = !$('imageMatch').checked;
@@ -1665,15 +1671,36 @@ const librarySaver = createLibrarySaver(() => tvActive && state.view === 'librar
 async function savedPaintingSet(albumId, style) {
   for (const candidate of new Set([style, ...Object.keys(styleNames), 'auto'])) {
     const files = await invoke('get_atmospheres', { albumId, style: candidate });
-    if (files.length) return {style: candidate, files};
+    if (files.length) return albumPaintingSeries(albumId, candidate, files);
   }
+  return {style: 'personal', files: await personalPictures(albumId)};
+}
+async function albumPaintingSeries(albumId, style, paintings) {
+  if (!imageMix.checked) return {style, files: paintings};
+  let personal;
+  try { personal = await personalPictures(albumId); } catch (error) {
+    toast(String(error));
+    return {style, files: paintings};
+  }
+  // Keep the commissioned series in order, spreading the random folder picks across it.
+  const files = [];
+  let used = 0;
+  for (const [index, painting] of paintings.entries()) {
+    files.push(painting);
+    const end = Math.round((index + 1) * personal.length / paintings.length);
+    files.push(...personal.slice(used, end));
+    used = end;
+  }
+  return {style, files};
+}
+function personalPictures(albumId) {
   const matching = $('imageMatch').checked && state.playing?.album.id === albumId;
   const allowAnalysis = matching && $('imageOnline').checked;
   const key = JSON.stringify([albumId, matching, allowAnalysis]);
   if (!personalSets.has(key)) {
     const request = invoke('album_images', {albumId, matching, allowAnalysis}).then(result => {
       if (result.warning) toast('Album matching unavailable · ' + result.warning, 5000);
-      return {style:'personal', files:result.files};
+      return result.files;
     }).catch(error => {
       if (personalSets.get(key) === request) personalSets.delete(key);
       throw error;
@@ -2515,7 +2542,7 @@ async function loadPainting(set, file) {
     $('paintingCredit').hidden = false;
   }).catch(() => {});
   readyAlbum = set.albumId;
-  $('album').dataset.preview = set.style === 'personal' || set.style === albumStyle(set.albumId) ? '' : albumStyle(set.albumId);
+  $('album').dataset.preview = file.startsWith('personal/') || set.style === albumStyle(set.albumId) ? '' : albumStyle(set.albumId);
   img.classList.add('on');
   other.classList.remove('on');
   updateAtmosView();
@@ -2541,13 +2568,15 @@ function stopAtmospheres() {
 }
 
 const generating = new Set();
-function paintingReady({ albumId, style, files }) {
+async function paintingReady({ albumId, style, files }) {
   if (tvActive && state.playing?.album.id === albumId) syncTv(true);
   if (state.viewAlbum?.id !== albumId || !files.length) return;
   if (!atmosEnabled()) {
     $('showAtmosBtn').disabled = false;
   } else if (albumStyle(albumId) === style || !playlist || playlist.style === 'personal') {
-    setPaintings(albumId, style, files);
+    const token = ++atmosToken;
+    const series = await albumPaintingSeries(albumId, style, files);
+    if (token === atmosToken) setPaintings(albumId, style, series.files);
   }
 }
 listen('atmos-image-ready', ({ payload }) => {

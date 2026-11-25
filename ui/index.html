@@ -227,10 +227,11 @@
   <dialog id="imagesDialog" class="modal-card library-dialog" aria-labelledby="imagesTitle">
     <div class="modal-scroll">
       <h2 id="imagesTitle">Images</h2>
-      <p class="muted">Play images from your folders when an album has no saved atmospheres.</p>
+      <p class="muted">Albums without saved atmospheres can show images from your folders.</p>
       <h3>Image folders</h3>
       <ul id="imageFolders"></ul>
       <div class="image-tools"><button class="link" id="imageAdd">+ Add folder</button><button class="link" id="imageRefresh">Rescan folders</button></div>
+      <label class="check"><input id="imageMix" type="checkbox"> Mix up to 5 folder images into each album’s saved atmospheres</label>
       <h3>Image matching</h3>
       <p class="muted">GPT-6 Luna rates each preview by mood, visual density, energy and abstraction. Each image uses one paid request.</p>
       <button id="imageClassify" class="link setting-action"></button>
