@@ -785,7 +785,7 @@ const libraryGestures = bindSleeveGestures(crate, state, {
   hold: () => { finishCrateMotion(); wheelAcc = 0; },
   render: kick,
   navigate: go,
-  activate: sleeve => openAlbum(state.albums[Number(sleeve.dataset.index)]),
+  activate: sleeve => openLibraryAlbum(state.albums[Number(sleeve.dataset.index)]),
   filing: {
     begin: (sleeve, x, y) => albumCrates.begin(state.albums[Number(sleeve.dataset.index)], sleeve, x, y),
     drag: (x, y) => albumCrates.drag(x, y),
@@ -2051,7 +2051,9 @@ async function playIndex(i, lead = null, afterPlaybackId = null) {
         while (state.playing === p && p.playbackId === endingId && (albumQueue.length || p.remaining.length)) {
           const entry = albumQueue[0];
           const album = entry?.album ?? p.remaining.shift();
-          await startAlbum(album, p.remaining, true, entry);
+          await startAlbum(album, entry ? entry.remaining : p.remaining, true, entry);
+          // A manual switch may have superseded the automatic track lookup.
+          while (manualSwitch) await manualSwitch;
           if (entry && albumQueue.includes(entry)) return;
         }
       }
@@ -2222,7 +2224,7 @@ function updatePlayUi() {
 $('playBtn').addEventListener('click', togglePlay);
 $('nextBtn').addEventListener('click', next);
 $('prevBtn').addEventListener('click', prev);
-$('nowPlaying').addEventListener('click', () => state.playing && openAlbum(state.playing.album));
+$('nowPlaying').addEventListener('click', () => state.playing && displayAlbum(state.playing.album));
 
 /* ---------------- album view ---------------- */
 
@@ -2249,9 +2251,9 @@ function removeQueued(entry) {
   layoutQueue();
 }
 
-function enqueue(album) {
+function enqueue(album, remaining = []) {
   const button = $('queueSleeve').content.firstElementChild.cloneNode(true);
-  const entry = { album, button };
+  const entry = { album, button, remaining };
   const img = button.querySelector('img');
   const label = button.querySelector('.queue-title');
   label.textContent = album.title;
@@ -2261,7 +2263,7 @@ function enqueue(album) {
   img.onerror = () => { show(img, false); show(label); };
   button.style.setProperty('--blank', blankColor(album.id));
   let drag;
-  const playNow = () => startAlbum(album, state.playing?.remaining ?? [], false, entry);
+  const playNow = () => startAlbum(album, entry.remaining, false, entry);
   const dismiss = () => {
     const position = albumQueue.indexOf(entry);
     removeQueued(entry);
@@ -2311,27 +2313,35 @@ function enqueue(album) {
   return entry;
 }
 
-function openAlbum(a, remaining = []) {
-  const p = state.playing;
-  if (p?.album.id === a.id && !remaining.length) return displayAlbum(a);
-  if (!p || p.ended || p.inGroove || p.paused)
-    return startAlbum(a, remaining, false, albumQueue.find(entry => entry.album.id === a.id));
+function openLibraryAlbum(album) {
+  if (!activeCrate) return openAlbum(album);
+  const index = activeCrate.albums.findIndex(entry => entry.id === album.id);
+  if (index < 0) return openAlbum(album);
+  const remaining = activeCrate.albums.slice(index + 1).map(entry => albumsById.get(entry.id)).filter(Boolean);
+  return openAlbum(album, remaining);
+}
 
-  let selected, full = false;
-  for (const album of [a, ...remaining]) {
-    if (p.album.id === album.id) continue;
-    let entry = albumQueue.find(item => item.album.id === album.id);
-    if (!entry) {
-      if (albumQueue.length === 5) { full = true; break; }
-      entry = enqueue(album);
-    }
-    selected ??= entry;
+function openAlbum(a, remaining) {
+  const p = state.playing;
+  if (p?.album.id === a.id) {
+    if (remaining === undefined) return displayAlbum(a);
+    if (p.ended || p.inGroove || p.advancing) return startAlbum(a, remaining);
+    p.remaining = remaining;
+    refreshGroove();
+    if (p.paused) togglePlay();
+    return displayAlbum(a);
   }
+  let entry = albumQueue.find(item => item.album.id === a.id);
+  if (!p || p.ended || p.inGroove || p.paused)
+    return startAlbum(a, remaining, false, entry);
+
+  if (entry) entry.remaining = remaining ?? [];
+  else if (albumQueue.length < 5) entry = enqueue(a, remaining);
   layoutQueue();
   refreshGroove();
   displayAlbum(p.album);
-  selected?.button.focus({ preventScroll: true });
-  if (full) toast('Queue full · 5 records are waiting');
+  if (entry) entry.button.focus({ preventScroll: true });
+  else toast('Queue full · 5 records are waiting');
 }
 
 const playerCover = $('cover');
@@ -2874,7 +2884,7 @@ window.addEventListener('keydown', (e) => {
   else if (e.key === 'PageUp') go(t - 10);
   else if (e.key === 'Home') go(0);
   else if (e.key === 'End') go(state.albums.length - 1);
-  else if (e.key === 'Enter') openAlbum(focused());
+  else if (e.key === 'Enter') openLibraryAlbum(focused());
   else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') { openSearch(); e.preventDefault(); }
   else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey && /\S/.test(e.key)) {
     // Just start typing to dig.

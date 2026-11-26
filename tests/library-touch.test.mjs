@@ -183,6 +183,67 @@ test('the bottom fan browses a crate across navigation, playback and refresh, th
   assert.equal(await page.evaluate(() => state.albums.length), 80);
 });
 
+async function finishTrack() {
+  await page.evaluate(() => emitPlayback('track-ended', state.playing.playbackId));
+}
+
+test('starting mid-crate follows saved order beyond five albums after leaving the crate', async () => {
+  await page.emulateMedia({reducedMotion:'reduce'});
+  await page.evaluate(async () => {
+    fillCrate(9);
+    await invoke('library_crates', {change:{type:'reorder', id:1, album:'000007', index:2}});
+    await albumCrates.load();
+    window.testTracks = ['One', 'Two'].map(title => ({title, path:title}));
+  });
+  await page.locator('#cratePeek').tap();
+  await page.locator('#browseCrates button').first().tap();
+  await page.locator('#indexMode').click(); // Browse by artist, play in crate order.
+  await page.keyboard.press('ArrowRight');
+  await settled();
+  await down(); await up();
+  await page.locator('#alTrack button').first().waitFor();
+  assert.equal(await page.locator('#alTitle').textContent(), 'Record 1');
+  await page.locator('#backBtn').click();
+  await page.locator('#closeLibraryCrate').click();
+  await page.locator('#nowPlaying').click();
+  for (const title of ['Record 7', 'Record 2', 'Record 3', 'Record 4', 'Record 5', 'Record 6', 'Record 8']) {
+    await finishTrack();
+    await page.waitForFunction(() => state.playing.index === 1);
+    await finishTrack();
+    await page.waitForFunction(t => state.playing.album.title === t && state.playing.index === 0, title);
+  }
+  await finishTrack();
+  await finishTrack();
+  await page.waitForFunction(() => state.playing.ended);
+  assert.equal(await page.locator('#alTitle').textContent(), 'Record 8');
+});
+
+test('a queued crate selection carries its sequence and switching to a library album ends it', async () => {
+  await page.emulateMedia({reducedMotion:'reduce'});
+  await page.evaluate(async () => { fillCrate(8); await albumCrates.load(); });
+  await page.keyboard.press('Enter');
+  await page.locator('#backBtn').click();
+  await page.locator('#cratePeek').click();
+  await page.locator('#browseCrates button').first().click();
+  await page.locator('#crate').press('Enter');
+  const waiting = page.locator('.queued-cover');
+  await waiting.waitFor();
+  assert.equal(await waiting.count(), 1);
+  await finishTrack();
+  await page.waitForFunction(() => state.playing.album.title === 'Record 0');
+  assert.equal(await page.evaluate(() => state.playing.remaining.length), 7);
+  await finishTrack();
+  await page.waitForFunction(() => state.playing.album.title === 'Record 1');
+  await page.locator('#backBtn').click();
+  await page.locator('#closeLibraryCrate').click();
+  await page.locator('#crate').press('Enter');
+  await waiting.press('ArrowUp');
+  await page.waitForFunction(() => state.playing.album.title === 'Record 20');
+  await finishTrack();
+  await page.waitForFunction(() => state.playing.ended);
+  assert.equal(await page.locator('#alTitle').textContent(), 'Record 20');
+});
+
 test('Order follows the crate editor and is the default each time a crate opens', async () => {
   await page.emulateMedia({reducedMotion:'reduce'});
   await page.evaluate(async () => { fillCrate(3); await albumCrates.load(); });
