@@ -90,7 +90,8 @@ const letters = '#ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 const letterButtons = new Map();
 const titleOrder = new Intl.Collator(undefined, { sensitivity: 'base', numeric: true });
 const savedMode = localStorage.getItem('muso.indexMode');
-let indexMode = ['album', 'genre'].includes(savedMode) ? savedMode : 'artist';
+let libraryMode = ['album', 'genre'].includes(savedMode) ? savedMode : 'artist';
+let crateMode = 'order';
 const UNSORTED = 'Unsorted';
 let genreInfo = { genres: [], albums: {}, suggestions: 0 };
 const indexGenres = $('indexGenres'), indexSubs = $('indexSubs');
@@ -103,14 +104,16 @@ const recentWindow = 28 * 24 * 60 * 60 * 1000;
 let browsingNew = false, recentAlbums = [], expiryTimer;
 let activeCrate = null, cratePosition = null, libraryReturn = null;
 const crateKey = 'muso.browsedCrate';
+const indexMode = () => activeCrate ? crateMode : libraryMode;
 function scopedAlbums(normal) {
   if (!activeCrate) return normal;
+  if (crateMode === 'order') return activeCrate.albums.map(entry => albumsById.get(entry.id)).filter(Boolean);
   const ids = new Set(activeCrate.albums.map(a => a.id));
   return [...albumsById.values()].filter(a => ids.has(a.id));
 }
 
-function albumInitial(album) {
-  const name = indexMode === 'album' ? album.title.trim() : album.artist.trim().replace(/^the /i, '').trimStart();
+function albumInitial(album, byTitle) {
+  const name = byTitle ? album.title.trim() : album.artist.trim().replace(/^the /i, '').trimStart();
   const first = name.normalize('NFKD').toUpperCase().charAt(0);
   return /^[A-Z]$/.test(first) ? first : '#';
 }
@@ -144,9 +147,12 @@ indexLetters.addEventListener('keydown', e => {
   enabled[i].click();
 });
 
-const modeLabels = { artist: 'Artist', album: 'Album', genre: 'Genre' };
-const nextMode = { artist: 'album', album: 'genre', genre: 'artist' };
-const modeAlbums = () => indexMode === 'artist' ? artistAlbums : titleAlbums;
+const modeLabels = { order: 'Order', artist: 'Artist', album: 'Album', genre: 'Genre' };
+function nextIndexMode() {
+  const modes = activeCrate ? ['order', 'artist', 'album', 'genre'] : ['artist', 'album', 'genre'];
+  return modes[(modes.indexOf(indexMode()) + 1) % modes.length];
+}
+const modeAlbums = () => indexMode() === 'artist' ? artistAlbums : titleAlbums;
 
 const genreKey = s => s.toLowerCase().replace(/&/g, ' and ').split(/[\s\-_.]+/).filter(Boolean).join(' ');
 function annotateGenres(albums) {
@@ -207,7 +213,7 @@ function indexByGenre(albums) {
   return out;
 }
 function markGenre(a) {
-  if (indexMode !== 'genre' || browsingNew) return;
+  if (indexMode() !== 'genre' || browsingNew) return;
   if (a.genreGroup !== currentGroup) {
     currentGroup = a.genreGroup;
     let active;
@@ -310,19 +316,22 @@ indexSubs.addEventListener('click', e => {
 });
 
 function indexAlbums(albums) {
-  const label = modeLabels[indexMode];
+  const mode = indexMode(), label = modeLabels[mode];
+  const next = nextIndexMode();
+  const description = next === 'order' ? 'Switch to crate order' : 'Switch to ' + modeLabels[next].toLowerCase() + ' order';
   $('indexModeLabel').textContent = label;
-  $('indexMode').ariaDescription = 'Switch to ' + modeLabels[nextMode[indexMode]].toLowerCase() + ' order';
-  $('indexMode').setAttribute('aria-label', label + ' order. ' + $('indexMode').title);
-  show(indexLetters, indexMode !== 'genre');
-  show(indexGenres, indexMode === 'genre');
-  if (indexMode !== 'genre') show(indexSubs, false);
-  if (indexMode === 'genre') return indexByGenre(albums);
-  const byTitle = indexMode === 'album';
+  $('indexMode').ariaDescription = description;
+  $('indexMode').setAttribute('aria-label', (mode === 'order' ? 'Crate order' : label + ' order') + '. ' + description);
+  show(indexLetters, mode === 'artist' || mode === 'album');
+  show(indexGenres, mode === 'genre');
+  if (mode === 'genre') return indexByGenre(albums);
+  show(indexSubs, false);
+  if (mode === 'order') return albums;
+  const byTitle = mode === 'album';
   indexLetters.setAttribute('aria-label', label + ' initials');
   const groups = new Map([...letters].map(letter => [letter, []]));
   for (const a of albums) {
-    a.initial = albumInitial(a);
+    a.initial = albumInitial(a, byTitle);
     groups.get(a.initial).push(a);
   }
   let offset = 0;
@@ -581,7 +590,7 @@ function updateCaption(force) {
   lastCaption = i;
   const a = state.albums[i];
   prepareNote(a);
-  const initial = browsingNew ? null : a.initial;
+  const initial = browsingNew || indexMode() === 'order' ? null : a.initial;
   if (currentLetter !== initial) {
     const previous = letterButtons.get(currentLetter);
     if (previous) {
@@ -729,6 +738,7 @@ function crateFlightRecords() {
 function browseCrate(list) {
   if (!activeCrate && list) libraryReturn = { album: focused(), index: state.target, recent: browsingNew };
   activeCrate = list;
+  crateMode = 'order';
   cratePosition = null;
   if (list) localStorage.setItem(crateKey, list.id);
   else localStorage.removeItem(crateKey);
@@ -919,9 +929,12 @@ $('indexMode').addEventListener('click', () => {
   if (libraryGestures.active) return;
   closeSearch();
   if (browsingNew) leaveNew();
-  if (indexMode === 'artist') preferredMember = focused()?.id;
-  indexMode = nextMode[indexMode];
-  localStorage.setItem('muso.indexMode', indexMode);
+  if (indexMode() === 'artist') preferredMember = focused()?.id;
+  if (activeCrate) crateMode = nextIndexMode();
+  else {
+    libraryMode = nextIndexMode();
+    localStorage.setItem('muso.indexMode', libraryMode);
+  }
   applyLibraryOrder();
 });
 

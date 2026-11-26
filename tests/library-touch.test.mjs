@@ -65,6 +65,12 @@ beforeEach(async () => {
         }
         if (command === 'delete_album_note') return sessionStorage.removeItem('note.' + args.albumId);
         if (command === 'library_crates') {
+          if (args.change?.type === 'reorder') {
+            const {id, album, index} = args.change;
+            const entries = crates.lists.find(c => c.id === id).albums;
+            const [entry] = entries.splice(entries.findIndex(a => a.id === album), 1);
+            entries.splice(index, 0, entry);
+          }
           if (args.change?.type === 'rename') crates.lists.find(c => c.id === args.change.id).name = args.change.name;
           if (args.change?.type === 'add') {
             const list = crates.lists.find(c => c.id === args.change.id);
@@ -175,6 +181,48 @@ test('the bottom fan browses a crate across navigation, playback and refresh, th
   await page.locator('#closeLibraryCrate').click();
   assert.equal(await page.evaluate(() => focused().title), 'Record 20');
   assert.equal(await page.evaluate(() => state.albums.length), 80);
+});
+
+test('Order follows the crate editor and is the default each time a crate opens', async () => {
+  await page.emulateMedia({reducedMotion:'reduce'});
+  await page.evaluate(async () => { fillCrate(3); await albumCrates.load(); });
+  const mode = page.locator('#indexMode'), label = page.locator('#indexModeLabel');
+  const titles = () => page.evaluate(() => state.albums.map(album => album.title));
+  await mode.click();
+  await mode.click();
+  assert.equal(await label.textContent(), 'Genre');
+
+  await page.locator('#cratePeek').click();
+  await page.locator('#browseCrates button').first().click();
+  assert.equal(await label.textContent(), 'Order');
+  assert.ok(await page.locator('#indexLetters').isHidden());
+  assert.ok(await page.locator('#indexGenres').isHidden());
+  await page.locator('#editLibraryCrate').click();
+  const covers = page.locator('#fanCovers .fan-cover');
+  const first = await covers.first().boundingBox(), last = await covers.last().boundingBox();
+  await page.mouse.move(last.x + last.width / 2, last.y + last.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(first.x + first.width / 2, first.y + first.height / 2, {steps: 10});
+  await page.mouse.up();
+  await page.locator('#fanClose').click();
+  const arranged = ['Record 2', 'Record 0', 'Record 1'];
+  assert.deepEqual(await titles(), arranged);
+  await page.evaluate(() => refreshLibrary());
+  assert.deepEqual(await titles(), arranged);
+
+  for (const name of ['Artist', 'Album', 'Genre', 'Order']) {
+    await mode.click();
+    assert.equal(await label.textContent(), name);
+    if (name === 'Album') assert.deepEqual(await titles(), ['Record 0', 'Record 1', 'Record 2']);
+  }
+  assert.deepEqual(await titles(), arranged);
+  await mode.click();
+  await page.locator('#closeLibraryCrate').click();
+  assert.equal(await label.textContent(), 'Genre');
+  await page.locator('#cratePeek').click();
+  await page.locator('#browseCrates button').first().click();
+  assert.equal(await label.textContent(), 'Order');
+  assert.equal(await page.locator('#capTitle').textContent(), 'Record 2');
 });
 
 test('crate settings open the current crate for editing and return to its records', async () => {
