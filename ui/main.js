@@ -43,42 +43,6 @@ function show(el, on = true) {
   el.classList.toggle('hidden', !on);
 }
 
-// On hybrid devices a tap can leave :hover matched until the mouse moves again.
-const rootClasses = document.documentElement.classList;
-rootClasses.toggle('can-hover', matchMedia('(any-hover: hover)').matches);
-// Only the current mouse target gets a native title. Touch-generated mouse
-// compatibility events can otherwise keep the WebView's tooltip on screen.
-let tooltipTarget = null;
-function syncTooltipTitle() {
-  if (tooltipTarget?.ariaDescription) tooltipTarget.title = tooltipTarget.ariaDescription;
-  else tooltipTarget?.removeAttribute('title');
-}
-const tooltipObserver = new MutationObserver(syncTooltipTitle);
-function setTooltipTarget(target) {
-  if (target === tooltipTarget) return;
-  tooltipObserver.disconnect();
-  tooltipTarget?.removeAttribute('title');
-  tooltipTarget = target;
-  if (target) {
-    syncTooltipTitle();
-    tooltipObserver.observe(target, { attributes: true, attributeFilter: ['aria-description'] });
-  }
-}
-function updatePointerHover(e) {
-  const mouse = e.pointerType === 'mouse' && !e.sourceCapabilities?.firesTouchEvents;
-  // A tap can also synthesize a mouse pointerover on the element underneath.
-  if (mouse && e.type === 'pointerover' && !rootClasses.contains('can-hover')) return;
-  rootClasses.toggle('can-hover', mouse);
-  setTooltipTarget(mouse ? e.target.closest?.('[aria-description]') ?? null : null);
-}
-for (const event of ['pointerover', 'pointerdown', 'pointermove']) {
-  document.addEventListener(event, updatePointerHover, { capture: true, passive: true });
-}
-document.addEventListener('pointerout', e => {
-  if (!tooltipTarget?.contains(e.relatedTarget)) setTooltipTarget(null);
-}, true);
-window.addEventListener('blur', () => setTooltipTarget(null));
-
 /* ---------------- crate ---------------- */
 
 const crate = $('crate');
@@ -1892,7 +1856,10 @@ for (const dialog of document.querySelectorAll('.library-dialog')) {
   });
 }
 
-const heosOutput = createHeosOutput(invoke, listen, toast, () => playerVolume.close());
+const heosOutput = createHeosOutput(invoke, listen, toast, () => {
+  playerVolume.close();
+  if (state.view === 'album') playerVolume.refresh();
+});
 const playerVolume = createPlayerVolume(invoke, heosOutput, toast, () => { if (state.view === 'album') poke(); });
 
 /* ---------------- TV display ---------------- */
@@ -2502,6 +2469,7 @@ function displayAlbum(a, advancing = false) {
   const outgoing = advancing && state.viewAlbum?.id !== a.id && !reducedMotion.matches && !document.hidden && animateCrateChange();
   closeSearch();
   closeMenu();
+  if (state.view !== 'album') playerVolume.refresh();
   state.view = 'album';
   state.viewAlbum = a;
   renderCoverSearchStatus();
@@ -2577,7 +2545,7 @@ function poke() {
     }
   }, 3500);
 }
-$('album').addEventListener('mousemove', poke);
+for (const event of ['pointerdown', 'pointermove']) $('album').addEventListener(event, poke, {passive:true});
 $('album').addEventListener('click', (e) => {
   poke();
   if (!e.target.closest('#albumMenu, #albumMenuBtn')) show($('albumMenu'), false);
@@ -2637,7 +2605,7 @@ $('albumHeos').addEventListener('click', async () => {
   await playerVolume.settled();
   heosOutput.openVolume();
 });
-$('heosVolumeDialog').addEventListener('close', () => { poke(); $('albumMenuBtn').focus(); });
+$('heosVolumeDialog').addEventListener('close', () => { playerVolume.refresh(); poke(); $('albumMenuBtn').focus(); });
 $('eq').querySelector('.close').addEventListener('click', () => {
   if (!$('eq').classList.contains('from-player')) { openMenu(); $('menu').querySelector('[data-action="eq"]').focus({ preventScroll: true }); }
   else { poke(); $('albumMenuBtn').focus(); }
@@ -2874,6 +2842,7 @@ window.addEventListener('keydown', (e) => {
     else if (state.view === 'crates') albumCrates.escape();
     else if (state.view === 'genres') genresView.escape();
     else if (state.view === 'album') closeAlbum();
+    else if (tvActive && navigator.userAgent.includes('Linux')) invoke('set_presenter', {display:null}).catch(e => toast(String(e)));
     return;
   }
   if (modalOpen || !$('menu').classList.contains('hidden')) return;

@@ -490,7 +490,8 @@ async fn set_presenter(app: AppHandle, display: Option<(i32, i32)>) -> R<()> {
         Some(window) => window,
         None => {
             let window = tauri::WebviewWindowBuilder::new(&app, "presenter", tauri::WebviewUrl::App("presenter.html".into()))
-                .title("Muso TV").visible(false).focused(false).decorations(false).build().map_err(err)?;
+                .title("Muso TV").visible(false).focused(false)
+                .focusable(!cfg!(target_os = "linux")).decorations(false).build().map_err(err)?;
             #[cfg(any(windows, target_os = "linux"))]
             {
                 let presenter = window.clone();
@@ -515,6 +516,8 @@ fn main() {
             app.manage(heos::Heos::default());
             #[cfg(any(windows, target_os = "linux"))]
             if let Some(window) = app.get_webview_window("main") {
+                #[cfg(target_os = "linux")]
+                screen::focus_on_touch(&window)?;
                 screen::watch(window)?;
             }
             let data_dir = app.path().app_data_dir()?;

@@ -1713,6 +1713,8 @@ test('corner volume expands upwards and controls local output with touch and key
   await down(); await up();
   const button = page.locator('#volumeToggle'), capsule = page.locator('#playerVolume');
   await button.waitFor();
+  const waves = button.locator('.volume-waves path:visible');
+  assert.equal(await waves.count(), 3);
   await page.locator('#album').evaluate(el => Promise.all(el.getAnimations().map(a => a.finished)));
   const bottom = () => capsule.evaluate(el => el.offsetTop + el.offsetHeight);
   const before = await bottom();
@@ -1732,6 +1734,14 @@ test('corner volume expands upwards and controls local output with touch and key
   const [red, green, blue] = await fillColour();
   assert.ok(red > 100 && red < 170 && red > blue && blue > green && green < 15);
   await slider.press('Home');
+  assert.equal(await waves.count(), 0);
+  assert.ok(await button.locator('.volume-mute').isVisible());
+  await slider.press('PageUp');
+  assert.equal(await waves.count(), 1);
+  await slider.press('End');
+  for (let i = 0; i < 4; i++) await slider.press('PageDown');
+  assert.equal(await waves.count(), 2);
+  await slider.press('Home');
   await slider.press('PageUp');
   assert.equal(await slider.inputValue(), '10');
   const quiet = await fillColour();
@@ -1744,6 +1754,8 @@ test('corner volume expands upwards and controls local output with touch and key
   await page.waitForFunction(v => window.savedVolume === v, low + 1);
   await slider.press('Escape');
   assert.equal(await button.getAttribute('aria-expanded'), 'false');
+  assert.equal(await waves.count(), 1);
+  assert.equal(await button.getAttribute('aria-description'), (low + 1) + '%');
   await button.press('Enter');
   assert.equal(await slider.inputValue(), String(low + 1));
   await page.touchscreen.tap(100,100);
@@ -1774,6 +1786,8 @@ test('player menu exposes HEOS volume only on HEOS and controls a group or an in
   await page.locator('.heos-target').filter({hasText:'Both rooms'}).tap();
   await page.locator('#audioClose').tap();
   await down(); await up();
+  await page.locator('#volumeToggle[data-waves="1"]').waitFor();
+  assert.equal(await page.locator('#volumeToggle').getAttribute('aria-description'), '23%');
   await page.locator('#volumeToggle').tap();
   const quick = page.getByRole('slider',{name:'Volume · Both rooms'});
   assert.equal(await quick.inputValue(),'23');

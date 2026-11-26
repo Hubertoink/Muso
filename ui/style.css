@@ -729,6 +729,11 @@ body:has(#coverConfirm[open]) #coverSearchStatus { visibility: hidden; }
   display: grid; place-items: center; color: #fff;
 }
 #volumeToggle svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.55; stroke-linecap: round; stroke-linejoin: round; }
+#volumeToggle .volume-mute, #volumeToggle .volume-waves path { display: none; }
+#volumeToggle[data-waves="0"] .volume-mute,
+#volumeToggle[data-waves="1"] .volume-waves path:first-child,
+#volumeToggle[data-waves="2"] .volume-waves path:nth-child(-n+2),
+#volumeToggle[data-waves="3"] .volume-waves path { display: inline; }
 #playerVolume.open #volumeToggle { pointer-events: none; }
 .heos-level .volume-capsule, #playerVolume.open { cursor: ns-resize; }
 #album.idle #playerVolume:not(.open):not(:has(:focus-visible)),
@@ -1057,7 +1062,7 @@ body:has(#crateTray.open) #crateDock { visibility: hidden; }
   font: 11px var(--mono); letter-spacing: .06em; color: var(--ink-dim);
   animation: rise .6s var(--ease); transition: color .25s, border-color .25s;
 }
-#genreHint:hover { color: var(--ink); border-color: var(--accent); }
+:where(.can-hover) #genreHint:hover { color: var(--ink); border-color: var(--accent); }
 #albumGenreInput {
   display: block; width: calc(100% - 28px); margin: 6px 14px 8px; padding: 7px 10px;
   background: #111110; border: 1px solid #41413e; border-radius: 5px; outline: none; font-size: 13px;
@@ -1082,7 +1087,7 @@ body:has(#crateTray.open) #crateDock { visibility: hidden; }
 .genre-actions .pill { display: inline-flex; align-items: center; gap: 8px; }
 .genre-actions svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 .pill.strong { border-color: var(--accent); color: var(--ink); }
-.pill.strong:hover { background: rgba(255,90,31,.12); }
+:where(.can-hover) .pill.strong:hover { background: rgba(255,90,31,.12); }
 .genre-pane button:disabled { opacity: .35; pointer-events: none; }
 
 #genreBoard {
@@ -1106,20 +1111,20 @@ body:has(#crateTray.open) #crateDock { visibility: hidden; }
 .gcard-head { display: flex; align-items: center; gap: 6px; }
 .gcard-title { font-size: 13px; color: var(--ink-dim); }
 .gcard-grip { width: 22px; height: 28px; color: var(--ink-faint); cursor: grab; touch-action: none; font-size: 14px; border-radius: 4px; }
-.gcard-grip:hover { color: var(--ink); background: rgba(255,255,255,.05); }
+:where(.can-hover) .gcard-grip:hover { color: var(--ink); background: rgba(255,255,255,.05); }
 .gcard-name {
   flex: 1; min-width: 0; background: none; border: 0; border-bottom: 1px solid transparent;
   font-size: 16px; font-weight: 300; padding: 3px 2px; outline: none; transition: border-color .2s;
 }
-.gcard-name:hover { border-color: rgba(255,255,255,.1); }
+:where(.can-hover) .gcard-name:hover { border-color: rgba(255,255,255,.1); }
 .gcard-name:focus { border-color: var(--accent); }
 .gcard-del { width: 26px; height: 26px; border-radius: 50%; color: var(--ink-faint); font-size: 16px; }
-.gcard-del:hover { color: var(--accent); background: rgba(255,90,31,.1); }
+:where(.can-hover) .gcard-del:hover { color: var(--accent); background: rgba(255,90,31,.1); }
 .gcard-level {
   margin: 6px 0 0 28px; color-scheme: dark; background: transparent; color: var(--ink-faint);
   border: 0; font: 11px var(--mono); letter-spacing: .04em; padding: 2px 0; cursor: pointer;
 }
-.gcard-level:hover:enabled { color: var(--ink); }
+:where(.can-hover) .gcard-level:hover:enabled { color: var(--ink); }
 .gcard-count { margin: 4px 0 10px 28px; font: 10px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--ink-faint); }
 .gcard.unassigned .gcard-count { margin-left: 0; }
 .gcard-tags { display: flex; flex-wrap: wrap; gap: 6px; min-height: 30px; }
@@ -1131,7 +1136,7 @@ body:has(#crateTray.open) #crateDock { visibility: hidden; }
 }
 .tchip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tchip small { font: 10px var(--mono); color: var(--ink-faint); }
-.tchip:hover { background: #2f2f2c; transform: translateY(-1px); }
+:where(.can-hover) .tchip:hover { background: #2f2f2c; transform: translateY(-1px); }
 .tchip.broad { border-color: rgba(255,90,31,.5); }
 .tchip.broad small::after { content: " · broad"; color: var(--accent); }
 .tchip.carried { opacity: .3; }
@@ -1151,7 +1156,7 @@ body:has(#crateTray.open) #crateDock { visibility: hidden; }
   transition: color .2s, border-color .2s, background .25s, transform .3s cubic-bezier(.3,1.35,.5,1);
 }
 .bucket small { font: 10px var(--mono); color: var(--ink-faint); }
-.bucket:hover { color: var(--ink); transform: translateY(-1px); }
+:where(.can-hover) .bucket:hover { color: var(--ink); transform: translateY(-1px); }
 .bucket[aria-pressed="true"] { color: var(--ink); border-color: var(--accent); background: rgba(255,90,31,.1); }
 #sortEstimate { margin: 20px 0 14px; text-transform: none; letter-spacing: .03em; }
 .sort-instructions { display: block; margin: 18px 0 7px; font-size: 13px; color: var(--ink); }
@@ -1169,7 +1174,7 @@ body:has(#crateTray.open) #crateDock { visibility: hidden; }
   align-items: center; gap: 12px; padding: 8px 6px; border-bottom: 1px solid rgba(255,255,255,.05);
   transition: opacity .25s, transform .3s var(--ease);
 }
-.rrow:hover { background: rgba(255,255,255,.02); }
+:where(.can-hover) .rrow:hover { background: rgba(255,255,255,.02); }
 .rrow.gone-ok { opacity: 0; transform: translateX(30px); }
 .rrow.gone-no { opacity: 0; transform: translateX(-30px); }
 .rthumb { width: 40px; height: 40px; border-radius: 3px; overflow: hidden; background: var(--blank, #262624); box-shadow: 0 6px 14px -6px #000; }
@@ -1181,8 +1186,8 @@ body:has(#crateTray.open) #crateDock { visibility: hidden; }
 .rrow.new .rto { border-color: var(--accent); }
 .rconf { font: 11px var(--mono); text-align: right; color: color-mix(in srgb, var(--accent) calc(var(--c) * 100%), var(--ink-faint)); }
 .rok, .rno { width: 30px; height: 30px; border-radius: 50%; color: var(--ink-dim); transition: color .2s, background .2s, transform .25s cubic-bezier(.3,1.35,.5,1); }
-.rok:hover { color: #111; background: var(--ink); transform: scale(1.08); }
-.rno:hover { color: var(--accent); background: rgba(255,90,31,.12); }
+:where(.can-hover) .rok:hover { color: #111; background: var(--ink); transform: scale(1.08); }
+:where(.can-hover) .rno:hover { color: var(--accent); background: rgba(255,90,31,.12); }
 #genresPage { color-scheme: dark; }
 #genreBoard, .genre-scroll, #reviewList { scrollbar-width: thin; scrollbar-color: rgba(232,230,225,.18) transparent; }
 #indexGenres { cursor: grab; touch-action: pan-x; }
@@ -1199,7 +1204,7 @@ body:has(#crateTray.open) #crateDock { visibility: hidden; }
               calc(var(--depth, 0) * 4px) calc(var(--depth, 0) * -4px) 0 -2px #1d1c1a;
   margin: 0 calc(var(--depth, 0) * 4px) 0 0;
 }
-.tchip.genre:hover { background: #38332d; }
+:where(.can-hover) .tchip.genre:hover { background: #38332d; }
 .tchip.genre i { font-style: normal; color: var(--ink-faint); margin-right: 5px; font-size: 11px; }
 .tchip.genre em {
   font: 600 9px var(--mono); font-style: normal; color: #111; background: var(--ink-dim);
@@ -1242,10 +1247,10 @@ body:has(#crateTray.open) #crateDock { visibility: hidden; }
 #popTags li span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #popTags li small { font: 10px var(--mono); color: var(--ink-faint); }
 #popTags li button { width: 22px; height: 22px; border-radius: 50%; color: var(--ink-faint); }
-#popTags li button:hover { color: var(--accent); background: rgba(255,90,31,.1); }
+:where(.can-hover) #popTags li button:hover { color: var(--accent); background: rgba(255,90,31,.1); }
 #popTags li.muted { font-size: 12px; line-height: 1.5; }
 #popDissolve { margin-top: 12px; font-size: 12px; }
-#popDissolve:hover { color: var(--accent); }
+:where(.can-hover) #popDissolve:hover { color: var(--accent); }
 .library-dialog { margin: auto; color: var(--ink); color-scheme: dark; font-family: var(--sans); }
 .library-dialog:not([open]) { display: none; }
 .library-dialog::backdrop { background: rgb(4 4 6 / .62); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); }

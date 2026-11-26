@@ -43,6 +43,8 @@ function createPlayerVolume(invoke, heos, toast, onClose) {
     range.value = value;
     capsule.style.setProperty('--volume-factor', value / 100);
     range.setAttribute('aria-valuetext', value + '%');
+    button.dataset.waves = Math.ceil(3 * value / 100);
+    button.setAttribute('aria-description', value + '%');
   }
   function close(restoreFocus = false) {
     if (!capsule.classList.contains('open')) return;
@@ -54,34 +56,39 @@ function createPlayerVolume(invoke, heos, toast, onClose) {
     if (restoreFocus) button.focus({preventScroll:true});
     onClose();
   }
-  async function open() {
+  async function refresh(opening = false) {
+    if (!opening && capsule.classList.contains('open')) return;
     const version = ++visit, pid = heos.output;
-    capsule.style.setProperty('--volume-factor', 0);
-    capsule.classList.add('open');
-    button.setAttribute('aria-expanded', 'true');
     try {
       await sending;
-      let value, route;
-      if (pid == null) {
-        value = await invoke('local_volume');
-        route = {pid};
-        range.setAttribute('aria-label', 'Muso volume');
-      } else {
+      let value, route = {pid}, label = 'Muso volume';
+      if (pid == null) value = await invoke('local_volume');
+      else {
         const snapshot = await heos.readLevels();
         const control = snapshot.controls.find(c => c.group) ?? snapshot.controls.find(c => c.id === pid);
         if (!control) throw new Error('The HEOS output has changed.');
         value = control.value;
         route = {pid, session:snapshot.session, id:control.id, group:control.group, lastValue:value};
-        range.setAttribute('aria-label', 'Volume · ' + control.name);
+        label = 'Volume · ' + control.name;
       }
       if (version !== visit || pid !== heos.output) return;
-      target = route;
       paint(value);
+      if (!opening) return;
+      target = route;
+      range.setAttribute('aria-label', label);
       range.disabled = false;
       range.focus({preventScroll:true});
     } catch (e) {
-      if (version === visit) { close(true); toast(String(e)); }
+      if (version !== visit) return;
+      delete button.dataset.waves;
+      button.removeAttribute('aria-description');
+      if (opening) { close(true); toast(String(e)); }
     }
+  }
+  function open() {
+    capsule.classList.add('open');
+    button.setAttribute('aria-expanded', 'true');
+    refresh(true);
   }
 
   // Keep only the newest drag position while a network write is in flight.
@@ -97,7 +104,7 @@ function createPlayerVolume(invoke, heos, toast, onClose) {
           route.lastValue = value;
         }
       } catch (e) {
-        if (version === visit) { pending = null; close(true); toast(String(e)); }
+        if (version === visit) { pending = null; close(true); toast(String(e)); refresh(); }
       }
       if (!save) await new Promise(resolve => setTimeout(resolve, route.pid == null ? 20 : 100));
     }
@@ -122,5 +129,5 @@ function createPlayerVolume(invoke, heos, toast, onClose) {
   document.addEventListener('pointerdown', e => {
     if (!capsule.contains(e.target) && capsule.classList.contains('open')) close();
   }, true);
-  return {close, settled:() => sending};
+  return {close, refresh, settled:() => sending};
 }

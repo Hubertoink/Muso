@@ -1,4 +1,4 @@
-//! Keep a visible fullscreen player awake for as long as it is on screen.
+//! Native display and input handling for the controller and TV.
 #[cfg(windows)]
 pub fn watch(window: tauri::WebviewWindow) -> tauri::Result<()> {
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -45,6 +45,36 @@ pub fn watch(window: tauri::WebviewWindow) -> tauri::Result<()> {
         _ => {}
     });
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+pub fn focus_on_touch(window: &tauri::WebviewWindow) -> tauri::Result<()> {
+    use gtk::{gdk::{EventMask, EventType, InputSource}, glib::Propagation, prelude::*};
+    use std::cell::Cell;
+    window.with_webview(|platform| {
+        let view = platform.inner();
+        view.add_events(EventMask::TOUCH_MASK);
+        let restore_tooltips = Cell::new(false);
+        view.connect_event(move |view, event| {
+            if event.event_type() == EventType::TouchBegin {
+                if view.has_tooltip() {
+                    restore_tooltips.set(true);
+                    view.set_has_tooltip(false);
+                }
+                if let Some(window) = view.toplevel().and_then(|w| w.downcast::<gtk::Window>().ok()) {
+                    if !window.is_active() { window.present_with_time(event.time()); }
+                }
+                if !view.has_focus() { view.grab_focus(); }
+            } else if restore_tooltips.get() && event.event_type() == EventType::MotionNotify
+                && !event.is_pointer_emulated() && event.source_device().is_some_and(|device|
+                    matches!(device.source(), InputSource::Mouse | InputSource::Touchpad | InputSource::Trackpoint)) {
+                view.set_has_tooltip(true);
+                restore_tooltips.set(false);
+            }
+            // Let WebKit handle this same first contact as a tap or swipe.
+            Propagation::Proceed
+        });
+    })
 }
 
 #[cfg(target_os = "linux")]

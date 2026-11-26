@@ -78,6 +78,23 @@ try {
   assert.equal(result.draws,1);
   assert.ok(result.trace && result.pigmentClipped && result.cleared && !result.pngMap);
   assert.ok(result.dimensions.every(p=>p.visible && p.alpha>0 && p.h<result.viewHeight));
+  const hover = await command(session+'/execute/sync', {args:[], script:`
+    const target = document.getElementById('indexMode');
+    target.setAttribute('aria-description', 'Switch sort order');
+    const states = [];
+    function point(type, pointerType, screenX) {
+      target.dispatchEvent(new PointerEvent(type, {bubbles:true, pointerType, screenX, screenY:80}));
+      states.push(document.documentElement.classList.contains('can-hover') && target.hasAttribute('title'));
+    }
+    point('pointermove','mouse',700);
+    point('pointerdown','touch',30);
+    point('pointerup','touch',30);
+    point('pointerover','mouse',700);
+    point('pointermove','mouse',30);
+    point('pointermove','mouse',700);
+    point('pointermove','mouse',710);
+    return states;`});
+  assert.deepEqual(hover, [true,false,false,false,false,false,true]);
   const box = await command(session+'/execute/sync', {args:[], script:`
     const capsule = document.getElementById('playerVolume'), range = document.getElementById('playerVolumeRange');
     document.getElementById('album').style.transform = 'none';
