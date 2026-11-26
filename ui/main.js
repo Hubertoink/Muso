@@ -2626,6 +2626,31 @@ $('openImageFolder').addEventListener('click', async () => {
   try { await invoke('open_image_folder', { albumId: state.viewAlbum.id }); }
   catch (e) { toast(String(e), 5000); }
 });
+const deleteAtmosDialog = $('deleteAtmosDialog');
+$('deleteAtmosBtn').addEventListener('click', () => {
+  if (!visiblePainting || visiblePainting.set.albumId !== state.viewAlbum?.id) return;
+  const {set, file} = visiblePainting, album = state.viewAlbum;
+  show($('albumMenu'), false);
+  $('deleteAtmosPreview').src = asset(file);
+  $('deleteAtmosAlbum').textContent = [album.artist, album.title].filter(Boolean).join(' — ');
+  deleteAtmosDialog.returnValue = '';
+  deleteAtmosDialog.addEventListener('close', async () => {
+    $('deleteAtmosPreview').removeAttribute('src');
+    if (state.view === 'album') $('albumMenuBtn').focus({preventScroll:true});
+    if (deleteAtmosDialog.returnValue !== 'delete') return;
+    try {
+      await invoke('delete_atmosphere', {albumId:album.id, style:set.style, file});
+      if (state.playing?.album.id === album.id) syncTv(true);
+      if (state.viewAlbum?.id === album.id) {
+        const next = playlist?.shown === file
+          ? playlist.files[(playlist.files.indexOf(file) + 1) % playlist.files.length] : playlist?.shown;
+        await startAtmospheres(album.id, false, next);
+      }
+      toast('Atmosphere deleted');
+    } catch (e) { toast(String(e), 5000); }
+  }, {once:true});
+  deleteAtmosDialog.showModal();
+});
 $('showAtmosBtn').addEventListener('click', () => {
   show($('albumMenu'), false);
   setAtmosEnabled($('showAtmosBtn').getAttribute('aria-pressed') !== 'true');
@@ -2671,16 +2696,24 @@ let atmosTimer = null;
 let atmosToken = 0;
 let readyAlbum = null;
 let playlist = null;
+let visiblePainting = null;
 function updateAtmosView() {
   syncTv();
   const p = state.playing;
   const reveal = !coverPull && !(inspectingQueue && albumQueue.length) && p?.introDone && readyAlbum === p.album.id && state.viewAlbum?.id === readyAlbum;
   $('album').classList.toggle('showing-atmos', !!reveal);
+  if (reveal) {
+    visiblePainting = playlist?.shown?.startsWith('atmos/') ? {set:playlist, file:playlist.shown} : null;
+  } else if (!inspectingQueue || !p?.introDone || visiblePainting?.set !== playlist || state.viewAlbum?.id !== readyAlbum) {
+    // Moving to the menu can briefly reveal the queue over the last visible painting.
+    visiblePainting = null;
+  }
+  show($('deleteAtmosBtn'), !!visiblePainting);
   coverStack.inert = !!reveal;
   spectrum.setPlayback(!!reveal && !p.paused, p?.playbackId);
   if (!reveal) stopWave();
 }
-async function startAtmospheres(albumId, announce = false) {
+async function startAtmospheres(albumId, announce = false, preferredFile) {
   stopAtmospheres();
   const token = ++atmosToken;
   const style = albumStyle(albumId);
@@ -2689,7 +2722,7 @@ async function startAtmospheres(albumId, announce = false) {
     const set = await savedPaintingSet(albumId, style);
     if (token !== atmosToken) return;
     if (set.files.length) {
-      if (atmosEnabled()) setPaintings(albumId, set.style, set.files);
+      if (atmosEnabled()) setPaintings(albumId, set.style, set.files, preferredFile);
       else $('showAtmosBtn').disabled = false;
       return;
     }
@@ -2708,7 +2741,7 @@ function schedulePainting() {
   }, delay);
 }
 
-function setPaintings(albumId, style, files) {
+function setPaintings(albumId, style, files, preferredFile) {
   if (!files.length) return;
   ++atmosToken; // Discard any library lookup that began before this set arrived.
   if (playlist?.albumId === albumId && playlist.style === style && playlist.first === files[0]) {
@@ -2718,7 +2751,7 @@ function setPaintings(albumId, style, files) {
   }
   clearTimeout(atmosTimer);
   playlist = { albumId, style, first: files[0], files, failed: new Set() };
-  loadPainting(playlist, files[0]);
+  loadPainting(playlist, files.includes(preferredFile) ? preferredFile : files[0]);
 }
 
 async function loadPainting(set, file) {

@@ -1257,6 +1257,8 @@ body:has(#crateTray.open) #crateDock { visibility: hidden; }
 .library-dialog h2 { font-size: 20px; font-weight: 400; margin-bottom: 22px; }
 .library-dialog h3 { margin: 22px 0 10px; color: var(--ink-dim); font-size: 11px; font-weight: 500; letter-spacing: .14em; text-transform: uppercase; }
 .library-dialog p { font-size: 13px; line-height: 1.6; }
+#deleteAtmosDialog { background: transparent; border: 0; border-radius: 0; box-shadow: none; }
+#deleteAtmosPreview { display: block; width: 100%; height: min(38vh, 320px); object-fit: contain; margin-bottom: 12px; }
 .library-dialog .style-field select { min-width: 0; max-width: 75%; padding: 8px; }
 #imageFolders { list-style: none; }
 #imageFolders li { display: flex; gap: 12px; align-items: center; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #333; }

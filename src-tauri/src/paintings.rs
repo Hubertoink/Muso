@@ -94,6 +94,49 @@ pub fn image_path(uri_path: &str) -> Option<Cow<'_, str>> {
         && !file.chars().any(forbidden) && !reserved(file)).then_some(rel)
 }
 
+pub fn delete(conn: &mut Connection, data_dir: &std::path::Path, album: &str, style: &str, file: &str) -> crate::R<()> {
+    use crate::err;
+    use std::{fs, io::ErrorKind};
+    let name = file.strip_prefix("atmos/").filter(|s| s.ends_with(".jpg") && !s.chars().any(forbidden) && !reserved(s))
+        .ok_or("Invalid atmosphere image.")?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(err)?;
+    let mut files = crate::db::atmospheres(&tx, album, style).map_err(err)?;
+    let index = files.iter().position(|f| f == file).ok_or("This atmosphere is no longer in this series.")?;
+    files.retain(|f| f != file);
+    crate::db::replace_atmospheres(&tx, album, style, &files).map_err(err)?;
+    if style == "auto" && index == 0 {
+        if let Some(first) = files.first() {
+            tx.execute("UPDATE auto_style_choices SET first_file=?2 WHERE first_file=?1", (file, first)).map_err(err)?;
+        }
+    }
+    let shared: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM atmosphere_variants WHERE file=?1)
+        OR EXISTS(SELECT 1 FROM atmospheres WHERE file=?1)", [file], |row| row.get(0)).map_err(err)?;
+    if shared { return tx.commit().map_err(err); }
+    tx.execute("DELETE FROM painting_prompts WHERE file=?1", [file]).map_err(err)?;
+
+    let dir = data_dir.join("atmos");
+    let path = dir.join(name);
+    let staged = match fs::symlink_metadata(&path) {
+        Ok(meta) if meta.is_file() || meta.is_symlink() => {
+            let temp = tempfile::tempdir_in(dir).map_err(err)?;
+            fs::rename(&path, temp.path().join("image")).map_err(err)?;
+            Some(temp)
+        }
+        Ok(_) => return Err("The atmosphere path is not an image file.".into()),
+        Err(e) if e.kind() == ErrorKind::NotFound => None,
+        Err(e) => return Err(err(e)),
+    };
+    if let Err(e) = tx.commit() {
+        if let Some(staged) = staged {
+            if let Err(restore) = fs::rename(staged.path().join("image"), &path) {
+                return Err(format!("{e}. Could not restore image: {restore}. Backup: {}", staged.keep().display()));
+            }
+        }
+        return Err(err(e));
+    }
+    Ok(())
+}
+
 /// Give indexed paintings from earlier releases readable names without regenerating them.
 pub fn rename_legacy(conn: &mut rusqlite::Connection, data_dir: &std::path::Path) -> rusqlite::Result<()> {
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -132,6 +175,31 @@ pub fn rename_legacy(conn: &mut rusqlite::Connection, data_dir: &std::path::Path
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn deletion_targets_only_indexed_paintings_and_keeps_shared_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        std::fs::create_dir(path.join("atmos")).unwrap();
+        let mut c = crate::db::open(std::path::Path::new(":memory:")).unwrap();
+        let files = vec!["atmos/first.jpg".to_owned(), "atmos/second.jpg".to_owned()];
+        crate::db::replace_atmospheres(&c, "a", "auto", &files).unwrap();
+        crate::style_history::record(&c, &files[0], "Ink", None, false).unwrap();
+        c.execute("INSERT INTO atmospheres VALUES('b',0,?1)", [&files[0]]).unwrap();
+        c.execute("INSERT INTO painting_prompts VALUES(?1,'ink')", [&files[0]]).unwrap();
+        for file in &files { std::fs::write(path.join(file), b"painting").unwrap(); }
+        for (album, style, file) in [("a","cel",files[0].as_str()), ("b","auto",&files[0]),
+            ("a","auto","atmos/../art/cover.jpg"), ("a","auto","personal/1-1")] {
+            assert!(delete(&mut c, path, album, style, file).is_err());
+        }
+        delete(&mut c, path, "a", "auto", &files[0]).unwrap();
+        assert_eq!(crate::db::atmospheres(&c, "a", "auto").unwrap(), files[1..]);
+        assert_eq!(c.query_row("SELECT first_file FROM auto_style_choices", [], |r| r.get::<_,String>(0)).unwrap(), files[1]);
+        assert!(path.join(&files[0]).is_file());
+        delete(&mut c, path, "b", "cinematic", &files[0]).unwrap();
+        assert!(!path.join(&files[0]).exists());
+        assert!(path.join(&files[1]).is_file());
+        assert_eq!(c.query_row("SELECT count(*) FROM painting_prompts", [], |r| r.get::<_,i64>(0)).unwrap(), 0);
+    }
     #[test]
     fn credits_follow_the_saved_series_and_only_show_a_commissioned_persona() {
         let c = crate::db::open(std::path::Path::new(":memory:")).unwrap();

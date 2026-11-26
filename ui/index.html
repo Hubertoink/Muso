@@ -369,6 +369,17 @@
     </div>
   </div>
 
+  <dialog id="deleteAtmosDialog" class="modal-card library-dialog" aria-labelledby="deleteAtmosTitle">
+    <form method="dialog" class="modal-scroll">
+      <h2 id="deleteAtmosTitle">Delete this atmosphere?</h2>
+      <img id="deleteAtmosPreview" alt="Selected atmosphere" />
+      <p id="deleteAtmosAlbum"></p>
+      <div class="modal-actions">
+        <button class="link" value="cancel" autofocus>Cancel</button>
+        <button class="pill strong" value="delete">Delete image</button>
+      </div>
+    </form>
+  </dialog>
   <dialog id="coverConfirm" class="modal-card" aria-labelledby="coverConfirmTitle" aria-describedby="coverConfirmText">
     <img id="coverBackdrop" alt="" aria-hidden="true" />
     <form method="dialog" class="modal-scroll">
@@ -557,6 +568,7 @@
       <label class="style-field"><svg aria-hidden="true"><use href="icons/lucide.svg#tag"/></svg>Genre <select id="albumGenre"></select></label>
       <input id="albumGenreInput" class="hidden" type="text" maxlength="60" placeholder="New genre – Enter to save" aria-label="New genre" spellcheck="false" autocomplete="off" />
       <button id="genBtn"><svg aria-hidden="true"><use href="icons/lucide.svg#sparkles"/></svg><span id="genLabel">Generate Visual Atmospheres</span></button>
+      <button id="deleteAtmosBtn" class="hidden" aria-haspopup="dialog" aria-controls="deleteAtmosDialog"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M5 7h14m-9 0V4h4v3M7 7l1 13h8l1-13"/></svg>Delete this atmosphere…</button>
       <button id="openImageFolder"><svg aria-hidden="true"><use href="icons/lucide.svg#folder-open"/></svg>Open image folder</button>
     </div>
 

@@ -85,7 +85,12 @@ beforeEach(async () => {
           return {files:window.personalFiles ?? [],warning:null};
         }
         if (command === 'image_inventory') return {folders:[],total:0,pending:0,unreadable:0};
-        if (command === 'get_atmospheres') return window.testPaintings ?? [];
+        if (command === 'get_atmospheres') return window.testSeries?.[args.style] ?? window.testPaintings ?? [];
+        if (command === 'delete_atmosphere') {
+          (window.deletedImages ??= []).push(args);
+          window.testSeries[args.style] = window.testSeries[args.style].filter(file => file !== args.file);
+          return;
+        }
         if (command === 'painting_credit') return window.testCredits?.[args.file] ?? null;
         if (command === 'generate_atmospheres') {
           (window.generationRequests ??= []).push(args);
@@ -1494,6 +1499,44 @@ for (const preference of ['opposite', 'follow']) {
     assert.equal(await page.locator('#albumStyle').textContent(), name);
   });
 }
+
+test('delete in the player targets the confirmed painting across slides and protects personal images', async () => {
+  await page.addInitScript(() => Object.defineProperty(navigator, 'userAgent', {value:'Windows'}));
+  await page.route('http://muso.localhost/**', route => route.fulfill({contentType:'image/svg+xml',
+    body:'<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20"><rect width="20" height="20"/></svg>'}));
+  await page.reload();
+  await page.locator('#crate .sleeve[data-index="20"]').waitFor();
+  await page.evaluate(() => {
+    window.testSeries = {tape:['atmos/first.jpg','atmos/second.jpg']};
+    window.personalFiles = ['personal/1-1'];
+  });
+  await down(); await up();
+  await page.waitForFunction(() => playlist?.shown === 'atmos/first.jpg');
+  await page.locator('#albumMenuBtn').click();
+  const remove = page.getByRole('button', {name:'Delete this atmosphere…'});
+  assert.ok(await remove.isHidden()); // The track is still showing its cover.
+  await page.evaluate(() => emitPlayback('cover-intro-ended', state.playing.playbackId));
+  await remove.click();
+  const dialog = page.getByRole('dialog', {name:'Delete this atmosphere?'});
+  await dialog.getByRole('button', {name:'Cancel'}).click();
+  assert.equal(await page.evaluate(() => window.deletedImages?.length ?? 0), 0);
+  await page.evaluate(() => enqueue(state.albums[21]));
+  await page.locator('#albumMenuBtn').click();
+  await remove.click();
+  await page.evaluate(() => loadPainting(playlist, 'atmos/second.jpg'));
+  assert.match(await dialog.locator('img').getAttribute('src'), /first\.jpg$/);
+  await dialog.getByRole('button', {name:'Delete image'}).click();
+  await page.waitForFunction(() => playlist?.files.length === 1 && playlist?.shown === 'atmos/second.jpg');
+  assert.deepEqual(await page.evaluate(() => window.deletedImages), [{albumId:'000014',style:'tape',file:'atmos/first.jpg'}]);
+  await page.evaluate(() => { removeQueued(albumQueue[0]); updateAtmosView(); });
+  await page.locator('#albumMenuBtn').click();
+  await remove.click();
+  await dialog.getByRole('button', {name:'Delete image'}).click();
+  await page.waitForFunction(() => playlist?.shown === 'personal/1-1');
+  await page.locator('#albumMenuBtn').click();
+  assert.ok(await remove.isHidden());
+  assert.ok(await page.locator('#openImageFolder').isVisible());
+});
 
 test('the cover waits for a decoded atmosphere and fades back with every queued sleeve on the next track', async () => {
   // Use the HTTP form of Muso's image protocol so Playwright can serve a real image.

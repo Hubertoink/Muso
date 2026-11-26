@@ -1,6 +1,6 @@
 [package]
 name = "muso"
-version = "0.1.43"
+version = "0.1.44"
 description = "Muso – a minimalist digital record crate"
 edition = "2021"
 license = "MIT"

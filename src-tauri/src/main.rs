@@ -6,6 +6,8 @@ mod audio;
 mod covers;
 mod crates;
 mod db;
+#[cfg(target_os = "linux")]
+mod file_manager;
 mod genres;
 mod heos;
 mod paintings;
@@ -356,11 +358,15 @@ fn painting_credit(state: State<'_, AppState>, album_id: String, style: String, 
 }
 
 #[tauri::command]
-fn open_image_folder(state: State<'_, AppState>, album_id: String) -> R<()> {
+fn delete_atmosphere(state: State<'_, AppState>, album_id: String, style: String, file: String) -> R<()> {
+    let mut conn = state.db.lock().map_err(err)?;
+    paintings::delete(&mut conn, &state.data_dir, &album_id, &style, &file)
+}
+
+#[tauri::command]
+async fn open_image_folder(state: State<'_, AppState>, album_id: String) -> R<()> {
     let dir = state.data_dir.join("atmos");
-    if !dir.is_dir() {
-        return Err("No atmosphere images have been saved yet.".into());
-    }
+    std::fs::create_dir_all(&dir).map_err(err)?;
     #[cfg(windows)]
     {
         let selected = {
@@ -380,6 +386,9 @@ fn open_image_folder(state: State<'_, AppState>, album_id: String) -> R<()> {
     }
     #[cfg(not(windows))]
     let _ = album_id;
+    #[cfg(target_os = "linux")]
+    return tauri::async_runtime::spawn_blocking(move || file_manager::show_folder(&dir)).await.map_err(err)?;
+    #[cfg(not(target_os = "linux"))]
     open::that_detached(dir).map_err(err)
 }
 
@@ -425,10 +434,13 @@ async fn generate_atmospheres(app: AppHandle, state: State<'_, AppState>, album_
         if only_if_empty && files.len() == 1 && db::has_atmospheres(&tx, &album_id).map_err(err)? {
             return Err("This album already has saved atmospheres.".into());
         }
-        if files.len() > 1 && old != files[..files.len() - 1] {
+        if files.len() > 1 && old.iter().any(|f| !files[..files.len() - 1].contains(f)) {
             return Err("Another generation replaced these paintings.".into());
         }
-        db::replace_atmospheres(&tx, &album_id, style, files).map_err(err)?;
+        // Keep deletions made while the rest of this series was generating.
+        let mut saved = if files.len() == 1 { Vec::new() } else { old.clone() };
+        saved.push(files.last().unwrap().clone());
+        db::replace_atmospheres(&tx, &album_id, style, &saved).map_err(err)?;
         if files.len() == 1 {
             for previous in &old {
                 tx.execute("DELETE FROM painting_prompts WHERE file=?1", [previous]).map_err(err)?;
@@ -438,10 +450,16 @@ async fn generate_atmospheres(app: AppHandle, state: State<'_, AppState>, album_
         if files.len() == 1 && style == "auto" {
             db::set_setting(&tx, &format!("atmos_auto_style.{album_id}"), name).map_err(err)?;
             style_history::record(&tx, &files[0], name, Some(technique), false).map_err(err)?;
+        } else if style == "auto" && old.is_empty() {
+            // Earlier frames from this running generation have all been deleted.
+            for previous in &files[..files.len() - 1] {
+                tx.execute("UPDATE auto_style_choices SET first_file=?2 WHERE first_file=?1",
+                    (previous, &saved[0])).map_err(err)?;
+            }
         }
         tx.commit().map_err(err)?;
         let _ = app.emit("atmos-image-ready", serde_json::json!({
-            "albumId": album_id, "style": style, "files": files
+            "albumId": album_id, "style": style, "files": saved
         }));
         drop(conn);
         if files.len() == 1 {
@@ -453,7 +471,8 @@ async fn generate_atmospheres(app: AppHandle, state: State<'_, AppState>, album_
             }
         }
         Ok(())
-    }).await
+    }).await?;
+    db::atmospheres(&*state.db.lock().map_err(err)?, &album_id, style).map_err(err)
 }
 
 /// Serves cached artwork / atmospheres from the app data dir via `muso://`.
@@ -601,6 +620,7 @@ fn main() {
             set_setting,
             get_atmospheres,
             painting_credit,
+            delete_atmosphere,
             open_image_folder,
             generate_atmospheres
         ])
