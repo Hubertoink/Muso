@@ -1,6 +1,6 @@
 use crate::db::{Album, Track};
 mod atmospheres;
-pub use atmospheres::generate;
+pub use atmospheres::{generate, ImageSettings};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -10,7 +10,6 @@ const API: &str = "https://api.openai.com/v1";
 const EDITORIAL_MODEL: &str = "gpt-6.2-sol";
 const RESEARCH_MODEL: &str = "gpt-6.1-terra";
 const PHOTO_CLASSIFICATION_MODEL: &str = "gpt-6-luna";
-const IMAGE_MODEL: &str = "gpt-image-2.6-flare";
 
 fn genre_taxonomy() -> &'static str {
     // The release-specific pilot notes are examples for readers, not evidence about another record.

@@ -1053,6 +1053,10 @@ test('automatic painting is opt-in, persists its count and checks only once per 
     select.value = '5';
     select.dispatchEvent(new Event('change'));
   });
+  await page.locator('#menuBtn').tap();
+  await page.locator('[data-action="ai"]').tap();
+  await page.locator('#imageModel').selectOption('sunburst');
+  await page.locator('#imageResolution').selectOption('4k');
   await page.reload();
   await page.locator('#crate .sleeve[data-index="20"]').waitFor();
   assert.equal(await page.locator('#playImageCount').inputValue(), '5');
@@ -1070,6 +1074,27 @@ test('automatic painting is opt-in, persists its count and checks only once per 
   assert.equal(calls[0].count, 5);
   assert.equal(calls[0].allowRepaint, true);
   assert.equal(calls[0].artistPersonas, true);
+  assert.deepEqual(calls[0].imageSettings, {model:'sunburst', resolution:'4k'});
+});
+
+test('image settings have touch-sized selectors and apply to manual generation', async () => {
+  await page.setViewportSize({ width: 390, height: 700 });
+  await page.evaluate(() => sessionStorage.setItem('test.envKey', 'yes'));
+  await page.locator('#menuBtn').tap();
+  await page.locator('[data-action="ai"]').tap();
+  const model = page.getByRole('combobox', {name:'Image model', exact:true});
+  const resolution = page.getByRole('combobox', {name:'Resolution', exact:true});
+  assert.equal(await model.inputValue(), 'flare');
+  assert.equal(await resolution.inputValue(), '1080p');
+  for (const control of [model, resolution]) {
+    const box = await control.boundingBox();
+    assert.ok(box.height >= 44 && box.width >= 44 && box.x >= 0 && box.x + box.width <= 390);
+  }
+  await resolution.selectOption('4k');
+  await page.locator('#aiGenerateBtn').tap();
+  await page.waitForFunction(() => window.generationRequests?.length === 1);
+  assert.deepEqual(await page.evaluate(() => window.generationRequests[0].imageSettings),
+    {model:'flare', resolution:'4k'});
 });
 
 test('AI style is a default that an album can override, remember and restore', async () => {

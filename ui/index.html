@@ -419,11 +419,20 @@
         </section>
         <section>
           <h3>Image generation</h3>
+          <label class="pref-row"><span>Image model</span><select id="imageModel">
+            <option value="flare">GPT Image 2.6 Flare</option>
+            <option value="sunburst">GPT Image 2.6 Sunburst</option>
+          </select></label>
+          <label class="pref-row"><span>Resolution</span><select id="imageResolution" aria-describedby="imageResolutionHelp">
+            <option value="1080p">1080p · Full HD</option>
+            <option value="4k">4K · Ultra HD</option>
+          </select></label>
+          <p class="muted" id="imageResolutionHelp">4K generates 3840 × 2160 images and costs more per image.</p>
           <label class="pref-row"><span>Research the artist and album before generating</span><input id="researchToggle" type="checkbox" role="switch" aria-describedby="researchHelp" /></label>
           <p class="muted" id="researchHelp">New research can use up to five web searches. Muso saves the findings and writes a missing article when generating images with research on. Saved research and articles also guide images when web research is off.</p>
           <label class="pref-row"><span>Allow one automatic repaint per scene</span><input id="repaintToggle" type="checkbox" role="switch" aria-describedby="repaintHelp" /></label>
           <p class="muted" id="repaintHelp">Every image is reviewed. A repaint adds one paid high-quality generation and another review. Scenes that fail the publication criteria are skipped.</p>
-          <details class="pref-details"><summary>How images are generated</summary><p class="muted">AI choice can use the cover to choose a visual style for the series. Scene review compares the plan with the cover and up to six earlier paintings. Each image is generated with the full series plan and checked against the cover and its musical cue. Images are saved locally at 1920 × 1080.</p></details>
+          <details class="pref-details"><summary>How images are generated</summary><p class="muted">AI choice can use the cover to choose a visual style for the series. Scene review compares the plan with the cover and up to six earlier paintings. Each image is generated with the full series plan and checked against the cover and its musical cue. Muso saves the images locally at your selected resolution.</p></details>
           <div class="pref-actions"><button id="aiGenerateBtn">Generate for the focused album</button></div>
         </section>
         <section>

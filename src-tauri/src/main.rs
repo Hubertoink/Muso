@@ -384,7 +384,7 @@ fn open_image_folder(state: State<'_, AppState>, album_id: String) -> R<()> {
 }
 
 #[tauri::command]
-async fn generate_atmospheres(app: AppHandle, state: State<'_, AppState>, album_id: String, research: Option<bool>, style: Option<String>, count: Option<usize>, allow_repaint: Option<bool>, artist_personas: Option<bool>, only_if_empty: Option<bool>) -> R<Vec<String>> {
+async fn generate_atmospheres(app: AppHandle, state: State<'_, AppState>, album_id: String, research: Option<bool>, style: Option<String>, count: Option<usize>, allow_repaint: Option<bool>, artist_personas: Option<bool>, only_if_empty: Option<bool>, image_settings: Option<ai::ImageSettings>) -> R<Vec<String>> {
     let count = count.unwrap_or(3);
     if !(3..=5).contains(&count) { return Err("Choose 3 to 5 images.".into()); }
     let only_if_empty = only_if_empty.unwrap_or(false);
@@ -415,7 +415,7 @@ async fn generate_atmospheres(app: AppHandle, state: State<'_, AppState>, album_
         let message = match stage { "Researching" => "Researching the album", "Writing" => "Writing the album article", _ => "Saving the album article" };
         let _ = app.emit("atmos-progress", ai::AtmosProgress { album_id: album_id.clone(), step: 0, total: count + 1, message: message.into() });
     }).await?;
-    ai::generate(&key, &album, &tracks, &state.data_dir, &context, references, direction, count, allow_repaint.unwrap_or(false), artist_personas.unwrap_or(false), |step, message| {
+    ai::generate(&key, &album, &tracks, &state.data_dir, &context, references, direction, count, allow_repaint.unwrap_or(false), artist_personas.unwrap_or(false), image_settings.unwrap_or_default(), |step, message| {
         let _ = app.emit("atmos-progress", ai::AtmosProgress { album_id: album_id.clone(), step, total: count+1, message: message.into() });
     }, |files, name, technique, prompt| {
         let mut conn = state.db.lock().map_err(err)?;

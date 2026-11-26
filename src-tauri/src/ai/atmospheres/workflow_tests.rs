@@ -29,17 +29,21 @@ fn read_request(stream: &TcpStream) -> Option<Value> {
 
 /// Each verdict is (near_duplicate, grounded, craft_ok). An empty `expected` means the set must fail.
 fn run_case(with_cover: bool, allow_repaint: bool, verdicts: &[(bool, bool, bool)], expected_paints: usize, expected: &[&str]) {
-    run_styled_case(with_cover, allow_repaint, verdicts, expected_paints, expected, None, None);
+    run_styled_case(with_cover, allow_repaint, verdicts, expected_paints, expected, None, None, ImageSettings::default());
 }
 
-fn run_styled_case(with_cover: bool, allow_repaint: bool, verdicts: &[(bool, bool, bool)], expected_paints: usize, expected: &[&str], style: Option<Preset>, persona: Option<&'static personas::Persona>) {
+fn run_styled_case(with_cover: bool, allow_repaint: bool, verdicts: &[(bool, bool, bool)], expected_paints: usize, expected: &[&str], style: Option<Preset>, persona: Option<&'static personas::Persona>, images: ImageSettings) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     let base = format!("http://{addr}");
     let mut reviews = verdicts.to_vec().into_iter();
+    let (requested, saved, api_size) = match images.resolution {
+        Resolution::FullHd => ((1920, 1088), (1920, 1080), "1920x1088"),
+        Resolution::UltraHd => ((3840, 2160), (3840, 2160), "3840x2160"),
+    };
     let server = std::thread::spawn(move || {
         let mut jpeg = Cursor::new(Vec::new());
-        DynamicImage::new_rgb8(1920, 1088).write_to(&mut jpeg, image::ImageFormat::Jpeg).unwrap();
+        DynamicImage::new_rgb8(requested.0, requested.1).write_to(&mut jpeg, image::ImageFormat::Jpeg).unwrap();
         let encoded = base64::engine::general_purpose::STANDARD.encode(jpeg.into_inner());
         let mut steps = Vec::new();
         let mut qualities = Vec::new();
@@ -49,7 +53,11 @@ fn run_styled_case(with_cover: bool, allow_repaint: bool, verdicts: &[(bool, boo
             let stage =
                 body.pointer("/response_format/json_schema/name").and_then(Value::as_str).unwrap_or("paint");
             steps.push(stage.to_owned());
-            assert_eq!(body["model"], if stage == "paint" { "gpt-image-2.6-flare" } else { "gpt-6.2-sol" });
+            let model = match images.model {
+                ImageModel::Flare => "gpt-image-2.6-flare",
+                ImageModel::Sunburst => "gpt-image-2.6-sunburst",
+            };
+            assert_eq!(body["model"], if stage == "paint" { model } else { "gpt-6.2-sol" });
             let parts = &body["messages"][1]["content"];
             if let Some(artist) = persona {
                 let brief = if stage == "album_scenes" { artist.planning_brief(style.is_some()) } else { artist.commission() };
@@ -86,7 +94,7 @@ fn run_styled_case(with_cover: bool, allow_repaint: bool, verdicts: &[(bool, boo
                     json!({"scenes":edits})
                 }
                 "paint" => {
-                    assert_eq!(body["size"], "1920x1088");
+                    assert_eq!(body["size"], api_size);
                     let prompt = body["prompt"].as_str().unwrap();
                     for i in 1..=3 { assert!(prompt.contains(&format!("\n{i}. "))); }
                     assert!(prompt.contains("Render only scene "));
@@ -131,6 +139,7 @@ fn run_styled_case(with_cover: bool, allow_repaint: bool, verdicts: &[(bool, boo
         client: reqwest::Client::builder().no_proxy().timeout(Duration::from_secs(10)).build().unwrap(),
         key: "test",
         base: &base,
+        images,
     };
     let mut refs = VisualInputs::default();
     let db = crate::db::open(&temp.path().join("library.db")).unwrap();
@@ -157,7 +166,7 @@ fn run_styled_case(with_cover: bool, allow_repaint: bool, verdicts: &[(bool, boo
             assert_eq!(technique, "monotype");
             assert_eq!(medium, style.map_or("Monotype", |p| p.label));
             assert_eq!(files.len(), prompts.len() + 1);
-            assert_eq!(image::image_dimensions(temp.path().join(files.last().unwrap())).unwrap(), (1920, 1080));
+            assert_eq!(image::image_dimensions(temp.path().join(files.last().unwrap())).unwrap(), saved);
             prompts.push(prompt.to_owned());
             Ok(())
         },
@@ -205,11 +214,12 @@ fn full_hd_crop_preserves_the_entire_width_and_centres_vertically() {
     let mut original = DynamicImage::new_rgb8(1920, 1088);
     original.put_pixel(0, 4, Rgba([12, 34, 56, 255]));
     original.put_pixel(1919, 1083, Rgba([56, 34, 12, 255]));
-    let result = full_hd(original).unwrap();
+    let result = Resolution::FullHd.finish(original).unwrap();
     assert_eq!(result.dimensions(), (1920, 1080));
     assert_eq!(result.get_pixel(0, 0), Rgba([12, 34, 56, 255]));
     assert_eq!(result.get_pixel(1919, 1079), Rgba([56, 34, 12, 255]));
-    assert!(full_hd(DynamicImage::new_rgb8(1536, 1024)).is_err());
+    assert!(Resolution::FullHd.finish(DynamicImage::new_rgb8(1536, 1024)).is_err());
+    assert!(Resolution::UltraHd.finish(result).is_err());
 }
 
 #[test]
@@ -233,12 +243,13 @@ fn every_render_has_the_full_ordered_series_and_one_target() {
 
 #[test]
 fn manual_style_applies_its_look_and_surface_even_when_the_planner_proposes_another_medium() {
-    run_styled_case(true, false, &[(false, true, true); 3], 3, &["Scene 1", "Scene 2", "Scene 3"], preset("landscapephoto"), Some(personas::draw()));
+    run_styled_case(true, false, &[(false, true, true); 3], 3, &["Scene 1", "Scene 2", "Scene 3"], preset("landscapephoto"), Some(personas::draw()), ImageSettings::default());
 }
 
 #[test]
 fn automatic_series_keeps_its_commission_through_a_repaint() {
     let ok = (false, true, true);
+    let images = serde_json::from_value(json!({"model":"sunburst","resolution":"4k"})).unwrap();
     run_styled_case(true, true, &[(true, true, true), ok, ok, ok], 4,
-        &["Revised scene", "Scene 2", "Scene 3"], None, Some(personas::draw()));
+        &["Revised scene", "Scene 2", "Scene 3"], None, Some(personas::draw()), images);
 }

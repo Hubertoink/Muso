@@ -1680,6 +1680,12 @@ generateOnPlay.addEventListener('change', () => {
   playImageCount.disabled = !generateOnPlay.checked;
 });
 playImageCount.addEventListener('change', () => localStorage.setItem('muso.playImageCount', playImageCount.value));
+for (const select of [$('imageModel'), $('imageResolution')]) {
+  const key = 'muso.' + select.id;
+  const saved = localStorage.getItem(key);
+  if ([...select.options].some(option => option.value === saved)) select.value = saved;
+  select.addEventListener('change', () => localStorage.setItem(key, select.value));
+}
 function prepareAi() {
   $('atmosToggle').checked = atmosEnabled();
   $('repaintToggle').checked = repaintEnabled();
@@ -2763,6 +2769,7 @@ async function generate(a, automatic = false) {
   if (!automatic) toast(`Composing atmospheres for ${a.title}…`);
   try {
     const files = await invoke('generate_atmospheres', { albumId: a.id, research: researchEnabled(), allowRepaint: repaintEnabled(), artistPersonas: artistPersonasEnabled(), style,
+      imageSettings: { model: $('imageModel').value, resolution: $('imageResolution').value },
       onlyIfEmpty: automatic, count: automatic ? Number(playImageCount.value) : 3 });
     if (!files.length) return;
     paintingReady({ albumId: a.id, style, files });

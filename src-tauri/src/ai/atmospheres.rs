@@ -197,10 +197,68 @@ fn render_prompt(series: &[String], index: usize, scene: &Scene, look: &Look) ->
     )
 }
 
+#[derive(Clone, Copy, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum ImageModel {
+    #[default]
+    Flare,
+    Sunburst,
+}
+
+impl ImageModel {
+    fn api_name(self) -> &'static str {
+        match self {
+            Self::Flare => "gpt-image-2.6-flare",
+            Self::Sunburst => "gpt-image-2.6-sunburst",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Default, Deserialize)]
+enum Resolution {
+    #[default]
+    #[serde(rename = "1080p")]
+    FullHd,
+    #[serde(rename = "4k")]
+    UltraHd,
+}
+
+impl Resolution {
+    fn dimensions(self) -> (u32, u32) {
+        match self {
+            Self::FullHd => (1920, 1080),
+            Self::UltraHd => (3840, 2160),
+        }
+    }
+
+    fn request_size(self) -> String {
+        let (w, h) = self.dimensions();
+        format!("{w}x{}", h.next_multiple_of(16))
+    }
+
+    fn finish(self, img: DynamicImage) -> Result<DynamicImage, String> {
+        let (w, h) = self.dimensions();
+        match (img.width(), img.height()) {
+            size if size == (w, h) => Ok(img),
+            (width, height) if width == w && height == h.next_multiple_of(16) =>
+                Ok(img.crop_imm(0, (height - h) / 2, w, h)),
+            (width, height) => Err(format!("Expected a {w} × {h} atmosphere, received {width} × {height}.")),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Default, Deserialize)]
+#[serde(default)]
+pub struct ImageSettings {
+    model: ImageModel,
+    resolution: Resolution,
+}
+
 struct AtmosphereApi<'a> {
     client: reqwest::Client,
     key: &'a str,
     base: &'a str,
+    images: ImageSettings,
 }
 
 impl AtmosphereApi<'_> {
@@ -234,7 +292,8 @@ impl AtmosphereApi<'_> {
             self.key,
             &format!("{}/images/generations", self.base),
             json!({
-                "model":IMAGE_MODEL,"prompt":prompt,"size":"1920x1088","quality":quality,"n":1
+                "model":self.images.model.api_name(),"prompt":prompt,"size":self.images.resolution.request_size(),
+                "quality":quality,"n":1
             }),
         )
         .await?;
@@ -243,15 +302,7 @@ impl AtmosphereApi<'_> {
             .map_err(crate::err)?;
         let img =
             image::load_from_memory(&bytes).map_err(|e| format!("Could not decode the generated image: {e}"))?;
-        full_hd(img)
-    }
-}
-
-fn full_hd(img: DynamicImage) -> Result<DynamicImage, String> {
-    match (img.width(), img.height()) {
-        (1920, 1088) => Ok(img.crop_imm(0, 4, 1920, 1080)),
-        (1920, 1080) => Ok(img),
-        (w, h) => Err(format!("Expected a Full HD atmosphere, received {w} × {h}.")),
+        self.images.resolution.finish(img)
     }
 }
 
@@ -446,12 +497,13 @@ pub async fn generate(
     count: usize,
     allow_repaint: bool,
     artist_personas: bool,
+    images: ImageSettings,
     progress: impl Fn(usize, &str),
     publish: impl FnMut(&[String], &str, &str, &str) -> Result<(), String>,
 ) -> Result<Vec<String>, String> {
     let client =
         reqwest::Client::builder().timeout(Duration::from_secs(300)).build().map_err(|e| e.to_string())?;
-    let api = AtmosphereApi { client, key, base: API };
+    let api = AtmosphereApi { client, key, base: API, images };
     let directory = data_dir.to_owned();
     let refs =
         tauri::async_runtime::spawn_blocking(move || references.content(&directory)).await.map_err(crate::err)?;

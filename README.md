@@ -45,9 +45,9 @@ In an individual album search, choose between plausible editions using their pre
 
 **AI Features → Research the artist and album before generating** prepares a source brief for the exact release, using up to five web searches. Muso reuses the saved brief. Turning research off still lets it use existing notes, credits and the track sequence. No audio is analysed. The [genre taxonomy](GENRE-TAXONOMIE.md) supplies vocabulary for genre suggestions and helps the scene planner distinguish voice, tempo, energy and visual abstraction. Your own genre assignments and sorting preferences guide classification.
 
-Muso plans and reviews all three to five scenes together before painting. Cover language can be prominent in an individual scene and plays a supporting role across the set. Every image request includes the ordered scene descriptions and identifies the single scene to render. GPT-6.1 Terra researches the album. GPT-6.2 Sol plans the series and reviews each image painted by GPT-Image-2.6 Flare. Enable **AI Features → Allow one automatic repaint per scene** to permit one high-quality correction and a second review per scene. This option is off by default. To qualify for publication, a version must have a visible musical connection, respect explicit image constraints and avoid restaging the cover. Muso saves qualifying scenes with their rendering prompts.
+Muso plans and reviews all three to five scenes together before painting. Cover language can be prominent in an individual scene and plays a supporting role across the set. Every image request includes the ordered scene descriptions and identifies the single scene to render. GPT-6.1 Terra researches the album. GPT-6.2 Sol plans the series and reviews each image painted by the selected GPT Image 2.6 model. Enable **AI Features → Allow one automatic repaint per scene** to permit one high-quality correction and a second review per scene. This option is off by default. To qualify for publication, a version must have a visible musical connection, respect explicit image constraints and avoid restaging the cover. Muso saves qualifying scenes with their rendering prompts.
 
-New atmospheres are composed for widescreen playback and saved as **1920 × 1080 JPEGs**. The image API accepts dimensions in multiples of 16. Muso requests 1920 × 1088 and crops four pixels from the top and bottom. **Show Visual Atmospheres** in the album menu displays the saved images across the player window.
+Under **AI Features → Image generation**, choose **GPT Image 2.6 Flare** or **Sunburst** and a resolution for new atmospheres. Flare and **1080p** (1920 × 1080) are the defaults. **4K** (3840 × 2160) generates a native widescreen JPEG at a higher API cost. The same choices apply to manually started series, automatic generation during playback and repaints. **Show Visual Atmospheres** in the album menu displays the saved images across the player window.
 
 **Menu → Images** indexes JPEG, PNG and WebP files in selected folders and their subfolders. Use **Rescan folders** after adding, changing or deleting files. Removing a folder releases its entries in Muso and keeps your originals on disk. Connect external drives when playing their images.
 
@@ -123,7 +123,7 @@ src-tauri/src/
   db.rs              SQLite schema + queries (folders, albums, tracks, atmospheres, settings)
   scanner.rs         Incremental recursive scan (mtime based), tags via lofty, artwork → JPEG cache
   audio.rs           Dedicated audio thread (rodio + symphonia), emits track-ended
-  ai.rs              OpenAI: GPT-6.1 Terra researches, GPT-6.2 Sol writes, plans and reviews, GPT-Image-2.6 Flare paints
+  ai.rs              OpenAI: GPT-6.1 Terra researches, GPT-6.2 Sol writes, plans and reviews, GPT Image 2.6 Flare or Sunburst paints
 ```
 
 The crate only renders about 19 sleeves around the focused record, so scrolling stays smooth with more than 10,000 albums.
