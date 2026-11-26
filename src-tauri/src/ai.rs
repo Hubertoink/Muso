@@ -1,6 +1,7 @@
 use crate::db::{Album, Track};
 mod atmospheres;
 pub use atmospheres::{generate, ImageSettings};
+pub(crate) use atmospheres::resolve_persona;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::time::Duration;

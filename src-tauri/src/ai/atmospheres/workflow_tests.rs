@@ -243,7 +243,9 @@ fn every_render_has_the_full_ordered_series_and_one_target() {
 
 #[test]
 fn manual_style_applies_its_look_and_surface_even_when_the_planner_proposes_another_medium() {
-    run_styled_case(true, false, &[(false, true, true); 3], 3, &["Scene 1", "Scene 2", "Scene 3"], preset("landscapephoto"), Some(personas::draw()), ImageSettings::default());
+    let artist = resolve_persona(Some("Editorial illustrator"), false).unwrap().unwrap();
+    assert_eq!(artist.name, "Editorial illustrator");
+    run_styled_case(true, false, &[(false, true, true); 3], 3, &["Scene 1", "Scene 2", "Scene 3"], preset("landscapephoto"), Some(artist), ImageSettings::default());
 }
 
 #[test]

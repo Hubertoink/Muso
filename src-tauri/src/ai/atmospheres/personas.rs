@@ -1,4 +1,4 @@
-pub(super) struct Persona {
+pub(crate) struct Persona {
     pub name: &'static str,
     perspective: &'static str,
     repertoire: &'static str,
@@ -39,6 +39,14 @@ const PERSONAS: [Persona; 6] = [
 
 pub(super) fn draw() -> &'static Persona {
     &PERSONAS[fastrand::usize(..PERSONAS.len())]
+}
+
+pub(crate) fn resolve_persona(name: Option<&str>, random: bool) -> Result<Option<&'static Persona>, String> {
+    match name {
+        Some(name) => PERSONAS.iter().find(|artist| artist.name == name).map(Some)
+            .ok_or_else(|| format!("Unknown artist persona: {name}")),
+        None => Ok(random.then(draw)),
+    }
 }
 
 impl Persona {

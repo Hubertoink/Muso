@@ -783,18 +783,23 @@ const albumCrates = createAlbumCrates({
   },
   back: () => leaveCrates(),
 });
-function openCrates() {
+$('editLibraryCrate').addEventListener('click', () => {
+  if (activeCrate) openCrates(activeCrate.id);
+});
+function openCrates(editId) {
   if (state.view !== 'library') return;
   closeSearch();
   state.view = 'crates';
   show($('library'), false);
   syncMini();
-  albumCrates.open();
+  albumCrates.open(editId);
 }
 function leaveCrates() {
   if (state.view !== 'crates') return;
+  const editing = $('cratesPage').classList.contains('direct-edit');
   albumCrates.close();
   showLibrary();
+  if (editing) (activeCrate ? $('editLibraryCrate') : crate).focus({ preventScroll: true });
 }
 const swipeDirection = $('librarySwipeDirection');
 swipeDirection.value = localStorage.getItem('muso.librarySwipeDirection') === 'follow' ? 'follow' : 'opposite';
@@ -893,6 +898,7 @@ function applyLibraryOrder(previous = focused(), fallback = state.albums.length 
   const ordered = indexAlbums(scopedAlbums(modeAlbums()));
   $('libraryCrateName').textContent = activeCrate?.name ?? '';
   show($('libraryCrateHeading'), !!activeCrate);
+  show($('editLibraryCrate'), !!activeCrate);
   state.albums = browsingNew ? recentAlbums : ordered;
   newButton.setAttribute('aria-pressed', String(browsingNew));
   clearCrate();
@@ -1612,9 +1618,55 @@ function albumStyle(id) {
 let styleAlbum;
 const stylePicker = $('stylePicker');
 const styleTriggers = [$('albumStyle'), $('aiStyle')];
+const personaPicker = $('personaPicker');
+const personaTriggers = [$('albumPersona'), $('aiPersona')];
+const personaChoices = new Map([...personaPicker.querySelectorAll('button[value]')].map(button => [button.value, button]));
+const artistPersonasEnabled = () => localStorage.getItem('muso.artistPersonas') === '1';
+
+function albumPersonaOverride(id) {
+  const saved = localStorage.getItem('muso.persona.' + id);
+  return personaChoices.has(saved) ? saved : '';
+}
+function albumPersona(id) {
+  return albumPersonaOverride(id) || (artistPersonasEnabled() ? 'random' : 'none');
+}
+function showPersona(id) {
+  const selected = albumPersonaOverride(id);
+  const defaultLabel = artistPersonasEnabled() ? 'Default · Random artist' : 'Default · No persona';
+  $('personaDefault').textContent = defaultLabel;
+  const label = selected === 'random' || selected === 'none' ? personaChoices.get(selected).textContent : selected;
+  for (const trigger of personaTriggers) {
+    trigger.disabled = !id;
+    trigger.textContent = label || defaultLabel;
+  }
+  for (const [value, choice] of personaChoices) choice.setAttribute('aria-pressed', String(value === selected));
+}
+for (const trigger of personaTriggers) trigger.addEventListener('click', () => {
+  const album = state.viewAlbum || focused();
+  if (!album) return;
+  showStyle(album.id);
+  trigger.focus({ preventScroll: true });
+  personaCrate.open(albumPersonaOverride(album.id));
+});
+function choosePersona(value) {
+  if (!styleAlbum) return;
+  const key = 'muso.persona.' + styleAlbum;
+  if (value) localStorage.setItem(key, value);
+  else localStorage.removeItem(key);
+  showPersona(styleAlbum);
+  personaCrate.close();
+}
+const personaCrate = createCardCrate(personaPicker, choosePersona);
+personaPicker.querySelector('.persona-modes').addEventListener('click', e => {
+  const button = e.target.closest('button');
+  if (button) choosePersona(button.value);
+});
+
 async function showStyle(id) {
-  if (stylePicker.open && styleAlbum !== id) stylePicker.close();
+  if (stylePicker.open && styleAlbum !== id) styleCrate.close();
+  if (personaPicker.open && styleAlbum !== id) personaCrate.close();
   styleAlbum = id;
+  showPersona(id);
   const aiDefault = $('autoStyle').checked;
   const style = albumStyle(id);
   const override = albumStyleOverride(id);
@@ -1635,7 +1687,7 @@ async function showStyle(id) {
   }
 }
 function chooseStyle(style) {
-  stylePicker.close();
+  styleCrate.close();
   if (style === albumStyleOverride(styleAlbum)) return;
   const key = 'muso.style.' + styleAlbum;
   if (style) localStorage.setItem(key, style);
@@ -1650,19 +1702,11 @@ for (const trigger of styleTriggers) trigger.addEventListener('click', () => {
   if (!album || stylePicker.open) return;
   showStyle(album.id);
   trigger.focus({ preventScroll: true });
-  stylePicker.showModal();
   const selected = albumStyleOverride(album.id);
   $('defaultStyleChoice').setAttribute('aria-pressed', String(!selected));
   styleCrate.open(selected);
 });
 $('defaultStyleChoice').addEventListener('click', () => chooseStyle(''));
-$('closeStylePicker').addEventListener('click', () => stylePicker.close());
-stylePicker.addEventListener('click', e => {
-  if (e.target === stylePicker) {
-    const r = stylePicker.getBoundingClientRect();
-    if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) stylePicker.close();
-  }
-});
 $('autoStyle').checked = localStorage.getItem('muso.autoStyle') === '1';
 $('autoStyle').addEventListener('change', () => {
   localStorage.setItem('muso.autoStyle', $('autoStyle').checked ? '1' : '0');
@@ -1694,8 +1738,10 @@ function prepareAi() {
   showStyle((state.viewAlbum || focused())?.id);
 }
 const repaintEnabled = () => localStorage.getItem('muso.repaint') === '1';
-const artistPersonasEnabled = () => localStorage.getItem('muso.artistPersonas') === '1';
-$('artistPersonas').addEventListener('change', (e) => localStorage.setItem('muso.artistPersonas', e.target.checked ? '1' : '0'));
+$('artistPersonas').addEventListener('change', (e) => {
+  localStorage.setItem('muso.artistPersonas', e.target.checked ? '1' : '0');
+  showPersona(styleAlbum);
+});
 $('repaintToggle').addEventListener('change', (e) => localStorage.setItem('muso.repaint', e.target.checked ? '1' : '0'));
 const researchEnabled = () => localStorage.getItem('muso.research') === '1';
 $('researchToggle').addEventListener('change', (e) => localStorage.setItem('muso.research', e.target.checked ? '1' : '0'));
@@ -2757,6 +2803,7 @@ listen('atmos-image-ready', ({ payload }) => {
 });
 async function generate(a, automatic = false) {
   const style = albumStyle(a.id);
+  const persona = albumPersona(a.id);
   if (!automatic && !(await invoke('has_openai_key'))) {
     await loadKey();
     prepareAi();
@@ -2768,7 +2815,8 @@ async function generate(a, automatic = false) {
   generating.add(a.id);
   if (!automatic) toast(`Composing atmospheres for ${a.title}…`);
   try {
-    const files = await invoke('generate_atmospheres', { albumId: a.id, research: researchEnabled(), allowRepaint: repaintEnabled(), artistPersonas: artistPersonasEnabled(), style,
+    const files = await invoke('generate_atmospheres', { albumId: a.id, research: researchEnabled(), allowRepaint: repaintEnabled(), style,
+      artistPersonas: persona === 'random', artistPersona: ['random', 'none'].includes(persona) ? null : persona,
       imageSettings: { model: $('imageModel').value, resolution: $('imageResolution').value },
       onlyIfEmpty: automatic, count: automatic ? Number(playImageCount.value) : 3 });
     if (!files.length) return;
@@ -2798,7 +2846,7 @@ window.addEventListener('keydown', (e) => {
     if (!e.repeat) toggleFullscreen();
     return;
   }
-  if ($('coverConfirm').open || stylePicker.open || (e.target.closest('.style-trigger') && [' ', 'Enter'].includes(e.key))) return;
+  if ($('coverConfirm').open || stylePicker.open || personaPicker.open || (e.target.closest('.style-trigger') && [' ', 'Enter'].includes(e.key))) return;
   if (e.key === 'Escape' && !$('eq').classList.contains('hidden')) {
     $('eq').querySelector('.close').click();
     return;
@@ -2816,7 +2864,7 @@ window.addEventListener('keydown', (e) => {
     return;
   }
   if (modalOpen || !$('menu').classList.contains('hidden')) return;
-  if (e.target.closest('#crateDock, #libraryCrateHeading') && [' ', 'Enter'].includes(e.key)) return;
+  if (e.target.closest('#crateDock, #libraryCrateHeading, #editLibraryCrate, #fanTools, #cratesBack') && [' ', 'Enter'].includes(e.key)) return;
   if (e.target === $('noteAction') && (e.key === ' ' || e.key === 'Enter')) return;
   if (libraryIndex.contains(e.target) && (e.key === 'Enter' || e.key === ' ')) return;
   if (e.key === 'f' && state.view === 'album') {

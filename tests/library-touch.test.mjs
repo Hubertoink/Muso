@@ -65,6 +65,7 @@ beforeEach(async () => {
         }
         if (command === 'delete_album_note') return sessionStorage.removeItem('note.' + args.albumId);
         if (command === 'library_crates') {
+          if (args.change?.type === 'rename') crates.lists.find(c => c.id === args.change.id).name = args.change.name;
           if (args.change?.type === 'add') {
             const list = crates.lists.find(c => c.id === args.change.id);
             if (list) list.albums.push({id: args.change.album});
@@ -174,6 +175,26 @@ test('the bottom fan browses a crate across navigation, playback and refresh, th
   await page.locator('#closeLibraryCrate').click();
   assert.equal(await page.evaluate(() => focused().title), 'Record 20');
   assert.equal(await page.evaluate(() => state.albums.length), 80);
+});
+
+test('crate settings open the current crate for editing and return to its records', async () => {
+  const settings = page.getByRole('button', {name: 'Crate settings'});
+  assert.ok(await settings.isHidden());
+  await page.evaluate(async () => { fillCrate(3); await albumCrates.load(); });
+  await page.locator('#cratePeek').click();
+  await page.locator('#browseCrates button').first().click();
+  await settings.focus();
+  await page.keyboard.press('Space');
+  await page.getByRole('heading', {name: 'Crate settings'}).waitFor();
+  assert.equal(await page.locator('#fanName').textContent(), 'Records');
+  assert.ok(await page.locator('#crateShelf').isHidden());
+  await page.locator('#fanRename').click();
+  await page.locator('#fanNameInput').fill('Ambient');
+  await page.locator('#fanNameInput').press('Enter');
+  await page.locator('#fanClose').click();
+  assert.equal(await page.locator('#libraryCrateName').textContent(), 'Ambient');
+  assert.equal(await page.locator('#counter').textContent(), '0001 / 0003');
+  assert.ok(await settings.evaluate(el => el === document.activeElement));
 });
 
 test('crate sleeves fly from the chosen stack to their slots and return to its bottom preview', async () => {
@@ -842,6 +863,17 @@ test('the crate claims native touch scrolling and accepts a real wheel immediate
   assert.equal(await settled(), 20);
 });
 
+test('the sidebar fits a short window and restores its headings when enlarged', async () => {
+  await page.locator('#menuBtn').click();
+  const panel = page.locator('.menu-panel');
+  for (const height of [560, 700, 800]) {
+    await page.setViewportSize({ width: 820, height });
+    assert.equal(await panel.locator('h2:visible').count(), height === 800 ? 3 : 0);
+    assert.ok(await panel.evaluate(el => el.scrollHeight <= el.clientHeight));
+    assert.equal(await panel.getByRole('group', {name:'Library'}).count(), 1);
+  }
+});
+
 test('EQ closes back to the sidebar and an interrupted dismissal can reopen it', async () => {
   const menu = page.locator('#menu'), eq = page.locator('#eq');
   await page.locator('#menuBtn').click();
@@ -1130,6 +1162,7 @@ test('AI style is a default that an album can override, remember and restore', a
   await style.click();
   assert.equal(await gallery.locator('[data-style=pixelart]').getAttribute('aria-pressed'), 'true');
   await page.keyboard.press('Escape');
+  await page.locator('#stylePicker').waitFor({state:'hidden'});
   assert.ok(await style.evaluate(el => document.activeElement === el));
   assert.equal(await style.textContent(), 'Pixel Art');
   await style.click();
@@ -1137,6 +1170,90 @@ test('AI style is a default that an album can override, remember and restore', a
   await page.getByRole('button', {name: 'Generate with AI style'}).click();
   await page.waitForFunction(() => window.generationRequests?.[0]?.style === 'auto');
   assert.equal(await page.evaluate(() => localStorage.getItem('muso.style.' + state.viewAlbum.id)), null);
+});
+
+test('album choices align on the right and both galleries fade over the blurred player', async () => {
+  await page.locator('#crate .sleeve[data-index="20"]').click();
+  await page.locator('#albumMenuBtn').click();
+  const rightEdges = await page.locator('#albumMenu .style-field > :is(button, select)').evaluateAll(
+    fields => fields.map(field => field.getBoundingClientRect().right));
+  assert.equal(rightEdges.length, 3);
+  assert.ok(Math.max(...rightEdges) - Math.min(...rightEdges) < 1);
+
+  for (const id of ['albumStyle', 'albumPersona']) {
+    const result = await page.locator('#' + id).evaluate(async trigger => {
+      trigger.click();
+      const dialog = document.getElementById(trigger.getAttribute('aria-controls'));
+      function sampleFade() {
+        const fade = dialog.getAnimations().find(a => a.transitionProperty === 'opacity');
+        fade.pause();
+        fade.currentTime = fade.effect.getTiming().duration / 2;
+        const opacity = Number(getComputedStyle(dialog).opacity);
+        fade.finish();
+        return opacity;
+      }
+      const opening = sampleFade();
+      const background = getComputedStyle(dialog).backgroundColor;
+      const blur = getComputedStyle(dialog, '::backdrop').backdropFilter;
+      const closed = new Promise(resolve => dialog.addEventListener('close', resolve, {once:true}));
+      dialog.querySelector('header button').click();
+      const closing = sampleFade();
+      await closed;
+      return {opening, closing, background, blur, focused: document.activeElement === trigger};
+    });
+    assert.ok(result.opening > 0 && result.opening < 1);
+    assert.ok(result.closing > 0 && result.closing < 1);
+    assert.equal(result.background, 'rgba(0, 0, 0, 0)');
+    assert.equal(result.blur, 'blur(20px)');
+    assert.ok(result.focused);
+  }
+});
+
+test('artist portraits commission the selected persona per album and preserve the style', async () => {
+  await page.locator('#menuBtn').click();
+  await page.locator('[data-action=ai]').click();
+  await page.locator('#artistPersonas').check();
+  await page.locator('#aiPersona').click();
+  const gallery = page.getByRole('dialog', {name: 'Artist persona'});
+  const portraits = gallery.locator('img');
+  assert.equal(await portraits.count(), 6);
+  await portraits.evaluateAll(images => Promise.all(images.map(img => img.decode())));
+  await page.emulateMedia({reducedMotion:'reduce'});
+  const canvas = gallery.locator('#personaCanvas');
+  await canvas.hover();
+  await page.mouse.wheel(0, 70);
+  await page.waitForFunction(() => document.querySelector('#personaCaption').textContent === 'Experimental material artist');
+  await canvas.press('ArrowRight');
+  assert.equal(await gallery.locator('#personaCaption').textContent(), 'Editorial illustrator');
+  assert.equal(await page.locator('#aiPersona').textContent(), 'Default · Random artist');
+  await gallery.getByRole('button', {name: 'Use this artist'}).click();
+  await page.evaluate(() => {
+    sessionStorage.setItem('test.envKey', 'yes');
+    localStorage.setItem('muso.style.' + focused().id, 'pixelart');
+  });
+  await page.reload();
+  await page.locator('#crate .sleeve[data-index="20"]').click();
+  await page.locator('#albumMenuBtn').click();
+  const trigger = page.locator('#albumPersona');
+  assert.equal(await trigger.textContent(), 'Editorial illustrator');
+  assert.equal(await page.evaluate(() => albumPersona(state.albums[21].id)), 'random');
+  await trigger.click();
+  assert.equal(await gallery.getByRole('button', {pressed: true}).getAttribute('value'), 'Editorial illustrator');
+  await page.keyboard.press('Escape');
+  assert.ok(await trigger.evaluate(el => el === document.activeElement));
+  await page.getByRole('button', {name: 'Generate Pixel Art images'}).click();
+  await page.waitForFunction(() => window.generationRequests?.length);
+  const [request] = await page.evaluate(() => window.generationRequests);
+  assert.equal(request.artistPersona, 'Editorial illustrator');
+  assert.equal(request.artistPersonas, false);
+  assert.equal(request.style, 'pixelart');
+  await page.locator('#albumMenuBtn').click();
+  await trigger.click();
+  await gallery.getByRole('button', {name: 'No persona', exact: true}).click();
+  assert.equal(await page.evaluate(() => albumPersona(state.viewAlbum.id)), 'none');
+  await trigger.click();
+  await gallery.locator('#personaDefault').click();
+  assert.equal(await page.evaluate(() => albumPersona(state.viewAlbum.id)), 'random');
 });
 
 test('reopening a saved style keeps the covers fanned out after the first cover is hidden', async () => {
@@ -1193,6 +1310,7 @@ test('the style gallery returns to AI settings and applies only a confirmed choi
   const gallery = page.getByRole('dialog', {name:'Atmosphere style'});
   await gallery.waitFor();
   await gallery.getByRole('button', {name:'Close style selection'}).click();
+  await page.locator('#stylePicker').waitFor({state:'hidden'});
   assert.equal(await trigger.textContent(), 'Default · Cinematic');
   assert.ok(await trigger.evaluate(el => document.activeElement === el));
   await trigger.click();
@@ -1263,7 +1381,7 @@ for (const preference of ['opposite', 'follow']) {
     const name = await page.locator('#styleCaption').textContent();
     await touch('touchStart', x, 16, y);
     await touch('touchEnd', null, 16);
-    assert.ok(await page.locator('#stylePicker').isHidden());
+    await page.locator('#stylePicker').waitFor({state:'hidden'});
     assert.equal(await page.locator('#albumStyle').textContent(), name);
   });
 }

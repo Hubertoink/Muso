@@ -374,9 +374,15 @@ function createAlbumCrates({ invoke, lookup, play, browse, changed, back, toast,
       : 'Pull a cover down in the library to file it into a crate.';
   }
 
-  function open() {
+  function open(editId) {
     page.classList.remove('hidden');
     page.classList.remove('leaving');
+    const edit = listById(editId);
+    page.classList.toggle('direct-edit', !!edit);
+    if (edit) {
+      unfold(edit.id);
+      return;
+    }
     const shown = JSON.stringify(data.lists);
     renderShelf(true);
     update(null).then(() => {
@@ -385,7 +391,9 @@ function createAlbumCrates({ invoke, lookup, play, browse, changed, back, toast,
     el('cratesBack').focus({ preventScroll: true });
   }
   function close() {
+    finishRename(true);
     if (fanState) closeFan(true);
+    page.classList.remove('direct-edit');
     page.classList.add('hidden');
   }
   function isOpen() { return !page.classList.contains('hidden'); }
@@ -444,7 +452,7 @@ function createAlbumCrates({ invoke, lookup, play, browse, changed, back, toast,
     const list = listById(id);
     if (!list || fanState) return;
     const S = Math.round(clamp(Math.min(window.innerHeight * 0.34, window.innerWidth * 0.2), 120, 260));
-    fanState = { id, order: list.albums.slice(), els: new Map(), S, origin: stackOrigin(id) };
+    fanState = { id, order: list.albums.slice(), els: new Map(), S, origin: page.classList.contains('direct-edit') ? null : stackOrigin(id) };
     fanState.origin?.node.classList.add('lifted-away');
     fanCovers.style.setProperty('--S', S + 'px');
     fanCovers.replaceChildren();
@@ -482,6 +490,7 @@ function createAlbumCrates({ invoke, lookup, play, browse, changed, back, toast,
 
   async function collapse() {
     if (!fanState || fanState.closing) return;
+    if (page.classList.contains('direct-edit')) return back();
     finishRename(true);
     const st = fanState;
     st.closing = true;
@@ -697,6 +706,7 @@ function createAlbumCrates({ invoke, lookup, play, browse, changed, back, toast,
     page.classList.remove('fanned');
     await finishFanMotion(st);
     if (fanState !== st) return;
+    if (page.classList.contains('direct-edit')) return back();
     closeFan();
     renderShelf();
   });

@@ -4,6 +4,7 @@ use base64::Engine;
 use image::DynamicImage;
 use std::path::Path;
 mod personas;
+pub(crate) use personas::resolve_persona;
 
 #[derive(Deserialize, Serialize)]
 struct Scene {
@@ -496,7 +497,7 @@ pub async fn generate(
     style: Option<Preset>,
     count: usize,
     allow_repaint: bool,
-    artist_personas: bool,
+    persona: Option<&personas::Persona>,
     images: ImageSettings,
     progress: impl Fn(usize, &str),
     publish: impl FnMut(&[String], &str, &str, &str) -> Result<(), String>,
@@ -519,7 +520,6 @@ pub async fn generate(
     let evidence = json!({"artist":album.artist,"album":album.title,"year":album.year,"file_tag":album.genre,
         "tracks":tracks,"research":research,"article":context.article,
         "muso_genre":context.genre,"parent_genre":context.parent_genre});
-    let persona = artist_personas.then(personas::draw);
     generate_set(&api, &album.title, &evidence, &refs, data_dir, style, count, allow_repaint, persona, progress, publish).await
 }
 

@@ -273,6 +273,11 @@ body:has(> .modal:not(.hidden, .from-player))::before { background-color: rgb(0 
   color: var(--ink); transition: color .2s, transform .3s var(--ease);
 }
 .menu-group button { min-height: 44px; }
+@media (max-height: 740px) {
+  .menu-panel { padding-block: 16px 8px; gap: 10px; }
+  .menu-group + .menu-group { padding-top: 8px; }
+  .menu-group h2 { display: none; }
+}
 :where(.can-hover) .menu-panel button:hover { color: var(--ink); transform: translateX(6px); }
 .menu-update { margin-top: auto; text-align: right; }
 #updateStatus { display: block; color: var(--ink-dim); font-size: 12px; }
@@ -752,47 +757,58 @@ body:has(#coverConfirm[open]) #coverSearchStatus { visibility: hidden; }
   animation: rise .25s var(--ease);
 }
 .popover button { display: flex; align-items: center; gap: 11px; width: 100%; padding: 10px 14px; font-size: 13px; color: var(--ink-dim); border-radius: 6px; text-align: left; }
+#albumMenu { max-width: calc(100vw - 40px); max-height: calc(100% - 72px); overflow-y: auto; }
 :where(.can-hover) .popover button:enabled:hover { color: var(--ink); background: rgba(255,255,255,0.05); }
 #showAtmosBtn:disabled { color: var(--ink-faint); cursor: default; }
 .style-field { display: flex; align-items: center; justify-content: space-between; gap: 14px; color: var(--ink-dim); font-size: 13px; }
 .modal .style-field { margin-top: 16px; }
 .popover .style-field { justify-content: flex-start; gap: 11px; border-top: 1px solid rgba(255,255,255,.08); margin-top: 4px; padding: 12px 14px 5px; }
+#albumMenu .style-field > :is(.style-trigger, select) { margin-inline-start: auto; min-width: 0; }
+#albumGenre { max-width: min(48vw, 270px); text-overflow: ellipsis; }
 .style-field select { color-scheme: dark; background: #242422; color: var(--ink); border: 1px solid #41413e; border-radius: 5px; padding: 5px 7px; font: inherit; }
 .style-field .style-trigger {
   display: block; width: auto; max-width: min(36vw, 270px); padding: 6px 10px; overflow: hidden;
   text-overflow: ellipsis; white-space: nowrap; text-align: left; font: inherit; color: var(--ink);
   background: #242422; border: 1px solid #41413e; border-radius: 5px;
 }
-#stylePicker {
+.card-picker {
   margin: auto; width: 100%; max-width: none; max-height: 100vh; padding: 0;
   color: var(--ink); color-scheme: dark; border: 0; background: transparent; overflow-x: hidden;
 }
-#stylePicker[open] { display: flex; flex-direction: column; }
-#stylePicker::backdrop {
+.card-picker[open] { display: flex; flex-direction: column; }
+.card-picker::backdrop {
   background: rgb(4 4 6 / .65);
   -webkit-backdrop-filter: blur(20px);
   backdrop-filter: blur(20px);
 }
-#stylePicker header { display: flex; align-items: center; justify-content: space-between; padding: 16px clamp(22px, 4vw, 72px) 12px; }
-#stylePicker h2 { font-weight: 400; font-size: 20px; }
-#closeStylePicker { font-size: 24px; width: 36px; height: 36px; color: var(--ink-dim); }
-#styleCanvas {
-  position: relative; height: calc(var(--size) + 50px);
+.card-picker[open], .card-picker[open]::backdrop { opacity: 1; transition: opacity .2s ease; }
+@starting-style {
+  .card-picker[open], .card-picker[open]::backdrop { opacity: 0; }
+}
+.card-picker.closing, .card-picker.closing::backdrop { opacity: 0; }
+@media (prefers-reduced-motion: reduce) {
+  .card-picker[open], .card-picker[open]::backdrop { transition: none; }
+}
+.card-picker header { display: flex; align-items: center; justify-content: space-between; padding: 16px clamp(22px, 4vw, 72px) 12px; }
+.card-picker h2 { font-weight: 400; font-size: 20px; }
+:is(#closeStylePicker, #closePersona) { font-size: 24px; width: 36px; height: 36px; color: var(--ink-dim); }
+.card-canvas {
+  --size: min(43vh, 44vw, 380px); position: relative; height: calc(var(--size) + 50px); flex: none;
   perspective: 1500px; touch-action: none; cursor: grab;
 }
-#styleCanvas:active { cursor: grabbing; }
-#styleCanvas:focus-visible { outline: none; }
-#styleCanvas:focus-visible + .style-navigation #styleCaption { text-decoration: underline; text-underline-offset: 5px; }
-#styleCanvas .sleeve { top: 50%; cursor: inherit; }
+.card-canvas:active { cursor: grabbing; }
+.card-canvas:focus-visible { outline: none; }
+.card-canvas:focus-visible + .style-navigation #styleCaption { text-decoration: underline; text-underline-offset: 5px; }
+.card-canvas .sleeve { top: 50%; cursor: inherit; }
 .style-navigation, .style-actions { display: flex; align-items: center; justify-content: center; gap: 18px; }
 .style-navigation { padding: 0 12px; }
 #styleCaption { min-width: min(210px, 48vw); text-align: center; font-size: 18px; font-weight: 300; }
-.style-navigation button { font-size: 26px; width: 40px; height: 40px; color: var(--ink-dim); }
-.style-navigation button:disabled { color: var(--ink-faint); cursor: default; }
+.style-navigation :is(.prev-card, .next-card) { font-size: 26px; width: 40px; height: 40px; color: var(--ink-dim); }
+.style-navigation :is(.prev-card, .next-card):disabled { color: var(--ink-faint); cursor: default; }
 .style-actions { padding: 12px 20px 22px; }
 #defaultStyleChoice[aria-pressed=true] { color: var(--ink); }
 #defaultStyleChoice[aria-pressed=true]::before { content: '✓ '; color: var(--accent); }
-#stylePicker button:focus-visible { outline: 2px solid var(--ink); outline-offset: -3px; }
+.card-picker button:focus-visible { outline: 2px solid var(--ink); outline-offset: -3px; }
 #atmosStatus { position: absolute; left: 0; right: 0; bottom: 18px; text-align: center; z-index: 5; }
 #paintingCredit {
   position: absolute; bottom: max(20px, env(safe-area-inset-bottom)); left: max(20px, env(safe-area-inset-left));
@@ -840,6 +856,17 @@ body:has(#coverConfirm[open]) #coverSearchStatus { visibility: hidden; }
   position: absolute; top: 18px; left: 50%; transform: translateX(-50%);
   display: flex; align-items: center; gap: 8px; max-width: 50%;
   font: 13px var(--mono); color: var(--ink);
+}
+#editLibraryCrate {
+  top: auto; right: 20px; bottom: 14px; width: 44px; height: 44px;
+  border: 1px solid var(--ink-faint); background: var(--bg);
+}
+#library:has(#editLibraryCrate:not(.hidden)) :is(#genreHint, #libStatus) { right: 76px; }
+#crateSettingsTitle { display: none; }
+#cratesPage.direct-edit :is(#crateShelf, #cratesHeader) { display: none; }
+#cratesPage.direct-edit #crateSettingsTitle {
+  display: block; position: absolute; top: 26px; width: 100%; text-align: center;
+  font: 500 16px var(--sans); color: var(--ink-dim);
 }
 #libraryCrateName { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #closeLibraryCrate { flex: none; width: 36px; height: 36px; font-size: 21px; color: var(--ink-dim); }
@@ -1232,6 +1259,36 @@ body:has(#crateTray.open) #crateDock { visibility: hidden; }
 .image-tools { display: flex; gap: 22px; margin-top: 10px; }
 #imageStatus { margin-top: 12px; }
 .library-dialog button, .library-dialog select { min-height: 44px; }
+#personaPicker button { min-height: 44px; }
+#personaCanvas {
+  --size: min(44vh, 61vw, 330px); --card-height: calc(var(--size) * 1.33);
+  height: calc(var(--card-height) + 34px); isolation: isolate;
+}
+#personaCanvas .sleeve {
+  height: var(--card-height); margin-top: calc(var(--card-height) / -2);
+  display: flex; flex-direction: column;
+  padding: calc(var(--size) * .055); text-align: left; background: #f6f2e9; color: #282720;
+  border: 0; border-radius: 5px;
+}
+#personaCanvas .sleeve[hidden] { display: none; }
+#personaCanvas [aria-pressed=true]::before {
+  content: '✓'; position: absolute; top: 6px; right: 10px; color: #635544; font-size: 16px;
+}
+#personaCanvas img {
+  flex: 1; min-height: 0; width: 100%; height: 0; object-fit: contain; mix-blend-mode: multiply;
+}
+#personaCanvas strong {
+  margin: 8px 0 5px; padding-top: 8px; border-top: 1px solid #a8a396; width: 100%;
+  font: 500 clamp(17px, 2.8vh, 26px)/1.1 Georgia, serif;
+}
+#personaCanvas .sleeve span { font-size: clamp(12px, 1.65vh, 15px); line-height: 1.35; color: #4c493f; }
+#personaCaption { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+#personaCanvas:focus-visible + .style-navigation .use-card { outline: 1px solid var(--ink); }
+.persona-modes { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 16px; padding: 8px 12px 16px; }
+.persona-modes button { font-size: 13px; color: var(--ink-dim); }
+.persona-modes button[aria-pressed=true] { color: var(--ink); }
+.persona-modes button[aria-pressed=true]::before { content: '\2713  '; color: var(--accent); }
+
 #audioDialog, #heosVolumeDialog { padding-top: 0; }
 #heosVolumeTitle { margin: 0; }
 #heosLevels { display: flex; gap: 24px; flex-wrap: wrap; }
