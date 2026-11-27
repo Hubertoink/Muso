@@ -430,46 +430,11 @@ async fn generate_atmospheres(app: AppHandle, state: State<'_, AppState>, album_
     }, |files, name, technique, prompt| {
         let mut conn = state.db.lock().map_err(err)?;
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(err)?;
-        let old = db::atmospheres(&tx, &album_id, style).map_err(err)?;
-        if only_if_empty && files.len() == 1 && db::has_atmospheres(&tx, &album_id).map_err(err)? {
-            return Err("This album already has saved atmospheres.".into());
-        }
-        if files.len() > 1 && old.iter().any(|f| !files[..files.len() - 1].contains(f)) {
-            return Err("Another generation replaced these paintings.".into());
-        }
-        // Keep deletions made while the rest of this series was generating.
-        let mut saved = if files.len() == 1 { Vec::new() } else { old.clone() };
-        saved.push(files.last().unwrap().clone());
-        db::replace_atmospheres(&tx, &album_id, style, &saved).map_err(err)?;
-        if files.len() == 1 {
-            for previous in &old {
-                tx.execute("DELETE FROM painting_prompts WHERE file=?1", [previous]).map_err(err)?;
-            }
-        }
-        tx.execute("INSERT INTO painting_prompts(file,prompt) VALUES(?1,?2)", (files.last().unwrap(), prompt)).map_err(err)?;
-        if files.len() == 1 && style == "auto" {
-            db::set_setting(&tx, &format!("atmos_auto_style.{album_id}"), name).map_err(err)?;
-            style_history::record(&tx, &files[0], name, Some(technique), false).map_err(err)?;
-        } else if style == "auto" && old.is_empty() {
-            // Earlier frames from this running generation have all been deleted.
-            for previous in &files[..files.len() - 1] {
-                tx.execute("UPDATE auto_style_choices SET first_file=?2 WHERE first_file=?1",
-                    (previous, &saved[0])).map_err(err)?;
-            }
-        }
+        let saved = paintings::append_generated(&tx, &album_id, style, files, name, technique, prompt, only_if_empty)?;
         tx.commit().map_err(err)?;
         let _ = app.emit("atmos-image-ready", serde_json::json!({
-            "albumId": album_id, "style": style, "files": saved
+            "albumId": album_id, "style": style, "files": saved, "firstInSeries": files.len() == 1
         }));
-        drop(conn);
-        if files.len() == 1 {
-            for f in old {
-                let path = state.data_dir.join(f);
-                if path.parent() == Some(state.data_dir.join("atmos").as_path()) {
-                    let _ = std::fs::remove_file(path);
-                }
-            }
-        }
         Ok(())
     }).await?;
     db::atmospheres(&*state.db.lock().map_err(err)?, &album_id, style).map_err(err)

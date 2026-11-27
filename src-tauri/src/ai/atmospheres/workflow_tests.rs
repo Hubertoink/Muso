@@ -99,6 +99,7 @@ fn run_styled_case(with_cover: bool, allow_repaint: bool, verdicts: &[(bool, boo
                     for i in 1..=3 { assert!(prompt.contains(&format!("\n{i}. "))); }
                     assert!(prompt.contains("Render only scene "));
                     assert!(prompt.contains("Composition: Two figures stand shoulder to shoulder inside a narrow doorway."));
+                    assert!(prompt.contains("Emotional reading: Their shoulders almost touch, making the pause between them feel tentative."));
                     assert!(prompt.contains("Mood: restrained. Light: low side light. Palette: ochre, slate."));
                     assert!(prompt.contains(style.map_or(CUSTOM_SURFACE, |p| p.surface)));
                     assert!(prompt.contains(style.map_or("Layered ink", |p| p.look)));

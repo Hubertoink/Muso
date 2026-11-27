@@ -38,6 +38,12 @@ struct GenreChoice {
 }
 
 #[derive(Serialize, Deserialize)]
+struct SeriesStyle {
+    label: String,
+    technique: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
 struct Entry {
     id: String,
     artist: String,
@@ -52,6 +58,8 @@ struct Entry {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     prompts: BTreeMap<usize, String>,
     auto_style: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    auto_series: BTreeMap<usize, SeriesStyle>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     auto_technique: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -121,6 +129,7 @@ pub fn export(c: &mut Connection, dir: &Path, dest: &Path) -> R<Summary> {
         let research = db::research(&tx, &a.id).map_err(err)?;
         let mut paintings = BTreeMap::new();
         let mut prompts = BTreeMap::new();
+        let mut auto_series = BTreeMap::new();
         let styles = saved_styles.query_map([&a.id], |row| row.get::<_, String>(0)).map_err(err)?;
         for style in styles {
             let style = style.map_err(err)?;
@@ -131,6 +140,13 @@ pub fn export(c: &mut Connection, dir: &Path, dest: &Path) -> R<Summary> {
             let mut indices = Vec::new();
             for file in files {
                 let index = add_image(&mut zip, dir, &file, &mut summary)?;
+                if style == "auto" {
+                    if let Some(marker) = tx.query_row("SELECT label,technique FROM auto_style_choices
+                        WHERE first_file=?1 ORDER BY seq DESC LIMIT 1", [&file],
+                        |r| Ok(SeriesStyle { label:r.get(0)?, technique:r.get(1)? })).optional().map_err(err)? {
+                        auto_series.insert(index, marker);
+                    }
+                }
                 if let Some(prompt) = tx.query_row("SELECT prompt FROM painting_prompts WHERE file=?1", [&file],
                     |r| r.get::<_,String>(0)).optional().map_err(err)? {
                     prompts.insert(index, prompt);
@@ -169,9 +185,7 @@ pub fn export(c: &mut Connection, dir: &Path, dest: &Path) -> R<Summary> {
         summary.genres += usize::from(genre.is_some());
         let auto_style =
             db::get_setting(&tx, &format!("atmos_auto_style.{}", a.id)).map_err(err)?;
-        let auto_technique = tx.query_row("SELECT h.technique FROM atmosphere_variants v
-            JOIN auto_style_choices h ON h.first_file=v.file WHERE v.album_id=?1 AND v.style='auto' AND v.idx=0
-            ORDER BY h.seq DESC LIMIT 1", [&a.id], |r| r.get::<_, Option<String>>(0)).optional().map_err(err)?.flatten();
+        let auto_technique = auto_series.values().last().and_then(|s| s.technique.clone());
         manifest.albums.push(Entry {
             id: a.id,
             artist: a.artist,
@@ -184,6 +198,7 @@ pub fn export(c: &mut Connection, dir: &Path, dest: &Path) -> R<Summary> {
             paintings,
             prompts,
             auto_style,
+            auto_series,
             auto_technique,
             genre,
         });
@@ -249,6 +264,10 @@ mod tests {
         db::set_setting(&c, &format!("atmos_auto_style.{id}"), "Ink").unwrap();
         db::set_setting(&c, "openai_key", "secret-test-marker").unwrap();
         c.execute("INSERT INTO painting_prompts VALUES('atmos/painting.jpg','An open clearing')",[]).unwrap();
+        jpg.save(source.join("atmos/oil.jpg")).unwrap();
+        let tx = c.transaction().unwrap();
+        paintings::append_generated(&tx, &id, "auto", &["atmos/oil.jpg".into()], "Oil", "painting", "Side light", false).unwrap();
+        tx.commit().unwrap();
         c.execute("INSERT INTO album_notes VALUES(?1,'An article')", [&id])
             .unwrap();
         let path = folder.path().join("collection.zip");
@@ -256,7 +275,7 @@ mod tests {
         let electronic = genres::Genre { name: "Electronic".into(), parent: None };
         genres::save_book(&mut c, &[electronic], &BTreeMap::from([("Dance & DJ".into(), "Electronic".into())]), &BTreeMap::new()).unwrap();
         genres::set_choice(&c, &id, Some("Modern Classical")).unwrap();
-        assert_eq!(export(&mut c, &source, &path).unwrap().images, 3);
+        assert_eq!(export(&mut c, &source, &path).unwrap().images, 4);
         assert!(!fs::read(&path)
             .unwrap()
             .windows(18)
@@ -264,7 +283,7 @@ mod tests {
         let (mut other, new_id) = catalog("Other/Drive");
         assert_ne!(id, new_id);
         let s = import(&mut other, &destination, &path).unwrap();
-        assert_eq!((s.notes, s.images, s.skipped, s.genres), (1, 3, 0, 1));
+        assert_eq!((s.notes, s.images, s.skipped, s.genres), (1, 4, 0, 1));
         let imported_source: (String, String) = other.query_row("SELECT provider,album_url FROM cover_sources
             JOIN albums ON albums.cover_file=cover_sources.file WHERE albums.id='artist1'", [],
             |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
@@ -280,10 +299,10 @@ mod tests {
             db::note(&other, &new_id).unwrap().as_deref(),
             Some("An article")
         );
-        let file = db::atmospheres(&other, &new_id, "auto")
-            .unwrap()
-            .pop()
-            .unwrap();
+        let files = db::atmospheres(&other, &new_id, "auto").unwrap();
+        assert_eq!(files.len(), 2);
+        assert!(files[0].contains("Ink") && files[1].contains("Oil"));
+        let file = &files[0];
         assert_eq!(other.query_row("SELECT prompt FROM painting_prompts WHERE file=?1", [&file],
             |r| r.get::<_,String>(0)).unwrap(), "An open clearing");
         assert_eq!(
@@ -294,7 +313,7 @@ mod tests {
             db::get_setting(&other, &format!("atmos_auto_style.{new_id}"))
                 .unwrap()
                 .as_deref(),
-            Some("Ink")
+            Some("Oil")
         );
         let s = import(&mut other, &destination, &path).unwrap();
         assert_eq!((s.notes, s.images), (0, 0));
@@ -421,13 +440,20 @@ pub fn import(c: &mut Connection, dir: &Path, src: &Path) -> R<Summary> {
                 .or(e.auto_style.as_deref())
                 .unwrap_or("AI choice");
             let mut files = Vec::new();
+            let mut series_label = label;
             for (n, index) in indices.into_iter().enumerate() {
                 let bytes = jpeg(&mut zip, index)?;
                 crate::covers::decode(&bytes)?;
                 serial += 1;
-                let name = paintings::filename(&a.title, label, n + 1, serial);
+                let marker = e.auto_series.get(&index).filter(|_| style == "auto");
+                if let Some(marker) = marker { series_label = &marker.label; }
+                let name = paintings::filename(&a.title, series_label, n + 1, serial);
                 new_files.write(&dir.join("atmos"), &name, &bytes)?;
                 let file = format!("atmos/{name}");
+                if style == "auto" && (n == 0 || marker.is_some()) {
+                    let technique = marker.map_or(e.auto_technique.as_deref(), |m| m.technique.as_deref());
+                    crate::style_history::record(&tx, &file, series_label, technique, true).map_err(err)?;
+                }
                 if let Some(prompt) = e.prompts.get(&index) {
                     tx.execute("INSERT INTO painting_prompts(file,prompt) VALUES(?1,?2)", (&file, prompt)).map_err(err)?;
                 }
@@ -436,7 +462,6 @@ pub fn import(c: &mut Connection, dir: &Path, src: &Path) -> R<Summary> {
             db::replace_atmospheres(&tx, id, &style, &files).map_err(err)?;
             if style == "auto" {
                 db::set_setting(&tx, &format!("atmos_auto_style.{id}"), label).map_err(err)?;
-                crate::style_history::record(&tx, &files[0], label, e.auto_technique.as_deref(), true).map_err(err)?;
             }
             summary.images += files.len();
         }

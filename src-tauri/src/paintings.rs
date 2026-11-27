@@ -23,7 +23,11 @@ pub fn credit(c: &Connection, album: &str, style: &str, file: &str) -> rusqlite:
     let Some(index) = files.iter().position(|f| f == file) else { return Ok(None) };
     let Some(record) = crate::db::album(c, album)? else { return Ok(None) };
     let medium = if style == "auto" {
-        crate::db::get_setting(c, &format!("atmos_auto_style.{album}"))?
+        c.query_row("SELECT h.label FROM atmosphere_variants v JOIN auto_style_choices h ON h.first_file=v.file
+            WHERE v.album_id=?1 AND v.style='auto' AND v.idx <=
+            (SELECT idx FROM atmosphere_variants WHERE album_id=?1 AND style='auto' AND file=?2)
+            ORDER BY v.idx DESC,h.seq DESC LIMIT 1", (album,file), |r| r.get(0)).optional()?
+            .or(crate::db::get_setting(c, &format!("atmos_auto_style.{album}"))?)
     } else { style_label(style).map(str::to_owned) };
     let prompt = c.query_row("SELECT prompt FROM painting_prompts WHERE file=?1", [file], |r| r.get::<_, String>(0)).optional()?;
     let persona = prompt.as_deref().and_then(|text| text.lines().find_map(|line| {
@@ -94,6 +98,46 @@ pub fn image_path(uri_path: &str) -> Option<Cow<'_, str>> {
         && !file.chars().any(forbidden) && !reserved(file)).then_some(rel)
 }
 
+/// Publish one accepted image inside the caller's transaction. Read the current collection
+/// on every call so deleting a painting during generation cannot bring it back.
+pub fn append_generated(tx: &rusqlite::Transaction, album: &str, style: &str, batch: &[String],
+    name: &str, technique: &str, prompt: &str, only_if_empty: bool) -> crate::R<Vec<String>> {
+    use crate::{db, err, style_history};
+    let (file, previous) = batch.split_last().ok_or("Missing generated painting.")?;
+    if only_if_empty && previous.is_empty() && db::has_atmospheres(tx, album).map_err(err)? {
+        return Err("This album already has saved atmospheres.".into());
+    }
+    let mut saved = db::atmospheres(tx, album, style).map_err(err)?;
+    tx.execute("INSERT INTO atmosphere_variants(album_id,style,idx,file)
+        SELECT ?1,?2,COALESCE(MAX(idx),-1)+1,?3 FROM (
+          SELECT idx FROM atmosphere_variants WHERE album_id=?1 AND style=?2
+          UNION ALL SELECT idx FROM atmospheres WHERE album_id=?1 AND ?2='cinematic')",
+        (album,style,file)).map_err(err)?;
+    tx.execute("INSERT INTO painting_prompts(file,prompt) VALUES(?1,?2)", (file,prompt)).map_err(err)?;
+    if style == "auto" {
+        let key = format!("atmos_auto_style.{album}");
+        if previous.is_empty() {
+            // Older collections can have only an album-wide label.
+            if let Some(first) = saved.first() {
+                let marked: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM auto_style_choices WHERE first_file=?1)",
+                    [first], |r| r.get(0)).map_err(err)?;
+                if !marked {
+                    let label = db::get_setting(tx, &key).map_err(err)?;
+                    style_history::record(tx, first, label.as_deref().unwrap_or("AI choice"), None, true).map_err(err)?;
+                }
+            }
+            style_history::record(tx, file, name, Some(technique), false).map_err(err)?;
+        } else if !previous.iter().any(|f| saved.contains(f)) {
+            for deleted in previous {
+                tx.execute("UPDATE auto_style_choices SET first_file=?2 WHERE first_file=?1", (deleted,file)).map_err(err)?;
+            }
+        }
+        db::set_setting(tx, &key, name).map_err(err)?;
+    }
+    saved.push(file.clone());
+    Ok(saved)
+}
+
 pub fn delete(conn: &mut Connection, data_dir: &std::path::Path, album: &str, style: &str, file: &str) -> crate::R<()> {
     use crate::err;
     use std::{fs, io::ErrorKind};
@@ -104,9 +148,15 @@ pub fn delete(conn: &mut Connection, data_dir: &std::path::Path, album: &str, st
     let index = files.iter().position(|f| f == file).ok_or("This atmosphere is no longer in this series.")?;
     files.retain(|f| f != file);
     crate::db::replace_atmospheres(&tx, album, style, &files).map_err(err)?;
-    if style == "auto" && index == 0 {
-        if let Some(first) = files.first() {
-            tx.execute("UPDATE auto_style_choices SET first_file=?2 WHERE first_file=?1", (file, first)).map_err(err)?;
+    if style == "auto" {
+        if let Some(next) = files.get(index) {
+            tx.execute("UPDATE auto_style_choices SET first_file=?2 WHERE first_file=?1
+                AND NOT EXISTS(SELECT 1 FROM auto_style_choices WHERE first_file=?2)", (file, next)).map_err(err)?;
+        }
+        if let Some(label) = tx.query_row("SELECT h.label FROM atmosphere_variants v JOIN auto_style_choices h
+            ON h.first_file=v.file WHERE v.album_id=?1 AND v.style='auto' ORDER BY v.idx DESC,h.seq DESC LIMIT 1",
+            [album], |r| r.get::<_,String>(0)).optional().map_err(err)? {
+            crate::db::set_setting(&tx, &format!("atmos_auto_style.{album}"), &label).map_err(err)?;
         }
     }
     let shared: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM atmosphere_variants WHERE file=?1)
@@ -175,6 +225,49 @@ pub fn rename_legacy(conn: &mut rusqlite::Connection, data_dir: &std::path::Path
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn new_batches_append_and_deleting_during_generation_never_restores_a_painting() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut c = crate::db::open(std::path::Path::new(":memory:")).unwrap();
+        c.execute("INSERT INTO albums(id,artist,title,sort_key) VALUES('a','Artist','Album','a')", []).unwrap();
+        let old = "atmos/old.jpg".to_owned();
+        let first = "atmos/one.jpg".to_owned();
+        let second = "atmos/two.jpg".to_owned();
+        crate::db::replace_atmospheres(&c, "a", "auto", std::slice::from_ref(&old)).unwrap();
+        crate::db::set_setting(&c, "atmos_auto_style.a", "Ink").unwrap();
+        c.execute("INSERT INTO painting_prompts VALUES(?1,'old prompt')", [&old]).unwrap();
+        std::fs::create_dir(temp.path().join("atmos")).unwrap();
+        std::fs::write(temp.path().join(&old), b"old pixels").unwrap();
+        let tx = c.transaction().unwrap();
+        assert!(append_generated(&tx,"a","auto",std::slice::from_ref(&first),"Oil","painting","new",true).is_err());
+        let saved = append_generated(&tx,"a","auto",std::slice::from_ref(&first),"Oil","painting","new",false).unwrap();
+        tx.commit().unwrap();
+        assert_eq!(saved, [old.clone(), first.clone()]);
+        assert_eq!(credit(&c,"a","auto",&old).unwrap().unwrap().style.as_deref(),Some("Ink"));
+        assert_eq!(credit(&c,"a","auto",&first).unwrap().unwrap().style.as_deref(),Some("Oil"));
+        delete(&mut c,temp.path(),"a","auto",&first).unwrap();
+        let tx = c.transaction().unwrap();
+        let saved = append_generated(&tx,"a","auto",&[first,second.clone()],"Oil","painting","newer",false).unwrap();
+        tx.commit().unwrap();
+        assert_eq!(saved, [old.clone(), second.clone()]);
+        assert_eq!(credit(&c,"a","auto",&second).unwrap().unwrap().style.as_deref(),Some("Oil"));
+        assert_eq!(std::fs::read(temp.path().join(&old)).unwrap(), b"old pixels");
+        assert_eq!(c.query_row("SELECT prompt FROM painting_prompts WHERE file=?1", [&old], |r| r.get::<_,String>(0)).unwrap(),"old prompt");
+    }
+    #[test]
+    fn adding_to_a_legacy_cinematic_series_keeps_its_order_and_other_styles() {
+        let mut c = crate::db::open(std::path::Path::new(":memory:")).unwrap();
+        c.execute("INSERT INTO atmospheres VALUES('a',0,'atmos/legacy.jpg')", []).unwrap();
+        crate::db::replace_atmospheres(&c, "a", "sumi", &["atmos/ink.jpg".into()]).unwrap();
+        let batch = ["atmos/one.jpg".to_owned(), "atmos/two.jpg".to_owned()];
+        for n in 1..=batch.len() {
+            let tx = c.transaction().unwrap();
+            append_generated(&tx, "a", "cinematic", &batch[..n], "Cinematic", "", "prompt", false).unwrap();
+            tx.commit().unwrap();
+        }
+        assert_eq!(crate::db::atmospheres(&c, "a", "cinematic").unwrap(), ["atmos/legacy.jpg","atmos/one.jpg","atmos/two.jpg"]);
+        assert_eq!(crate::db::atmospheres(&c, "a", "sumi").unwrap(), ["atmos/ink.jpg"]);
+    }
     #[test]
     fn deletion_targets_only_indexed_paintings_and_keeps_shared_files() {
         let dir = tempfile::tempdir().unwrap();

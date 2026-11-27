@@ -2838,7 +2838,7 @@ async function paintingReady({ albumId, style, files }) {
 }
 listen('atmos-image-ready', ({ payload }) => {
   paintingReady(payload);
-  if (payload.files.length === 1 && styleAlbum === payload.albumId) showStyle(payload.albumId);
+  if (payload.firstInSeries && styleAlbum === payload.albumId) showStyle(payload.albumId);
 });
 async function generate(a, automatic = false) {
   const style = albumStyle(a.id);
@@ -2860,7 +2860,7 @@ async function generate(a, automatic = false) {
       onlyIfEmpty: automatic, count: automatic ? Number(playImageCount.value) : 3 });
     if (!files.length) return;
     paintingReady({ albumId: a.id, style, files });
-    toast(`${files.length} atmosphere image(s) saved · ${a.title}`);
+    toast(`New atmospheres saved · ${a.title}`);
   } catch (e) {
     toast(String(e), 6000);
   } finally {
