@@ -1303,7 +1303,7 @@ function drawWave(now) {
 function pointerRipple(e) {
   const album = $('album');
   if (!rippleToggle.checked || reducedMotion.matches || Number(strengthInput.value) === 0 ||
-      !album.classList.contains('showing-atmos') || e.target.closest('button, .popover, .controls, .al-track, #playerVolume')) return;
+      !album.classList.contains('showing-atmos') || e.target.closest('button, .popover, .controls, .al-track, #playerAudio')) return;
   const image = $('atmosPictures').querySelector('img.on');
   if (!image?.complete || !image.naturalWidth) return;
   const bounds = $('atmosPictures').getBoundingClientRect();
@@ -2068,9 +2068,9 @@ async function playIndex(i, lead = null, afterPlaybackId = null) {
     return;
   }
   if (p.advancing) ++albumRequest;
-  Object.assign(p, { index: Math.max(0, i), paused: false, ended: false, inGroove: false, introDone: false, playbackId: ++playbackId });
+  Object.assign(p, { index: Math.max(0, i), paused: false, ended: false, inGroove: false, introDone: false, ending: false, playbackId: ++playbackId });
   updateAtmosView();
-  await invoke('play_track', { path: p.tracks[p.index].path, playbackId: p.playbackId,
+  await invoke('play_track', { path: p.tracks[p.index].path, duration: p.tracks[p.index].duration, playbackId: p.playbackId,
     vinylLead: vinylSounds.checked ? lead : null, afterPlaybackId, lastTrack: p.index === p.tracks.length - 1, ...vinylTail(p) });
   updatePlayUi();
 }
@@ -2085,6 +2085,15 @@ async function togglePlay() {
 const next = () => state.playing && playIndex(state.playing.index + 1);
 const prev = () => state.playing && playIndex(state.playing.index - 1);
 
+listen('track-ending', ({ payload }) => {
+  const p = state.playing;
+  if (!p || p.ended || p.playbackId !== payload) return;
+  p.ending = true;
+  if (state.view === 'album' && state.viewAlbum?.id === p.album.id) {
+    poke();
+    updateAtmosView();
+  }
+});
 listen('track-ended', ({ payload }) => {
   if (state.playing?.playbackId === payload && !state.playing.ended) next();
 });
@@ -2229,7 +2238,7 @@ $('nowPlaying').addEventListener('click', () => state.playing && displayAlbum(st
 /* ---------------- album view ---------------- */
 
 let albumRequest = 0;
-let inspectingQueue = false;
+let inspectingCover = false;
 const coverStack = document.querySelector('.cover-stack');
 
 function layoutQueue() {
@@ -2286,18 +2295,24 @@ function enqueue(album, remaining = []) {
     const progress = clamp(distance / drag.threshold, 0, 1);
     button.style.opacity = String(1 - progress * progress * (3 - 2 * progress));
   };
+  function resetDrag() {
+    button.classList.remove('dragging');
+    button.style.removeProperty('--lift');
+    button.style.removeProperty('opacity');
+  }
   const release = e => {
     if (drag?.id !== e.pointerId) return;
     const dy = drag.y - e.clientY, dx = e.clientX - drag.x, threshold = drag.threshold;
     drag = null;
-    button.classList.remove('dragging');
-    button.style.removeProperty('--lift');
-    button.style.removeProperty('opacity');
     if (e.type !== 'pointerup' || Math.abs(dy) < threshold || Math.abs(dy) <= Math.abs(dx)) {
+      resetDrag();
       poke();
       return;
     }
-    if (dy > 0) playNow();
+    if (dy > 0) {
+      button.style.opacity = '0';
+      playNow().finally(resetDrag);
+    }
     else dismiss();
   };
   button.onpointerup = button.onpointercancel = button.onlostpointercapture = release;
@@ -2339,6 +2354,7 @@ function openAlbum(a, remaining) {
   else if (albumQueue.length < 5) entry = enqueue(a, remaining);
   layoutQueue();
   refreshGroove();
+  inspectingCover = true;
   displayAlbum(p.album);
   if (entry) entry.button.focus({ preventScroll: true });
   else toast('Queue full · 5 records are waiting');
@@ -2379,17 +2395,16 @@ for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) {
 }
 function clearCrateTransition() {
   const view = $('album');
-  view.classList.remove('changing-record', 'waiting-for-cover');
+  view.classList.remove('changing-record', 'promoting-record', 'waiting-for-cover');
   view.querySelectorAll('.outgoing-sleeve, .outgoing-backdrop').forEach(layer => layer.remove());
 }
 
-function animateCrateChange() {
+function animateCrateChange(nextImage = new Image()) {
   const view = $('album');
   const sleeve = $('cover').cloneNode(false);
   sleeve.removeAttribute('id');
   // Keep the painted image in the outgoing sleeve, including while the new art decodes.
   const previousImage = $('coverImg');
-  const nextImage = new Image();
   nextImage.id = 'coverImg';
   nextImage.alt = '';
   previousImage.replaceWith(nextImage);
@@ -2441,27 +2456,17 @@ async function switchAlbum(a, remaining, advancing, entry) {
     const tracks = await invoke('get_tracks', {albumId: a.id});
     if (request !== albumRequest || (entry && !albumQueue.includes(entry))) return;
     if (!tracks.length) throw new Error('No tracks available for this album.');
-    let sleeveBounds;
-    if (entry && state.view === 'album' && !advancing) {
-      sleeveBounds = entry.button.getBoundingClientRect();
-      const preview = entry.button.querySelector('img');
-      preview.onerror = null;
-      $('coverImg').replaceWith(preview);
-      preview.id = 'coverImg';
-    }
+    const preview = entry && state.view === 'album' && !advancing ? entry.button.querySelector('img') : null;
+    const previousLeft = preview ? coverStack.getBoundingClientRect().left : 0;
+    if (preview) preview.onerror = null;
     if (entry) removeQueued(entry);
     personalSets.clear();
     const outgoing = state.playing;
     const lead = outgoing && !outgoing.ended && outgoing.album.id !== a.id ? 'change' : 'drop';
     const after = advancing && outgoing?.changeId === outgoing?.playbackId ? outgoing?.changeId : null;
     state.playing = { album: a, tracks, index: 0, paused: false, ended: false, remaining };
-    if (state.view === 'album' || (!advancing && !tvActive && previousView === state.view)) displayAlbum(a, advancing);
-    if (sleeveBounds && !controller && !reducedMotion.matches) {
-      const cover = $('cover'), bounds = cover.getBoundingClientRect();
-      cover.animate([
-        { transformOrigin: 'top left', transform: `translate(${sleeveBounds.x - bounds.x}px, ${sleeveBounds.y - bounds.y}px) scale(${sleeveBounds.width / bounds.width})` },
-        { transformOrigin: 'top left', transform: 'none' },
-      ], { duration: 260, easing: 'cubic-bezier(.2,.75,.25,1)' });
+    if (state.view === 'album' || (!advancing && !tvActive && previousView === state.view)) {
+      displayAlbum(a, {animate: advancing || (!!preview && !controller), preview, previousLeft});
     }
     await playIndex(0, lead, after);
     if (controller && request === albumRequest && state.view === 'album') closeAlbum();
@@ -2473,10 +2478,23 @@ async function switchAlbum(a, remaining, advancing, entry) {
   }
 }
 
-function displayAlbum(a, advancing = false) {
+function displayAlbum(a, {animate = false, preview, previousLeft} = {}) {
   resetCoverPull();
   clearCrateTransition();
-  const outgoing = advancing && state.viewAlbum?.id !== a.id && !reducedMotion.matches && !document.hidden && animateCrateChange();
+  const outgoing = animate && state.viewAlbum?.id !== a.id && !reducedMotion.matches && !document.hidden && animateCrateChange(preview || undefined);
+  if (preview && outgoing) {
+    $('album').classList.add('promoting-record');
+    const shift = previousLeft - coverStack.getBoundingClientRect().left;
+    coverStack.querySelector('.outgoing-sleeve').style.translate = shift + 'px';
+    if (shift) {
+      for (const {button} of albumQueue) {
+        button.animate([{translate:shift + 'px'}, {translate:'0px'}], {duration:480, easing:'cubic-bezier(.22,.61,.36,1)'});
+      }
+    }
+  } else if (preview) {
+    $('coverImg').replaceWith(preview);
+    preview.id = 'coverImg';
+  }
   closeSearch();
   closeMenu();
   if (state.view !== 'album') playerVolume.refresh();
@@ -2518,7 +2536,7 @@ function displayAlbum(a, advancing = false) {
 function closeAlbum() {
   playerVolume.close();
   resetCoverPull();
-  inspectingQueue = false;
+  inspectingCover = false;
   const view = $('album');
   view.classList.add('leaving');
   state.view = 'library';
@@ -2540,23 +2558,23 @@ $('backBtn').addEventListener('click', closeAlbum);
 // Calm mode: chrome fades away when the mouse rests.
 let idleTimer;
 function poke() {
-  if (!inspectingQueue && albumQueue.length) {
-    inspectingQueue = true;
-    updateAtmosView();
-  }
   if ($('album').classList.contains('idle')) centerTrack();
   $('album').classList.remove('idle');
   clearTimeout(idleTimer);
   idleTimer = setTimeout(() => {
     if (state.view === 'album' && !coverPull && !coverStack.querySelector('.dragging') && !$('playerVolume').classList.contains('open') && $('albumMenu').classList.contains('hidden')) {
       $('album').classList.add('idle');
-      inspectingQueue = false;
+      inspectingCover = false;
       updateAtmosView();
     }
   }, 3500);
 }
 for (const event of ['pointerdown', 'pointermove']) $('album').addEventListener(event, poke, {passive:true});
 $('album').addEventListener('click', (e) => {
+  if ($('album').classList.contains('showing-atmos') && !e.target.closest('button, .popover, .controls, .al-track, #playerAudio')) {
+    inspectingCover = true;
+    updateAtmosView();
+  }
   poke();
   if (!e.target.closest('#albumMenu, #albumMenuBtn')) show($('albumMenu'), false);
 });
@@ -2700,14 +2718,11 @@ let visiblePainting = null;
 function updateAtmosView() {
   syncTv();
   const p = state.playing;
-  const reveal = !coverPull && !(inspectingQueue && albumQueue.length) && p?.introDone && readyAlbum === p.album.id && state.viewAlbum?.id === readyAlbum;
+  const reveal = !coverPull && !inspectingCover && p?.introDone && !p.ending && readyAlbum === p.album.id && state.viewAlbum?.id === readyAlbum;
   $('album').classList.toggle('showing-atmos', !!reveal);
   if (reveal) {
     visiblePainting = playlist?.shown?.startsWith('atmos/') ? {set:playlist, file:playlist.shown} : null;
-  } else if (!inspectingQueue || !p?.introDone || visiblePainting?.set !== playlist || state.viewAlbum?.id !== readyAlbum) {
-    // Moving to the menu can briefly reveal the queue over the last visible painting.
-    visiblePainting = null;
-  }
+  } else visiblePainting = null;
   show($('deleteAtmosBtn'), !!visiblePainting);
   coverStack.inert = !!reveal;
   spectrum.setPlayback(!!reveal && !p.paused, p?.playbackId);

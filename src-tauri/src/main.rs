@@ -287,8 +287,8 @@ fn get_tracks(state: State<'_, AppState>, album_id: String) -> R<Vec<db::Track>>
 }
 
 #[tauri::command]
-async fn play_track(app: AppHandle, state: State<'_, AppState>, path: String, playback_id: Option<u64>, vinyl_lead: Option<audio::Lead>, after_playback_id: Option<u64>, last_track: Option<bool>, runout_seconds: Option<u32>, change_at_end: Option<bool>) -> R<()> {
-    state.player.send(audio::Cmd::Play { path, id: playback_id.unwrap_or_default(), lead: vinyl_lead, after: after_playback_id,
+async fn play_track(app: AppHandle, state: State<'_, AppState>, path: String, duration: Option<f64>, playback_id: Option<u64>, vinyl_lead: Option<audio::Lead>, after_playback_id: Option<u64>, last_track: Option<bool>, runout_seconds: Option<u32>, change_at_end: Option<bool>) -> R<()> {
+    state.player.send(audio::Cmd::Play { path, duration: duration.and_then(|s| std::time::Duration::try_from_secs_f64(s).ok()), id: playback_id.unwrap_or_default(), lead: vinyl_lead, after: after_playback_id,
         last_track: last_track.unwrap_or(false), runout_seconds: runout_seconds.unwrap_or(0), change: change_at_end.unwrap_or(false) });
     app.state::<heos::Heos>().playback(&app, true, true).await;
     Ok(())

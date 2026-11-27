@@ -4,7 +4,7 @@ function createHeosOutput(invoke, listen, toast, outputChanged) {
   const el = id => document.getElementById(id);
   const dialog = el('audioDialog'), status = el('heosStatus');
   let rooms = {players: [], groups: [], output: null};
-  let editor = null, busy = false;
+  let editor = null, busy = false, lastDiscovery = -Infinity;
   const room = id => rooms.players.find(r => r.pid === id);
   const groupOf = id => rooms.groups.find(g => g.players.some(p => p.pid === id));
   const leaderOf = g => g.players.find(p => p.role.toLowerCase() === 'leader')?.pid ?? g.gid;
@@ -12,37 +12,53 @@ function createHeosOutput(invoke, listen, toast, outputChanged) {
   const names = g => g.players.map(p => room(p.pid)?.name ?? String(p.pid)).join(' · ');
   el('heosIp').value = localStorage.getItem('muso.heosAddress') || '';
 
-  async function run(message, work) {
+  function showLoading(container, message) {
+    const spinner = document.createElement('span');
+    spinner.className = 'heos-spinner';
+    spinner.setAttribute('role', 'img');
+    spinner.setAttribute('aria-label', message);
+    container.append(spinner);
+    return spinner;
+  }
+  async function run(message, work, indicator) {
     if (busy) return;
     busy = true;
     el('outputChoices').inert = el('groupEditor').inert = true;
-    status.textContent = message;
+    // The row is inert during the request. Announce progress outside it.
+    const announcement = document.createElement('span');
+    announcement.className = 'visually-hidden';
+    announcement.textContent = message;
+    status.replaceChildren(announcement);
+    const spinner = showLoading(indicator, message);
     try { await work(); }
     catch (e) { status.textContent = String(e); }
     finally {
       busy = false;
+      spinner.remove();
+      announcement.remove();
       el('outputChoices').inert = el('groupEditor').inert = false;
     }
   }
   async function refresh(address = null) {
     await run('Looking for HEOS speakers…', async () => {
+      lastDiscovery = performance.now();
       rooms = await invoke('heos_rooms', { address, hint: localStorage.getItem('muso.heosAddress') });
       render();
-      status.textContent = rooms.players.length ? '' : 'No HEOS rooms found. Check that the speaker and this computer are on the same network.';
+      status.textContent = rooms.players.length ? '' : 'No HEOS rooms found. Enter the speaker’s IPv4 address and check that both devices are on the same network.';
+      if (!rooms.players.length) el('heosManual').open = true;
       if (rooms.host && rooms.players.length) {
         localStorage.setItem('muso.heosAddress', rooms.host);
         el('heosIp').value = rooms.host;
         el('heosManual').open = false;
       }
-    });
+    }, address ? el('heosConnect').querySelector('button') : el('heosRefresh'));
   }
-  function select(pid, name) {
+  function select(pid, row) {
     return run('Switching audio output…', async () => {
       await invoke('heos_output', {pid});
       rooms.output = pid;
       render();
-      status.textContent = 'Audio output · ' + name;
-    });
+    }, row);
   }
   function outputRow(pid, name, detail, active, group) {
     const row = document.createElement('div');
@@ -50,7 +66,7 @@ function createHeosOutput(invoke, listen, toast, outputChanged) {
     const button = document.createElement('button');
     button.className = 'heos-target';
     button.setAttribute('aria-pressed', String(active));
-    button.onclick = () => select(pid, name);
+    button.onclick = () => select(pid, row);
     const text = document.createElement('span'), title = document.createElement('strong');
     title.textContent = name;
     text.append(title);
@@ -74,6 +90,7 @@ function createHeosOutput(invoke, listen, toast, outputChanged) {
   let lastOutput = null;
   function render() {
     if (rooms.output !== lastOutput) { lastOutput = rooms.output; outputChanged(); }
+    el('speakerSelect').hidden = !rooms.players.length;
     el('albumHeos').classList.toggle('hidden', rooms.output == null);
     el('localOutput').replaceChildren(outputRow(null, 'This computer', 'System audio output', rooms.output === null));
     el('heosRooms').replaceChildren(
@@ -136,7 +153,7 @@ function createHeosOutput(invoke, listen, toast, outputChanged) {
       rooms = await invoke('heos_group', {members:list, previous:editor.previous});
       endGroup();
       status.textContent = dissolve ? 'Rooms are separate again.' : 'Group saved.';
-    });
+    }, el(dissolve ? 'heosDissolve' : 'heosSave'));
   }
   el('heosSave').onclick = () => save(false);
   el('heosDissolve').onclick = () => save(true);
@@ -159,7 +176,8 @@ function createHeosOutput(invoke, listen, toast, outputChanged) {
   async function openVolume() {
     const current = ++visit;
     levels.replaceChildren();
-    volumeStatus.textContent = 'Reading speaker volume…';
+    volumeStatus.replaceChildren();
+    showLoading(volumeStatus, 'Reading speaker volume…');
     volume.showModal();
     try {
       const snapshot = await readLevels();
@@ -224,15 +242,21 @@ function createHeosOutput(invoke, listen, toast, outputChanged) {
   el('heosVolumeClose').onclick = () => volume.close();
   volume.addEventListener('close', () => { ++visit; });
   listen('heos-control-error', ({payload}) => toast(String(payload), 4500));
-  listen('heos-disconnected', () => {
+  listen('heos-disconnected', ({payload}) => {
     rooms.output = null;
     if (volume.open) volume.close();
     render();
-    toast('HEOS disconnected · Audio returned to this computer');
+    const message = payload || 'HEOS disconnected · Audio returned to this computer';
+    status.textContent = message;
+    toast(message, 6500);
   });
-  return {openVolume, readLevels, writeLevel, get output() { return rooms.output; }, open() {
-    endGroup();
+  function checkForSpeakers() {
+    if (!busy && performance.now() - lastDiscovery >= 60000) refresh();
+  }
+  return {openVolume, readLevels, writeLevel, checkForSpeakers, get output() { return rooms.output; }, open({fromPlayer = false} = {}) {
+    if (!busy) endGroup();
+    dialog.classList.toggle('from-player', fromPlayer);
     dialog.showModal();
-    refresh();
+    if (!busy) refresh();
   }};
 }

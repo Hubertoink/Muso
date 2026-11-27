@@ -78,7 +78,12 @@ async fn route(
     pid: i64,
 ) -> Result<(), String> {
     let bus = app.state::<crate::AppState>().player.bus.clone();
-    let mut session = stream::Session::serve(client.local_ip()?, pid, bus).await?;
+    let ip = client.local_ip()?;
+    let server = match &controller.session {
+        Some(s) if s.server.addr.ip() == ip => s.server.clone(),
+        _ => stream::StreamServer::bind(SocketAddr::new(ip, stream::STREAM_PORT)).await?,
+    };
+    let mut session = stream::Session::serve(server, pid, bus)?;
     if app.state::<Heos>().1.load(Ordering::Acquire) {
         start_stream(client, &mut session).await?;
     } else {
@@ -103,8 +108,9 @@ async fn route(
                 missed + 1
             };
             if missed >= 5 {
+                let error = s.connection_error("The speaker stopped reading the audio stream.");
                 ctl.session = None;
-                let _ = handle.emit("heos-disconnected", ());
+                let _ = handle.emit("heos-disconnected", error);
                 break;
             }
         }
@@ -119,8 +125,12 @@ async fn start_stream(client: &mut Client, session: &mut stream::Session) -> Res
             "browse/play_stream?pid={}&url={}",
             session.pid, session.url
         ))
-        .await?;
-    session.activate().await?;
+        .await
+        .map_err(|e| session.connection_error(&e))?;
+    session
+        .activate()
+        .await
+        .map_err(|e| session.connection_error(&e))?;
     session.transport = Transport::Playing;
     Ok(())
 }
@@ -182,7 +192,7 @@ impl Heos {
         if let Err(error) = result {
             if play {
                 ctl.session = None;
-                let _ = app.emit("heos-disconnected", ());
+                let _ = app.emit("heos-disconnected", error);
             } else {
                 let _ = app.emit("heos-control-error", error);
             }

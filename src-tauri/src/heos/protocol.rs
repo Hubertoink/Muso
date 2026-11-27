@@ -146,7 +146,7 @@ impl Client {
         let socket = timeout(Duration::from_secs(3), TcpStream::connect(host))
             .await
             .map_err(|_| format!("HEOS did not respond at {host}"))?
-            .map_err(crate::err)?;
+            .map_err(|e| format!("Could not connect to the HEOS controller at {host}: {e}"))?;
         Ok(Self(BufReader::new(socket)))
     }
     pub fn local_ip(&self) -> Result<IpAddr, String> {

@@ -12,7 +12,7 @@ pub(crate) use output::AudioBus;
 pub use vinyl::Lead;
 
 pub enum Cmd {
-    Play { path: String, id: u64, lead: Option<Lead>, after: Option<u64>, last_track: bool, runout_seconds: u32, change: bool },
+    Play { path: String, duration: Option<Duration>, id: u64, lead: Option<Lead>, after: Option<u64>, last_track: bool, runout_seconds: u32, change: bool },
     Runout(u64, u32, bool),
     Pause,
     Resume,
@@ -25,6 +25,23 @@ pub struct Player {
     tx: Mutex<Sender<Cmd>>,
     meter_windows: Mutex<std::collections::HashSet<String>>,
     pub(crate) bus: AudioBus,
+}
+
+fn music_source<S: Source<Item = i16>>(
+    source: S, library_duration: Option<Duration>, meter: Meter,
+    spectrum_on: Arc<AtomicBool>, ending: Arc<AtomicBool>,
+) -> impl Source<Item = i16> {
+    let mut reveal_at = source.total_duration().filter(|d| !d.is_zero())
+        .or(library_duration).filter(|d| !d.is_zero())
+        .map(|d| d.saturating_sub(Duration::from_secs(2)));
+    // Count only music samples, excluding pauses and the vinyl lead-in.
+    SpectrumTap::new(source, meter).track_position().periodic_access(Duration::from_millis(20), move |track| {
+        track.inner_mut().set_enabled(spectrum_on.load(Ordering::Relaxed));
+        if reveal_at.is_some_and(|at| track.get_pos() >= at) {
+            ending.store(true, Ordering::Relaxed);
+            reveal_at = None;
+        }
+    })
 }
 
 impl Player {
@@ -41,6 +58,7 @@ impl Player {
                 });
                 let mut sink: Option<Sink> = None;
                 let mut cover_intro = None;
+                let mut track_ending = Arc::new(AtomicBool::new(false));
                 let spectrum_on = Arc::new(AtomicBool::new(false));
                 let mut meter = Meter::default();
                 let mut current_id = 0;
@@ -52,7 +70,7 @@ impl Player {
                 loop {
                     let metering = spectrum_on.load(Ordering::Relaxed);
                     match rx.recv_timeout(Duration::from_millis(if metering || change_armed.load(Ordering::Relaxed) { 40 } else { 250 })) {
-                        Ok(Cmd::Play { path, id: playback_id, lead, after, last_track, runout_seconds, change }) => {
+                        Ok(Cmd::Play { path, duration, id: playback_id, lead, after, last_track, runout_seconds, change }) => {
                             if let Err(e) = &local {
                                 if playback_bus.local() {
                                     let _ = app.emit("playback-error", (Some(playback_id), format!("No local audio device: {e}")));
@@ -71,9 +89,8 @@ impl Player {
                                     let s = sink.take().unwrap_or_else(|| playback_bus.sink());
                                     meter = Meter::default();
                                     current_id = playback_id;
-                                    let enabled = Arc::clone(&spectrum_on);
-                                    let source = SpectrumTap::new(src, meter.clone()).periodic_access(
-                                        Duration::from_millis(20), move |tap| tap.set_enabled(enabled.load(Ordering::Relaxed)));
+                                    track_ending = Arc::new(AtomicBool::new(false));
+                                    let source = music_source(src, duration, meter.clone(), spectrum_on.clone(), track_ending.clone());
                                     groove_duration = Arc::new(AtomicU32::new(runout_seconds));
                                     groove_started = Arc::new(AtomicBool::new(false));
                                     change_armed = Arc::new(AtomicBool::new(change && last_track));
@@ -138,6 +155,9 @@ impl Player {
                             if let Ok(mut slot) = meter.lock() { slot.take(); }
                         }
                         Err(RecvTimeoutError::Timeout) => {
+                            if track_ending.swap(false, Ordering::Relaxed) && sink.is_some() {
+                                let _ = app.emit("track-ending", current_id);
+                            }
                             if change_started.swap(false, Ordering::Relaxed) {
                                 handing_off = true;
                                 let _ = app.emit("record-changing", current_id);
@@ -187,6 +207,20 @@ impl Player {
 mod tests {
     use super::Decoder;
     use std::io::Cursor;
+
+    #[test]
+    fn the_cover_cue_fires_once_two_seconds_before_the_music_ends() {
+        use super::*;
+        let ending = Arc::new(AtomicBool::new(false));
+        let samples = rodio::buffer::SamplesBuffer::new(2, 1000, vec![0i16; 10000]);
+        let mut music = music_source(samples, None, Meter::default(), Default::default(), ending.clone());
+        assert_eq!(music.by_ref().take(6000).count(), 6000);
+        assert!(!ending.load(Ordering::Relaxed));
+        music.next();
+        assert!(ending.swap(false, Ordering::Relaxed));
+        assert_eq!(music.count(), 3999);
+        assert!(!ending.load(Ordering::Relaxed));
+    }
 
     #[test]
     fn tv_keeps_the_meter_running_when_the_controller_stops_listening() {

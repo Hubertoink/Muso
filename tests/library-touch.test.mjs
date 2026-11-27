@@ -16,6 +16,7 @@ beforeEach(async () => {
     }));
     localStorage.setItem('muso.libraryPosition', JSON.stringify({ index: 20, id: albums[20].id }));
     const events = new Map();
+    window.testHeos = async () => ({players:[],groups:[],output:null});
     window.emitPlayback = (name, payload) => events.get(name)({ payload });
     window.dateAlbum = (index, timestamp) => { albums[index].first_seen = timestamp; };
     window.refreshLibrary = () => {
@@ -1086,6 +1087,51 @@ test('five queued sleeves survive browsing, promote individually and advance in 
   assert.equal(await covers.count(), 0);
 });
 
+for (const [count, slot] of [[1,0], [5,0], [2,1], [5,2], [5,3], [5,4]]) {
+  test(`lifting waiting sleeve ${slot + 1} of ${count} brings it in from above as the playing sleeve fades down`, async () => {
+    await page.evaluate(async ({count, slot}) => {
+      await openAlbum(state.albums[20]);
+      for (const album of state.albums.slice(21, 21 + count)) openAlbum(album);
+      window.previousImage = document.getElementById('coverImg');
+      window.nextImage = albumQueue[slot].button.querySelector('img');
+    }, {count, slot});
+    const waiting = page.locator('.queued-cover');
+    const titles = await waiting.locator('.queue-title').allTextContents();
+    const box = await waiting.nth(slot).boundingBox();
+    const x = box.x + box.width - 10, y = box.y + box.height / 2;
+    await touch('touchStart', x, 16, y);
+    await move(x, 90, y - 115);
+    await up();
+    const old = page.locator('.promoting-record .outgoing-sleeve');
+    await old.waitFor();
+    const frames = await old.evaluate(outgoing => {
+      const incoming = document.getElementById('cover');
+      if (outgoing.firstElementChild !== window.previousImage || incoming.firstElementChild !== window.nextImage) throw Error('Lost the sleeve artwork');
+      const sample = (element, name) => {
+        const animation = element.getAnimations().find(a => a.animationName === name);
+        animation.pause();
+        return [0, .5, 1].map(fraction => {
+          animation.currentTime = fraction * animation.effect.getTiming().duration;
+          const style = getComputedStyle(element);
+          return {y:new DOMMatrix(style.transform).m42, opacity:Number(style.opacity)};
+        });
+      };
+      return [sample(outgoing, 'queue-cover-out'), sample(incoming, 'queue-cover-in')];
+    });
+    const [exit, enter] = frames;
+    assert.ok(exit[0].y < exit[1].y && exit[1].y < exit[2].y && exit[0].opacity > exit[1].opacity && exit[2].opacity === 0);
+    assert.ok(enter[0].y < enter[1].y && enter[1].y < 0 && enter[2].y === 0 && enter[1].opacity > 0 && enter[2].opacity === 1);
+    await old.waitFor({state:'detached'});
+    assert.equal(await page.locator('#alTitle').textContent(), titles[slot]);
+    assert.deepEqual(await waiting.locator('.queue-title').allTextContents(), titles.filter((_, index) => index !== slot));
+    if (count === 1) return;
+    await page.emulateMedia({reducedMotion:'reduce'});
+    await waiting.first().press('ArrowUp');
+    await page.waitForFunction(title => document.querySelector('#alTitle').textContent === title, titles[slot === 0 ? 1 : 0]);
+    assert.equal(await page.locator('.outgoing-sleeve').count(), 0);
+  });
+}
+
 test('swiping a waiting record down removes only that record and re-arms the final groove', async () => {
   const playing = await page.evaluate(async () => {
     document.querySelector('#vinylSounds').click();
@@ -1586,6 +1632,18 @@ test('the cover waits for a decoded atmosphere and fades back with every queued 
   await credit.waitFor();
   assert.equal(await page.locator('#paintingTitle').textContent(),'Record 20 · 01');
   assert.equal(await page.locator('#paintingByline').textContent(),'Tape Decay · Graphic designer');
+  const stack = page.locator('.cover-stack');
+  const stackX = await stack.evaluate(el => el.getBoundingClientRect().x);
+  await page.mouse.move(100,100);
+  await page.mouse.move(350,180, {steps:8});
+  assert.ok(await stack.evaluate(el => el.inert), 'hover leaves the atmosphere on screen');
+  await page.mouse.click(100,100);
+  assert.ok(await stack.evaluate(el => !el.inert));
+  assert.equal(await stack.evaluate(el => el.getBoundingClientRect().x), stackX);
+  await painting.waitFor();
+  await page.touchscreen.tap(100,100);
+  assert.ok(await stack.evaluate(el => !el.inert));
+  await painting.waitFor();
   await page.locator('#album').evaluate(el => el.classList.add('idle'));
   await credit.waitFor({state:'hidden'});
   await page.locator('#album').evaluate(el => el.classList.remove('idle'));
@@ -1596,7 +1654,9 @@ test('the cover waits for a decoded atmosphere and fades back with every queued 
     await Promise.all(layers.flatMap(el => el.getAnimations()
       .filter(a => a instanceof CSSTransition).map(a => a.finished)));
     if (!stack.inert || Number(getComputedStyle(stack).opacity) !== 0) throw Error('Queue should be hidden in Atmosphere');
-    window.emitPlayback('track-ended', state.playing.playbackId);
+    window.emitPlayback('track-ending', state.playing.playbackId - 1);
+    if (!stack.inert) throw Error('An old playback cue changed the cover');
+    window.emitPlayback('track-ending', state.playing.playbackId);
     for (const layer of layers) {
       const fade = layer.getAnimations().find(a => a.transitionProperty === '--motion-opacity');
       fade.pause();
@@ -1609,6 +1669,9 @@ test('the cover waits for a decoded atmosphere and fades back with every queued 
       return style.visibility === 'visible' ? stackOpacity * Number(style.opacity) : 0;
     })];
   });
+  assert.equal(await page.locator('#alTrack [aria-current]').textContent(), '01First');
+  assert.equal(await stack.evaluate(el => el.getBoundingClientRect().x), stackX);
+  await page.evaluate(() => window.emitPlayback('track-ended', state.playing.playbackId));
   assert.equal(await page.locator('#alTrack [aria-current]').textContent(), '02Second');
   assert.equal(midFade.length, 5);
   assert.ok(midFade.every(opacity => opacity > .4 && opacity < .6), 'the painting, main sleeve and three queued sleeves are visible halfway through the return fade');
@@ -1811,6 +1874,112 @@ test('audio output lists rooms and groups, applies grouping explicitly and route
   assert.deepEqual(await page.evaluate(()=>window.heosWrites),[[34,-12],[34,-12,56],[34]]);
   await ui.getByRole('button',{name:'Close audio output'}).tap();
   await ui.waitFor({state:'hidden'});
+});
+
+test('HEOS shows an accessible green spinner during discovery and connection, then shows the result', async () => {
+  await page.evaluate(() => {
+    window.testHeos = () => new Promise((resolve, reject) => {
+      window.finishHeos = resolve;
+      window.failHeos = reject;
+    });
+  });
+  await page.locator('#menuBtn').tap();
+  await page.getByRole('button',{name:'Audio output',exact:true}).tap();
+  const status = page.locator('#heosStatus');
+  const searching = page.locator('#heosRefresh .heos-spinner');
+  await searching.waitFor();
+  assert.equal(await searching.evaluate(el => getComputedStyle(el).borderTopColor), 'rgb(95, 203, 134)');
+  assert.equal(await status.textContent(), 'Looking for HEOS speakers…');
+  await page.evaluate(() => finishHeos({players:[{pid:1,name:'Desk'},{pid:2,name:'Kitchen'}],groups:[],output:null}));
+  await page.getByRole('button',{name:'Desk',exact:true}).tap();
+  const row = page.locator('.heos-row').filter({hasText:'Desk'});
+  const connecting = row.locator('.heos-spinner');
+  await connecting.waitFor();
+  assert.equal(await status.textContent(), 'Switching audio output…');
+  assert.equal(await status.locator('.heos-spinner').count(), 0);
+  const rowBox = await row.boundingBox(), indicatorBox = await connecting.boundingBox();
+  assert.ok(Math.abs(rowBox.x + rowBox.width - indicatorBox.x - indicatorBox.width) < 1);
+  assert.equal(await page.locator('#audioDialog .heos-spinner').count(), 1);
+  await page.evaluate(() => failHeos('The speaker did not fetch the audio stream.'));
+  await page.waitForFunction(() => document.getElementById('heosStatus').textContent.includes('did not fetch'));
+  assert.equal(await status.getByRole('img').count(), 0);
+  assert.equal(await connecting.count(), 0);
+  assert.equal(await page.getByRole('button',{name:/This computer/}).getAttribute('aria-pressed'), 'true');
+});
+
+test('the player speaker shortcut stays reachable across the hover gap and on touch', async () => {
+  await page.evaluate(() => {
+    window.testHeos = async () => ({players:[{pid:8,name:'Studio'}],groups:[],output:null});
+  });
+  await down(); await up();
+  const volume = page.locator('#volumeToggle'), speakers = page.locator('#speakerSelect');
+  await volume.hover();
+  await speakers.waitFor();
+  await speakers.evaluate(el => Promise.all(el.getAnimations().map(animation => animation.finished)));
+  const left = await speakers.boundingBox(), right = await volume.boundingBox();
+  const gap = (left.x + left.width + right.x) / 2, y = right.y + right.height / 2;
+  await page.mouse.move(gap, y, {steps:8});
+  assert.ok(await speakers.isVisible());
+  await page.locator('#album').evaluate(el => el.classList.add('idle'));
+  assert.equal(await page.locator('#playerAudio').evaluate(async el => {
+    await Promise.all(el.getAnimations().map(animation => animation.finished));
+    return getComputedStyle(el).opacity;
+  }), '1');
+  await page.mouse.move(100,100);
+  await speakers.waitFor({state:'hidden'});
+  assert.equal(await speakers.evaluate(el => {
+    const matrix = new DOMMatrix(getComputedStyle(el).transform);
+    return matrix.m41;
+  }), right.x + right.width / 2 - left.x - left.width / 2);
+  await volume.hover();
+  await speakers.click();
+  const room = page.getByRole('button',{name:'Studio',exact:true});
+  await room.waitFor();
+  const panel = page.locator('#audioDialog');
+  const bounds = await panel.boundingBox();
+  assert.ok(Math.abs(bounds.x + bounds.width - left.x - left.width) < 1);
+  assert.ok(Math.abs(bounds.y + bounds.height + 12 - left.y) < 1);
+  assert.equal(await panel.evaluate(el => getComputedStyle(el, '::backdrop').backdropFilter), 'blur(20px)');
+  assert.equal(await panel.evaluate(el => getComputedStyle(el).backgroundColor), 'rgba(0, 0, 0, 0)');
+  await page.mouse.click(100,100);
+  await panel.waitFor({state:'hidden'});
+
+  await page.touchscreen.tap(100,100);
+  await speakers.waitFor({state:'hidden'});
+  await volume.tap();
+  await speakers.waitFor();
+  assert.ok(await page.getByRole('slider',{name:'Muso volume'}).isEnabled());
+  await speakers.tap();
+  await room.waitFor();
+  assert.equal(await volume.getAttribute('aria-expanded'), 'false');
+  await page.locator('#audioClose').tap();
+  await page.waitForFunction(() => document.activeElement.id === 'volumeToggle');
+  await volume.press('Tab');
+  assert.equal(await page.evaluate(() => document.activeElement.id), 'speakerSelect');
+  await speakers.press('Space');
+  await room.waitFor();
+  await page.setViewportSize({width:820,height:560});
+  const compact = await panel.boundingBox();
+  assert.ok(compact.y >= 15 && compact.y + compact.height <= 560 - 80);
+  await page.keyboard.press('Escape');
+  await panel.waitFor({state:'hidden'});
+  await page.locator('#backBtn').click();
+  await page.locator('#menuBtn').click();
+  await page.locator('[data-action=audio-output]').click();
+  await room.waitFor();
+  const libraryPanel = await panel.boundingBox();
+  assert.ok(Math.abs(libraryPanel.x + libraryPanel.width / 2 - 410) <= 1);
+});
+
+test('the speaker shortcut stays hidden when discovery finds no rooms', async () => {
+  await page.evaluate(() => {
+    window.testHeos = async () => ({players:[],groups:[],output:null});
+  });
+  await down(); await up();
+  await page.locator('#volumeToggle').tap();
+  await page.waitForFunction(() => document.getElementById('heosManual').open);
+  assert.ok(await page.locator('#speakerSelect').isHidden());
+  assert.ok(await page.getByRole('slider',{name:'Muso volume'}).isEnabled());
 });
 
 test('corner volume expands upwards and controls local output with touch and keyboard', async () => {

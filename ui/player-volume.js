@@ -33,6 +33,7 @@ function bindVolumePointer(capsule, range) {
 }
 
 function createPlayerVolume(invoke, heos, toast, onClose) {
+  const controls = document.getElementById('playerAudio');
   const capsule = document.getElementById('playerVolume');
   const button = document.getElementById('volumeToggle');
   const range = document.getElementById('playerVolumeRange');
@@ -86,6 +87,7 @@ function createPlayerVolume(invoke, heos, toast, onClose) {
     }
   }
   function open() {
+    heos.checkForSpeakers();
     capsule.classList.add('open');
     button.setAttribute('aria-expanded', 'true');
     refresh(true);
@@ -119,15 +121,23 @@ function createPlayerVolume(invoke, heos, toast, onClose) {
   range.oninput = () => adjust(false);
   range.onchange = () => adjust(true);
   button.onclick = () => capsule.classList.contains('open') ? close(true) : open();
-  capsule.addEventListener('keydown', e => {
+  controls.addEventListener('pointerenter', e => { if (e.pointerType === 'mouse') heos.checkForSpeakers(); });
+  button.addEventListener('focus', () => heos.checkForSpeakers());
+  document.getElementById('speakerSelect').onclick = async () => {
+    close();
+    await sending;
+    document.getElementById('audioDialog').addEventListener('close', () => button.focus({preventScroll:true}), {once:true});
+    heos.open({fromPlayer:true});
+  };
+  controls.addEventListener('keydown', e => {
     if (e.key === 'Escape') { close(true); e.preventDefault(); }
     e.stopPropagation();
   });
-  capsule.addEventListener('focusout', e => {
-    if (e.relatedTarget && !capsule.contains(e.relatedTarget)) close();
+  controls.addEventListener('focusout', e => {
+    if (e.relatedTarget && !controls.contains(e.relatedTarget)) close();
   });
   document.addEventListener('pointerdown', e => {
-    if (!capsule.contains(e.target) && capsule.classList.contains('open')) close();
+    if (!controls.contains(e.target) && capsule.classList.contains('open')) close();
   }, true);
   return {close, refresh, settled:() => sending};
 }

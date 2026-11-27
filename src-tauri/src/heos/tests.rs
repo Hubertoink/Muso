@@ -7,6 +7,35 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 
 #[tokio::test]
+async fn switching_rooms_reuses_the_audio_port_and_retires_only_the_old_url() {
+    let ip = Ipv4Addr::LOCALHOST.into();
+    let server = stream::StreamServer::bind(SocketAddr::new(ip, stream::STREAM_PORT))
+        .await
+        .unwrap();
+    #[cfg(target_os = "linux")]
+    assert_eq!(server.addr.port(), 48125);
+    let bus = AudioBus::with_format(2, 44100);
+    let first = stream::Session::serve(server.clone(), 1, bus.clone()).unwrap();
+    let second = stream::Session::serve(server, 2, bus).unwrap();
+    let old_url = first.url.clone();
+    assert_ne!(old_url, second.url);
+    let http = reqwest::Client::builder().no_proxy().build().unwrap();
+    assert!(http
+        .head(&old_url)
+        .send()
+        .await
+        .unwrap()
+        .status()
+        .is_success());
+    assert!(!first.listening());
+    drop(first);
+    assert_eq!(http.get(old_url).send().await.unwrap().status(), 404);
+    let audio = http.get(&second.url).send().await.unwrap();
+    assert!(audio.status().is_success());
+    second.activate().await.unwrap();
+}
+
+#[tokio::test]
 async fn creates_edits_and_dissolves_groups_preserving_leader_and_detecting_stale_edits() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -118,9 +147,10 @@ async fn speaker_fetches_live_decodable_music_and_disconnect_returns_the_same_si
     let sink = bus.sink();
     sink.append(rodio::source::SineWave::new(440.).amplify(0.3));
     let mut cli = Client::connect(addr).await.unwrap();
-    let mut remote = stream::Session::serve(cli.local_ip().unwrap(), -12, bus.clone())
+    let server = stream::StreamServer::bind(SocketAddr::new(cli.local_ip().unwrap(), 0))
         .await
         .unwrap();
+    let mut remote = stream::Session::serve(server, -12, bus.clone()).unwrap();
     start_stream(&mut cli, &mut remote).await.unwrap();
     assert!(!bus.local());
     assert!(bus.reader(0).take(512).all(|s| s == 0.));
@@ -188,9 +218,10 @@ async fn hardware_pause_keeps_the_stream_warm_and_radio_only_players_restart_the
         });
         let mut cli = Client::connect(address).await.unwrap();
         let bus = AudioBus::with_format(2, 44100);
-        let mut session = stream::Session::serve(cli.local_ip().unwrap(), -12, bus)
+        let server = stream::StreamServer::bind(SocketAddr::new(cli.local_ip().unwrap(), 0))
             .await
             .unwrap();
+        let mut session = stream::Session::serve(server, -12, bus).unwrap();
         set_transport(&mut cli, &mut session, true).await.unwrap();
         set_transport(&mut cli, &mut session, false).await.unwrap();
         assert!(session.transport != Transport::Playing);
@@ -348,7 +379,10 @@ async fn plays_short_tone_on_selected_speaker() -> Result<(), String> {
     let bus = AudioBus::with_format(2, 44100);
     let sink = bus.sink();
     let result = async {
-        let mut session = stream::Session::serve(cli.local_ip()?, pid, bus).await?;
+        let server =
+            stream::StreamServer::bind(SocketAddr::new(cli.local_ip()?, stream::STREAM_PORT))
+                .await?;
+        let mut session = stream::Session::serve(server, pid, bus)?;
         start_stream(&mut cli, &mut session).await?;
         let length = 52920;
         let samples: Vec<f32> = (0..length)
