@@ -530,7 +530,7 @@ for (const [button, importing] of [['exportArchive',false],['importArchive',true
     try {
       const result = await invoke('transfer_library_art', {importing});
       $('archiveStatus').textContent = result ? (importing ? 'Imported' : 'Exported') + ' · ' + result.notes + ' articles · ' + result.images + ' images' + (result.genres ? ' · ' + result.genres + ' album genres' : '') + (result.skipped ? ' · ' + result.skipped + ' unmatched albums' : '') : '';
-      if (result && importing) await loadAlbums();
+      if (result && importing) { await loadAlbums(); refreshSharedPaintings([], true); }
     } catch(e) { $('archiveStatus').textContent = String(e); }
     finally { $('exportArchive').disabled = $('importArchive').disabled = false; }
   });
@@ -1101,7 +1101,7 @@ $('menu').querySelectorAll('[data-action]').forEach((b) =>
       try {
         const [folders] = await Promise.all([act === 'settings' ? invoke('get_folders') : null, loadKey()]);
         if (selection !== menuSelection) return;
-        if (act === 'settings') renderFolders(folders);
+        if (act === 'settings') {renderFolders(folders); updateAtmosStorage();}
         else prepareAi();
         show($(act));
         $(act).querySelector('.modal-scroll').scrollTop = 0;
@@ -2712,6 +2712,64 @@ $('genBtn').addEventListener('click', () => {
 });
 
 /* ---------------- atmospheres ---------------- */
+
+let storageFolder, storageBusy = false, storageUnavailable = false, lastConflicts = '';
+function refreshSharedPaintings(albums, force = false) {
+  if (state.viewAlbum && (force || albums.includes(state.viewAlbum.id))) {
+    startAtmospheres(state.viewAlbum.id, false, playlist?.shown);
+    showStyle(state.viewAlbum.id);
+  }
+  if (force || albums.includes(state.playing?.album.id)) syncTv(true);
+}
+listen('atmos-storage-changed', ({payload}) => refreshSharedPaintings(payload));
+async function updateAtmosStorage(action = 'sync', match = {}) {
+  if (storageBusy) return;
+  storageBusy = true;
+  const actions = $('atmosFolderActions'), matches = $('atmosFolderMatches'), status = $('atmosFolderStatus');
+  actions.inert = matches.inert = true;
+  if (action === 'move') status.textContent = 'Choose a folder to copy and verify your collection.';
+  try {
+    const info = await invoke('atmosphere_storage', {action, ...match});
+    if (!info) return;
+    const switched = storageFolder !== undefined && storageFolder !== info.folder;
+    storageFolder = info.folder;
+    $('atmosFolderPath').textContent = 'Storage: ' + (info.folder || 'local Muso folder');
+    if (info.folder && !actions.querySelector('[data-storage=local]')) {
+      for (const [value, text] of [['sync','Sync now'], ['local','Use local collection']]) {
+        const button = document.createElement('button');
+        button.type = 'button'; button.dataset.storage = value; button.textContent = text;
+        actions.append(button);
+      }
+    } else if (!info.folder) actions.querySelectorAll('[data-storage=local], [data-storage=sync]').forEach(b => b.remove());
+    status.textContent = [info.error, info.pending ? 'Waiting for synced files: ' + info.pending : '',
+      info.unmatched ? 'Paintings awaiting a matching music library scan: ' + info.unmatched : ''].filter(Boolean).join(' · ');
+    const conflicts = JSON.stringify(info.conflicts);
+    if (conflicts !== lastConflicts) {
+      matches.replaceChildren();
+      for (const [source, conflict] of Object.entries(info.conflicts)) {
+        const label = document.createElement('label'), select = document.createElement('select');
+        label.className = 'pref-row';
+        label.append(document.createTextNode(conflict.title), select);
+        select.add(new Option('Choose album edition…', ''));
+        for (const [id, title] of conflict.choices) select.add(new Option(title, id));
+        select.onchange = () => { if (select.value) updateAtmosStorage('match', {source, album:select.value}); };
+        matches.append(label);
+      }
+      if (matches.childElementCount) toast('Choose the matching album edition in Settings → Visual Atmospheres.', 6500);
+      lastConflicts = conflicts;
+    }
+    refreshSharedPaintings(info.changed, switched || (storageUnavailable && !info.error));
+    storageUnavailable = Boolean(info.error);
+  } catch (error) { status.textContent = String(error); }
+  finally { storageBusy = false; actions.inert = matches.inert = false; }
+}
+$('atmosFolderActions').addEventListener('click', e => {
+  const action = e.target.closest('button')?.dataset.storage;
+  if (action) updateAtmosStorage(action);
+});
+setInterval(() => { if (storageFolder) updateAtmosStorage(); }, 30000);
+window.addEventListener('focus', () => { if (storageFolder) updateAtmosStorage(); });
+updateAtmosStorage();
 
 // Keep the repeating texture inside its own bitmap. WebKitGTK can tile the
 // underlying painting when a repeating CSS background blends across a fade.

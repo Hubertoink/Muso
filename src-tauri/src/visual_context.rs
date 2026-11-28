@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 pub struct References {
     cover: Option<PathBuf>,
     paintings: Vec<String>,
+    shared: Option<crate::shared_atmos::Store>,
     style_history: StyleHistory,
 }
 
@@ -27,17 +28,19 @@ impl References {
         }).filter(|file| file.file_name() == Some(file.as_os_str()));
         // Interleave albums before taking a second picture from any one of them.
         // Give the current release and the latest saved sets the first slots.
+        let shared = crate::shared_atmos::Store::active(db)?;
         let mut query = db.prepare("WITH files AS (
-            SELECT album_id,file,1 AS styled,rowid AS seq FROM atmosphere_variants
-            UNION ALL SELECT album_id,file,0,rowid FROM atmospheres
+            SELECT album_id,file,1 AS styled,rowid AS seq FROM atmosphere_variants WHERE ?2=0
+            UNION ALL SELECT album_id,file,0,rowid FROM atmospheres WHERE ?2=0
+            UNION ALL SELECT album_id,file,1,stamp FROM shared_paintings WHERE ?2=1 AND album_id<>''
         ), ranked AS (
             SELECT *,row_number() OVER (PARTITION BY album_id ORDER BY styled DESC,seq DESC) AS slot FROM files
         ), sample AS (
             SELECT *,row_number() OVER (PARTITION BY slot ORDER BY album_id=?1 DESC,styled DESC,seq DESC) AS priority FROM ranked
         ) SELECT file FROM sample ORDER BY slot,min(priority,4),random() LIMIT 120")?;
-        let paintings = query.query_map([&album.id], |r| r.get(0))?
+        let paintings = query.query_map((&album.id,shared.is_some()), |r| r.get(0))?
             .collect::<rusqlite::Result<_>>()?;
-        Ok(Self { cover, paintings, style_history: StyleHistory::load(db)? })
+        Ok(Self { cover, paintings, shared, style_history: StyleHistory::load(db)? })
     }
 
     pub fn content(self, directory: &Path) -> VisualInputs {
@@ -49,7 +52,11 @@ impl References {
         for rel in self.paintings {
             let path = Path::new(&rel);
             if path.parent() != Some(Path::new("atmos")) || !seen.insert(rel.clone()) { continue; }
-            if let Ok(picture) = image::open(directory.join(path)) {
+            let path = if let Some(store) = &self.shared {
+                let Ok(path) = store.path(&rel) else { continue };
+                path
+            } else { directory.join(path) };
+            if let Ok(picture) = image::open(path) {
                 tiles.push(picture.thumbnail(192, 128).to_rgb8());
                 if tiles.len() == 6 { break; }
             }

@@ -1,6 +1,6 @@
 [package]
 name = "muso"
-version = "0.1.47"
+version = "0.1.48"
 description = "Muso – a minimalist digital record crate"
 edition = "2021"
 license = "MIT"
@@ -14,13 +14,14 @@ tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 rusqlite = { version = "0.32", features = ["bundled"] }
 lofty = "0.21"
 rodio = { version = "0.20", default-features = false, features = ["symphonia-all"] }
 audio2mp3-core = "0.2"
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
-uuid = { version = "1", features = ["v4"] }
+uuid = { version = "1", features = ["v4", "serde"] }
 if-addrs = "0.15"
 socket2 = "0.6"
 symphonia = { version = "0.5", features = ["all"] }

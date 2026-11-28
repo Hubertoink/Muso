@@ -317,6 +317,17 @@
           <p id="archiveStatus" class="muted" role="status"></p>
         </section>
         <section>
+          <h3>Visual Atmospheres</h3>
+          <p>Choose the same synced folder on both computers to share paintings and prompts.</p>
+          <p id="atmosFolderPath" class="muted">Storage: local Muso folder</p>
+          <div id="atmosFolderActions" class="pref-actions">
+            <button type="button" data-storage="move">Copy collection to folder…</button>
+            <button type="button" data-storage="use">Use existing folder…</button>
+          </div>
+          <p id="atmosFolderStatus" class="muted" role="status"></p>
+          <div id="atmosFolderMatches"></div>
+        </section>
+        <section>
           <h3>Atmosphere effects</h3>
           <p class="muted">Effects appear on atmosphere images during playback.</p>
           <label class="pref-row"><span>Animated filter</span><select id="imageFilter">

@@ -2,6 +2,7 @@
 
 mod ai;
 mod archive;
+mod shared_atmos;
 mod audio;
 mod covers;
 mod crates;
@@ -30,6 +31,8 @@ use tauri_plugin_dialog::DialogExt;
 
 struct AppState {
     db: Mutex<rusqlite::Connection>,
+    storage_db: Mutex<rusqlite::Connection>,
+    storage_gate: tokio::sync::RwLock<()>,
     db_path: PathBuf,
     data_dir: PathBuf,
     player: audio::Player,
@@ -344,7 +347,11 @@ fn local_volume(state: State<'_, AppState>, value: Option<u8>, save: Option<bool
 
 #[tauri::command]
 fn get_setting(state: State<'_, AppState>, key: String) -> R<Option<String>> {
-    db::get_setting(&*state.db.lock().map_err(err)?, &key).map_err(err)
+    let c = state.db.lock().map_err(err)?;
+    if let Some(album) = key.strip_prefix("atmos_auto_style.") {
+        return shared_atmos::auto_label(&c, album).map_err(err);
+    }
+    db::get_setting(&c, &key).map_err(err)
 }
 
 #[tauri::command]
@@ -370,16 +377,23 @@ fn delete_atmosphere(state: State<'_, AppState>, album_id: String, style: String
 
 #[tauri::command]
 async fn open_image_folder(state: State<'_, AppState>, album_id: String) -> R<()> {
-    let dir = state.data_dir.join("atmos");
-    std::fs::create_dir_all(&dir).map_err(err)?;
+    let store = shared_atmos::Store::active(&*state.db.lock().map_err(err)?).map_err(err)?;
+    let dir = if let Some(store) = store {
+        store.check()?;
+        store.folder
+    } else {
+        let local = state.data_dir.join("atmos");
+        std::fs::create_dir_all(&local).map_err(err)?;
+        local
+    };
     #[cfg(windows)]
     {
         let selected = {
             let conn = state.db.lock().map_err(err)?;
-            let mut query = conn.prepare("SELECT file FROM atmosphere_variants WHERE album_id=?1
-                UNION ALL SELECT file FROM atmospheres WHERE album_id=?1").map_err(err)?;
+            let mut query = conn.prepare("SELECT file FROM active_paintings WHERE album_id=?1").map_err(err)?;
             let files = query.query_map([album_id], |r| r.get::<_, String>(0)).map_err(err)?;
-            let image = files.filter_map(Result::ok).map(|f| state.data_dir.join(f))
+            let image = files.filter_map(Result::ok)
+                .filter_map(|f| f.strip_prefix("atmos/").filter(|n| paintings::valid_filename(n)).map(|n| dir.join(n)))
                 .find(|p| p.parent() == Some(dir.as_path()) && p.is_file());
             image
         };
@@ -402,6 +416,26 @@ async fn generate_atmospheres(app: AppHandle, state: State<'_, AppState>, album_
     let count = count.unwrap_or(3);
     if !(3..=5).contains(&count) { return Err("Choose 3 to 5 images.".into()); }
     let only_if_empty = only_if_empty.unwrap_or(false);
+    let _storage_guard = state.storage_gate.read().await;
+    let store = shared_atmos::Store::active(&*state.db.lock().map_err(err)?).map_err(err)?;
+    if let Some(shared) = &store {
+        let handle = app.clone();
+        let result = tauri::async_runtime::spawn_blocking(move || {
+            let state = handle.state::<AppState>();
+            let mut c = state.storage_db.lock().map_err(err)?;
+            shared_atmos::sync(&mut c)
+        }).await.map_err(err)?;
+        let status = match result {
+            Ok(status) => status,
+            Err(_) if only_if_empty => return Ok(Vec::new()),
+            Err(error) => return Err(error),
+        };
+        if !status.changed.is_empty() {
+            let _ = app.emit("atmos-storage-changed", &status.changed);
+        }
+        if only_if_empty && status.pause_automatic(&album_id) { return Ok(Vec::new()); }
+        tempfile::NamedTempFile::new_in(&shared.folder).map_err(|e| format!("Cannot write to the Atmosphere folder: {e}"))?;
+    }
     // A process-owned lock also protects against a second running instance before the first image is saved.
     let locks = state.data_dir.join("generation-locks");
     std::fs::create_dir_all(&locks).map_err(err)?;
@@ -417,26 +451,48 @@ async fn generate_atmospheres(app: AppHandle, state: State<'_, AppState>, album_
     let direction = if style == "auto" { None } else {
         Some(ai::preset(style).ok_or("Unknown atmosphere style")?)
     };
-    let (key, album, tracks, references) = {
+    let (key, album, tracks, references, shared_key) = {
         let conn = state.db.lock().map_err(err)?;
         if only_if_empty && db::has_atmospheres(&conn, &album_id).map_err(err)? { return Ok(Vec::new()); }
         let key = openai_key(&conn)?.ok_or("No OpenAI API key set")?;
         let album = db::album(&conn, &album_id).map_err(err)?.ok_or("Album not found")?;
         let tracks = db::tracks(&conn, &album_id).map_err(err)?;
         let references = visual_context::References::load(&conn, &album).map_err(err)?;
-        (key, album, tracks, references)
+        let shared_key = if store.is_some() {
+            let library = db::albums(&conn).map_err(err)?;
+            let record = library.iter().find(|a| a.album.id == album_id).ok_or("Album not found")?;
+            Some(shared_atmos::AlbumKey::from(record))
+        } else { None };
+        (key, album, tracks, references, shared_key)
     };
     let context = album_context(&app, &state, &key, &album, &tracks, research.unwrap_or(false), ContextFor::Images, |stage| {
         let message = match stage { "Researching" => "Researching the album", "Writing" => "Writing the album article", _ => "Saving the album article" };
         let _ = app.emit("atmos-progress", ai::AtmosProgress { album_id: album_id.clone(), step: 0, total: count + 1, message: message.into() });
     }).await?;
+    let mut series = shared_atmos::Series::new(style);
     ai::generate(&key, &album, &tracks, &state.data_dir, &context, references, direction, count, allow_repaint.unwrap_or(false), persona, image_settings.unwrap_or_default(), |step, message| {
         let _ = app.emit("atmos-progress", ai::AtmosProgress { album_id: album_id.clone(), step, total: count+1, message: message.into() });
     }, |files, name, technique, prompt| {
         let mut conn = state.db.lock().map_err(err)?;
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(err)?;
-        let saved = paintings::append_generated(&tx, &album_id, style, files, name, technique, prompt, only_if_empty)?;
+        if shared_atmos::Store::active(&tx).map_err(err)? != store {
+            return Err("The Atmosphere storage folder changed.".into());
+        }
+        let file = files.last().ok_or("Missing generated atmosphere")?;
+        let saved = if let (Some(store), Some(album)) = (&store, &shared_key) {
+            if only_if_empty && files.len() == 1 && db::has_atmospheres(&tx, &album_id).map_err(err)? {
+                return Err("This album already has saved atmospheres.".into());
+            }
+            series.label = name.into();
+            series.technique = Some(technique.into());
+            let (p, _) = store.publish(&state.data_dir.join(file), album, &series, files.len()-1, Some(prompt.into()), file)?;
+            store.index_published(&tx, &p, &album_id)?;
+            db::atmospheres(&tx, &album_id, style).map_err(err)?
+        } else {
+            paintings::append_generated(&tx, &album_id, style, files, name, technique, prompt, only_if_empty)?
+        };
         tx.commit().map_err(err)?;
+        if store.is_some() { let _ = std::fs::remove_file(state.data_dir.join(file)); }
         let _ = app.emit("atmos-image-ready", serde_json::json!({
             "albumId": album_id, "style": style, "files": saved, "firstInSeries": files.len() == 1
         }));
@@ -453,7 +509,15 @@ fn serve(app: &AppHandle, req: Request<Vec<u8>>) -> Response<Vec<u8>> {
     }
     let Some(rel) = paintings::image_path(req.uri().path()) else { return not_found() };
     let Some(state) = app.try_state::<AppState>() else { return not_found() };
-    match std::fs::read(state.data_dir.join(rel.as_ref())) {
+    let path = if rel.starts_with("atmos/") {
+        let Ok(conn) = state.db.lock() else { return not_found() };
+        let Ok(store) = shared_atmos::Store::active(&conn) else { return not_found() };
+        match store {
+            Some(store) => match store.path(&rel) { Ok(path) => path, Err(_) => return not_found() },
+            None => state.data_dir.join(rel.as_ref()),
+        }
+    } else { state.data_dir.join(rel.as_ref()) };
+    match std::fs::read(path) {
         Ok(data) => Response::builder()
             .header("Content-Type", "image/jpeg")
             .header("Cache-Control", "max-age=31536000, immutable")
@@ -520,7 +584,9 @@ fn main() {
             if let Some(value) = db::get_setting(&conn, "local_volume")?.and_then(|value| value.parse().ok()) {
                 player.bus.set_local_volume(value);
             }
+            let storage_db = Mutex::new(db::open(&db_path)?);
             app.manage(AppState {
+                storage_db, storage_gate: Default::default(),
                 db: Mutex::new(conn),
                 db_path,
                 data_dir,
@@ -590,6 +656,7 @@ fn main() {
             get_setting,
             set_setting,
             get_atmospheres,
+            shared_atmos::atmosphere_storage,
             painting_credit,
             delete_atmosphere,
             open_image_folder,

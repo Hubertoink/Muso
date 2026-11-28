@@ -30,6 +30,10 @@ beforeEach(async () => {
     window.__TAURI__ = {
       core: { invoke: async (command, args) => {
         if (command.startsWith('heos_')) return window.testHeos(command,args);
+        if (command === 'atmosphere_storage') {
+          const status = {folder:null, changed:[], conflicts:{}, pending:0, unmatched:0};
+          return window.testStorage ? window.testStorage(args) : status;
+        }
         if (command === 'set_vinyl_volume') { window.vinylPercent = args.percent; return; }
         if (command === 'local_volume') {
           if (args?.value != null) {
@@ -1608,6 +1612,28 @@ test('delete in the player targets the confirmed painting across slides and prot
   await page.locator('#albumMenuBtn').click();
   assert.ok(await remove.isHidden());
   assert.ok(await page.locator('#openImageFolder').isVisible());
+});
+
+test('storage settings connect a shared folder, resolve an edition and return to local paintings', async () => {
+  await page.evaluate(() => {
+    let folder = null, matched = false;
+    window.testStorage = ({action, source, album}) => {
+      if (action === 'use') folder = 'OneDrive/Muso';
+      if (action === 'local') folder = null;
+      if (action === 'match') { matched = true; window.editionChoice = [source, album]; }
+      const conflicts = folder && !matched ? {remote:{title:'Test · Record', choices:[['a','Edition A'],['b','Edition B']]}} : {};
+      return {folder, conflicts, changed:[], pending:0, unmatched:0};
+    };
+  });
+  await page.locator('#menuBtn').click();
+  await page.locator('[data-action=settings]').click();
+  await page.getByRole('button', {name:'Use existing folder…'}).click();
+  const editions = page.getByLabel('Test · Record');
+  await editions.selectOption('b');
+  assert.deepEqual(await page.evaluate(() => window.editionChoice), ['remote','b']);
+  assert.equal(await page.locator('#atmosFolderPath').textContent(),'Storage: OneDrive/Muso');
+  await page.getByRole('button', {name:'Use local collection'}).click();
+  assert.equal(await page.locator('#atmosFolderPath').textContent(),'Storage: local Muso folder');
 });
 
 test('opening a painting credit keeps its prompt available to copy across slide changes', async () => {

@@ -123,10 +123,15 @@ struct Choice {
 
 impl StyleHistory {
     pub fn load(db: &Connection) -> rusqlite::Result<Self> {
-        let mut counts = db.prepare(
-            "SELECT technique,count(*) FROM auto_style_choices WHERE technique IS NOT NULL
-            GROUP BY technique ORDER BY count(*) DESC, max(seq) DESC LIMIT 8",
-        )?;
+        let choices_sql = if crate::shared_atmos::Store::active(db)?.is_some() {
+            "SELECT json_extract(metadata,'$.series.label') AS label,
+                nullif(json_extract(metadata,'$.series.technique'),'') AS technique, stamp AS seq, 0 AS imported
+                FROM shared_paintings WHERE style='auto' GROUP BY series"
+        } else { "SELECT label,technique,seq,imported FROM auto_style_choices" };
+        let mut counts = db.prepare(&format!(
+            "SELECT technique,count(*) FROM ({choices_sql}) WHERE technique IS NOT NULL
+            GROUP BY technique ORDER BY count(*) DESC, max(seq) DESC LIMIT 8"
+        ))?;
         let frequent_techniques = counts
             .query_map([], |r| {
                 Ok(Frequency {
@@ -135,7 +140,7 @@ impl StyleHistory {
                 })
             })?
             .collect::<rusqlite::Result<_>>()?;
-        let mut choices = db.prepare("SELECT label,technique FROM auto_style_choices WHERE imported=0 ORDER BY seq DESC LIMIT 8")?;
+        let mut choices = db.prepare(&format!("SELECT label,technique FROM ({choices_sql}) WHERE imported=0 ORDER BY seq DESC LIMIT 8"))?;
         let recent_choices_newest_first = choices
             .query_map([], |r| {
                 Ok(Choice {

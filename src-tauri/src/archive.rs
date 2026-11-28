@@ -1,7 +1,8 @@
 use crate::{db, err, genres, paintings, R};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
+use crate::shared_atmos::{self, AlbumKey, Series, Store};
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -73,6 +74,7 @@ fn media_name(index: usize) -> String {
 fn add_image(
     zip: &mut ZipWriter<&mut File>,
     dir: &Path,
+    store: Option<&Store>,
     rel: &str,
     summary: &mut Summary,
 ) -> R<usize> {
@@ -83,8 +85,11 @@ fn add_image(
     {
         return Err("Invalid cached image path".into());
     }
-    let mut image =
-        File::open(dir.join(rel)).map_err(|e| format!("Could not export {rel}: {e}"))?;
+    let path = match store.filter(|_| folder == "atmos") {
+        Some(s) => s.path(rel)?,
+        None => dir.join(rel),
+    };
+    let mut image = File::open(path).map_err(|e| format!("Could not export {rel}: {e}"))?;
     let index = summary.images;
     zip.start_file(
         media_name(index),
@@ -121,8 +126,9 @@ pub fn export(c: &mut Connection, dir: &Path, dest: &Path) -> R<Summary> {
         });
     }
     let mut choices = tx.prepare("SELECT genre, source FROM album_genre WHERE album_id=?1").map_err(err)?;
-    let mut saved_styles = tx.prepare("SELECT style FROM atmosphere_variants WHERE album_id=?1
-        UNION SELECT 'cinematic' FROM atmospheres WHERE album_id=?1").map_err(err)?;
+    let store = Store::active(&tx).map_err(err)?;
+    if let Some(s) = &store { s.check()?; }
+    let mut saved_styles = tx.prepare("SELECT DISTINCT style FROM active_paintings WHERE album_id=?1").map_err(err)?;
     for record in db::albums(&tx).map_err(err)? {
         let a = record.album;
         let note = db::note(&tx, &a.id).map_err(err)?;
@@ -138,8 +144,18 @@ pub fn export(c: &mut Connection, dir: &Path, dest: &Path) -> R<Summary> {
                 continue;
             }
             let mut indices = Vec::new();
+            let mut previous_series = String::new();
             for file in files {
-                let index = add_image(&mut zip, dir, &file, &mut summary)?;
+                let index = add_image(&mut zip, dir, store.as_ref(), &file, &mut summary)?;
+                if let Some(p) = shared_atmos::lookup(&tx, &file).map_err(err)? {
+                    if style == "auto" && previous_series != p.series.id {
+                        previous_series = p.series.id;
+                        auto_series.insert(index, SeriesStyle { label:p.series.label, technique:p.series.technique });
+                    }
+                    if let Some(prompt) = p.prompt { prompts.insert(index, prompt); }
+                    indices.push(index);
+                    continue;
+                }
                 if style == "auto" {
                     if let Some(marker) = tx.query_row("SELECT label,technique FROM auto_style_choices
                         WHERE first_file=?1 ORDER BY seq DESC LIMIT 1", [&file],
@@ -168,6 +184,7 @@ pub fn export(c: &mut Connection, dir: &Path, dest: &Path) -> R<Summary> {
             (Some(add_image(
                 &mut zip,
                 dir,
+                None,
                 &format!("art/{file}"),
                 &mut summary,
             )?), source)
@@ -184,7 +201,7 @@ pub fn export(c: &mut Connection, dir: &Path, dest: &Path) -> R<Summary> {
         summary.notes += usize::from(note.is_some());
         summary.genres += usize::from(genre.is_some());
         let auto_style =
-            db::get_setting(&tx, &format!("atmos_auto_style.{}", a.id)).map_err(err)?;
+            shared_atmos::auto_label(&tx,&a.id).map_err(err)?;
         let auto_technique = auto_series.values().last().and_then(|s| s.technique.clone());
         manifest.albums.push(Entry {
             id: a.id,
@@ -334,7 +351,7 @@ fn read_entry(zip: &mut ZipArchive<File>, name: &str, limit: u64) -> R<Vec<u8>> 
 }
 
 #[derive(Default)]
-struct NewFiles(Vec<PathBuf>);
+pub(crate) struct NewFiles(pub(crate) Vec<PathBuf>);
 
 impl NewFiles {
     fn write(&mut self, dir: &Path, name: &str, data: &[u8]) -> R<()> {
@@ -389,7 +406,10 @@ pub fn import(c: &mut Connection, dir: &Path, src: &Path) -> R<Summary> {
         }
     }
     let library = db::albums(&tx).map_err(err)?;
-    let local: HashMap<_, _> = library.iter().map(|a| (a.album.id.as_str(), a)).collect();
+    let catalog = shared_atmos::AlbumCatalog::new(&library);
+    let store = Store::active(&tx).map_err(err)?;
+    if let Some(s) = &store { s.check()?; }
+    let mut pending_shared = Vec::new();
     let mut summary = Summary::default();
     let mut new_files = NewFiles::default();
     let mut serial = std::time::SystemTime::now()
@@ -397,19 +417,9 @@ pub fn import(c: &mut Connection, dir: &Path, src: &Path) -> R<Summary> {
         .map_err(err)?
         .as_nanos();
     for e in manifest.albums {
-        let record = local.get(e.id.as_str()).copied().or_else(|| {
-            if e.members.is_empty() {
-                return None;
-            }
-            let mut matches = library.iter().filter(|a| {
-                a.members == e.members
-                    && a.album.title.eq_ignore_ascii_case(&e.title)
-                    && (a.album.artist.eq_ignore_ascii_case(&e.artist) || e.artist.eq_ignore_ascii_case("Various Artists"))
-            });
-            let first = matches.next()?;
-            matches.next().is_none().then_some(first)
-        });
-        let Some(record) = record else {
+        let key = AlbumKey { id:e.id, artist:e.artist, title:e.title, members:e.members };
+        let candidates = catalog.candidates(&key);
+        let [record] = candidates.as_slice() else {
             summary.skipped += 1;
             continue;
         };
@@ -441,12 +451,29 @@ pub fn import(c: &mut Connection, dir: &Path, src: &Path) -> R<Summary> {
                 .unwrap_or("AI choice");
             let mut files = Vec::new();
             let mut series_label = label;
+            let mut shared_series = Series::new(&style);
+            let series_start = shared_series.created;
+            shared_series.label = label.into();
+            shared_series.technique = e.auto_technique.clone();
             for (n, index) in indices.into_iter().enumerate() {
                 let bytes = jpeg(&mut zip, index)?;
                 crate::covers::decode(&bytes)?;
                 serial += 1;
                 let marker = e.auto_series.get(&index).filter(|_| style == "auto");
                 if let Some(marker) = marker { series_label = &marker.label; }
+                if store.is_some() {
+                    if let Some(marker) = marker {
+                        shared_series = Series::new(&style);
+                        shared_series.created = series_start + n as i64;
+                        shared_series.label = marker.label.clone();
+                        shared_series.technique = marker.technique.clone();
+                    }
+                    let mut temp = NamedTempFile::new().map_err(err)?;
+                    temp.write_all(&bytes).map_err(err)?;
+                    pending_shared.push((temp, AlbumKey::from(*record), shared_series.clone(), n, e.prompts.get(&index).cloned()));
+                    summary.images += 1;
+                    continue;
+                }
                 let name = paintings::filename(&a.title, series_label, n + 1, serial);
                 new_files.write(&dir.join("atmos"), &name, &bytes)?;
                 let file = format!("atmos/{name}");
@@ -459,6 +486,7 @@ pub fn import(c: &mut Connection, dir: &Path, src: &Path) -> R<Summary> {
                 }
                 files.push(file);
             }
+            if store.is_some() { continue; }
             db::replace_atmospheres(&tx, id, &style, &files).map_err(err)?;
             if style == "auto" {
                 db::set_setting(&tx, &format!("atmos_auto_style.{id}"), label).map_err(err)?;
@@ -512,6 +540,13 @@ pub fn import(c: &mut Connection, dir: &Path, src: &Path) -> R<Summary> {
             }
         }
         summary.albums += 1;
+    }
+    if let Some(store) = &store {
+        for (temp, album, series, n, prompt) in pending_shared {
+            let (p, created) = store.publish(temp.path(), &album, &series, n, prompt, &format!("archive-{n}"))?;
+            new_files.0.extend(created);
+            store.index_published(&tx, &p, &album.id)?;
+        }
     }
     tx.commit().map_err(err)?;
     new_files.0.clear();

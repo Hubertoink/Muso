@@ -23,14 +23,20 @@ pub fn credit(c: &Connection, album: &str, style: &str, file: &str) -> rusqlite:
     let files = crate::db::atmospheres(c, album, style)?;
     let Some(index) = files.iter().position(|f| f == file) else { return Ok(None) };
     let Some(record) = crate::db::album(c, album)? else { return Ok(None) };
-    let medium = if style == "auto" {
+    let shared = crate::shared_atmos::lookup(c, file)?;
+    let medium = if let Some(p) = &shared {
+        Some(p.series.label.clone())
+    } else if style == "auto" {
         c.query_row("SELECT h.label FROM atmosphere_variants v JOIN auto_style_choices h ON h.first_file=v.file
             WHERE v.album_id=?1 AND v.style='auto' AND v.idx <=
             (SELECT idx FROM atmosphere_variants WHERE album_id=?1 AND style='auto' AND file=?2)
             ORDER BY v.idx DESC,h.seq DESC LIMIT 1", (album,file), |r| r.get(0)).optional()?
             .or(crate::db::get_setting(c, &format!("atmos_auto_style.{album}"))?)
     } else { style_label(style).map(str::to_owned) };
-    let prompt = c.query_row("SELECT prompt FROM painting_prompts WHERE file=?1", [file], |r| r.get::<_, String>(0)).optional()?;
+    let prompt = match shared {
+        Some(p) => p.prompt,
+        None => c.query_row("SELECT prompt FROM painting_prompts WHERE file=?1", [file], |r| r.get::<_, String>(0)).optional()?,
+    };
     let persona = prompt.as_deref().and_then(|text| text.lines().find_map(|line| {
         let commission = line.strip_prefix("You are the ")?;
         let (artist, _) = commission.split_once(" commissioned for this entire album series.")?;
@@ -95,8 +101,11 @@ pub fn filename(title: &str, style: &str, number: usize, stamp: u128) -> String 
 pub fn image_path(uri_path: &str) -> Option<Cow<'_, str>> {
     let rel = percent_decode_str(uri_path.strip_prefix('/')?).decode_utf8().ok()?;
     let (dir, file) = rel.split_once('/')?;
-    (matches!(dir, "art" | "thumb" | "atmos") && file.ends_with(".jpg")
-        && !file.chars().any(forbidden) && !reserved(file)).then_some(rel)
+    (matches!(dir, "art" | "thumb" | "atmos") && valid_filename(file)).then_some(rel)
+}
+
+pub fn valid_filename(file: &str) -> bool {
+    file.ends_with(".jpg") && !file.chars().any(forbidden) && !reserved(file)
 }
 
 /// Publish one accepted image inside the caller's transaction. Read the current collection
@@ -145,6 +154,10 @@ pub fn delete(conn: &mut Connection, data_dir: &std::path::Path, album: &str, st
     let name = file.strip_prefix("atmos/").filter(|s| s.ends_with(".jpg") && !s.chars().any(forbidden) && !reserved(s))
         .ok_or("Invalid atmosphere image.")?;
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(err)?;
+    if let Some(store) = crate::shared_atmos::Store::active(&tx).map_err(err)? {
+        store.delete(&tx, album, style, file)?;
+        return tx.commit().map_err(err);
+    }
     let mut files = crate::db::atmospheres(&tx, album, style).map_err(err)?;
     let index = files.iter().position(|f| f == file).ok_or("This atmosphere is no longer in this series.")?;
     files.retain(|f| f != file);

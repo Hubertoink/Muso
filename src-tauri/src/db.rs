@@ -46,6 +46,7 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
          CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);",
     )?;
     crate::genres::schema(&c)?;
+    crate::shared_atmos::schema(&c)?;
     crate::personal_images::schema(&mut c)?;
     // Libraries created before online cover search have only the original art cache.
     let has_cover_file: bool = c.query_row(
@@ -224,13 +225,11 @@ pub fn set_setting(c: &Connection, key: &str, value: &str) -> rusqlite::Result<(
 }
 
 pub fn has_atmospheres(c: &Connection, album_id: &str) -> rusqlite::Result<bool> {
-    c.query_row("SELECT EXISTS(SELECT 1 FROM atmospheres WHERE album_id=?1)
-        OR EXISTS(SELECT 1 FROM atmosphere_variants WHERE album_id=?1)", [album_id], |r| r.get(0))
+    c.query_row("SELECT EXISTS(SELECT 1 FROM active_paintings WHERE album_id=?1)", [album_id], |r| r.get(0))
 }
 
 pub fn atmospheres(c: &Connection, album_id: &str, style: &str) -> rusqlite::Result<Vec<String>> {
-    let mut st = c.prepare("SELECT file, idx FROM atmospheres WHERE album_id=?1 AND ?2='cinematic'
-        UNION ALL SELECT file, idx FROM atmosphere_variants WHERE album_id=?1 AND style=?2 ORDER BY idx")?;
+    let mut st = c.prepare("SELECT file FROM active_paintings WHERE album_id=?1 AND style=?2 ORDER BY stamp,series,idx,file")?;
     let rows = st.query_map([album_id, style], |r| r.get(0))?;
     rows.collect()
 }
