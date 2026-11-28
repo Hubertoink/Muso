@@ -287,7 +287,7 @@ function createGenres({ invoke, listen, toast, lookup, records, coverUrl, blankC
       n.textContent = tagAlbums(k);
       const x = document.createElement('button');
       x.type = 'button';
-      x.textContent = '×';
+      x.className = 'x-button';
       x.ariaDescription = 'Take this tag out of the genre';
       x.setAttribute('aria-label', 'Take ' + tagName(k) + ' out');
       x.addEventListener('click', () => { animate(() => { takeTag(k); draft.unassigned.add(k); }); markDirty(); openPop(id); });
@@ -599,7 +599,7 @@ function createGenres({ invoke, listen, toast, lookup, records, coverUrl, blankC
     ok.type = 'button'; ok.className = 'rok'; ok.textContent = '✓'; ok.ariaDescription = 'Accept'; ok.setAttribute('aria-label', 'Accept ' + to.value + ' for ' + s.title);
     ok.addEventListener('click', () => decide([{ album_id: s.album_id, genre: to.value }], []));
     const no = document.createElement('button');
-    no.type = 'button'; no.className = 'rno'; no.textContent = '×'; no.ariaDescription = 'Reject'; no.setAttribute('aria-label', 'Reject suggestion for ' + s.title);
+    no.type = 'button'; no.className = 'rno x-button'; no.ariaDescription = 'Reject'; no.setAttribute('aria-label', 'Reject suggestion for ' + s.title);
     no.addEventListener('click', () => decide([], [s.album_id]));
     li.append(thumb, text, from, document.createTextNode('→'), to, conf, ok, no);
     return li;

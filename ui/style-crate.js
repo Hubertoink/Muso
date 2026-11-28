@@ -87,13 +87,7 @@ function createCardCrate(dialog, choose, prepare) {
   }
   window.addEventListener('resize', measure);
   function close() {
-    if (!dialog.open || dialog.classList.contains('closing')) return;
-    dialog.classList.add('closing');
-    dialog.inert = true;
-    // Keep the native backdrop in the top layer until its fade has finished.
-    const fades = dialog.getAnimations().filter(animation => animation.transitionProperty === 'opacity');
-    if (fades.length) Promise.allSettled(fades.map(animation => animation.finished)).then(() => dialog.close());
-    else dialog.close();
+    closeDialog(dialog);
   }
   dialog.addEventListener('cancel', e => { e.preventDefault(); close(); });
   dialog.querySelector('header button').addEventListener('click', close);
@@ -108,8 +102,6 @@ function createCardCrate(dialog, choose, prepare) {
     gestures.reset();
   });
   return { close, open(selected) {
-    dialog.inert = false;
-    dialog.classList.remove('closing');
     dialog.showModal();
     if (!cards.length && prepare) prepare(canvas);
     motion.pos = motion.target = Math.max(0, [...cards].findIndex(card => card.value === selected));

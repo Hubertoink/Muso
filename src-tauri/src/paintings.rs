@@ -7,6 +7,7 @@ pub struct Credit {
     title: String,
     style: Option<String>,
     persona: Option<String>,
+    prompt: Option<String>,
 }
 
 pub fn credit(c: &Connection, album: &str, style: &str, file: &str) -> rusqlite::Result<Option<Credit>> {
@@ -16,7 +17,7 @@ pub fn credit(c: &Connection, album: &str, style: &str, file: &str) -> rusqlite:
             (id, rev), |r| r.get::<_, String>(0)).optional()?;
         return Ok(source.and_then(|path| Some(Credit {
             title: std::path::Path::new(&path).file_stem()?.to_str()?.to_owned(),
-            style: None, persona: None,
+            style: None, persona: None, prompt: None,
         })));
     }
     let files = crate::db::atmospheres(c, album, style)?;
@@ -35,7 +36,7 @@ pub fn credit(c: &Connection, album: &str, style: &str, file: &str) -> rusqlite:
         let (artist, _) = commission.split_once(" commissioned for this entire album series.")?;
         Some(artist.to_owned())
     }));
-    Ok(Some(Credit { title: format!("{} · {:02}", record.title, index + 1), style: medium, persona }))
+    Ok(Some(Credit { title: format!("{} · {:02}", record.title, index + 1), style: medium, persona, prompt }))
 }
 
 pub fn style_label(style: &str) -> Option<&'static str> {
@@ -300,18 +301,19 @@ mod tests {
         let files = ["atmos/first.jpg".into(), "atmos/second.jpg".into()];
         crate::db::replace_atmospheres(&c,"a","auto",&files).unwrap();
         crate::db::set_setting(&c,"atmos_auto_style.a","Silver ink").unwrap();
-        c.execute("INSERT INTO painting_prompts(file,prompt) VALUES(?1,?2)",
-            (&files[1], "Medium: Ink\nYou are the Editorial illustrator commissioned for this entire album series. Brush ink.")).unwrap();
+        let prompt = "Medium: Ink\nYou are the Editorial illustrator commissioned for this entire album series. Brush ink.";
+        c.execute("INSERT INTO painting_prompts(file,prompt) VALUES(?1,?2)", (&files[1], prompt)).unwrap();
         let caption = credit(&c,"a","auto",&files[1]).unwrap().unwrap();
         assert_eq!(caption.title, "Album · 02");
         assert_eq!(caption.style.as_deref(), Some("Silver ink"));
         assert_eq!(caption.persona.as_deref(), Some("Editorial illustrator"));
+        assert_eq!(caption.prompt.as_deref(), Some(prompt));
         assert!(credit(&c,"a","auto",&files[0]).unwrap().unwrap().persona.is_none());
         assert!(credit(&c,"a","tape",&files[1]).unwrap().is_none());
         c.execute("INSERT INTO personal_images(id,source,stamp) VALUES(17,'photos/Winter dusk.png','1')",[]).unwrap();
         let own = credit(&c,"a","personal","personal/17-1").unwrap().unwrap();
         assert_eq!(own.title, "Winter dusk");
-        assert!(own.style.is_none() && own.persona.is_none());
+        assert!(own.style.is_none() && own.persona.is_none() && own.prompt.is_none());
     }
     #[test]
     fn old_paintings_keep_their_bytes_and_actual_ai_style() {

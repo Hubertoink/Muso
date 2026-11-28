@@ -6,6 +6,13 @@ use std::sync::{
 };
 use std::time::Duration;
 
+pub(super) fn with_volume<S: Source<Item = i16>>(source: S, percent: &Arc<AtomicU32>) -> impl Source<Item = i16> {
+    let percent = Arc::clone(percent);
+    source.amplify(1.0).periodic_access(Duration::from_millis(10), move |amp| {
+        amp.set_factor(percent.load(Ordering::Relaxed) as f32 / 100.0);
+    })
+}
+
 struct Clip {
     channels: u16,
     rate: u32,
@@ -191,6 +198,18 @@ impl Source for Groove {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vinyl_volume_changes_during_playback_without_shortening_the_sound() {
+        let percent = Arc::new(AtomicU32::new(100));
+        let source = SamplesBuffer::new(1, 1000, vec![1000i16; 30]);
+        let mut sound = with_volume(source, &percent);
+        for level in [100, 25, 0] {
+            percent.store(level, Ordering::Relaxed);
+            assert_eq!(sound.by_ref().take(10).collect::<Vec<_>>(), vec![(level * 10) as i16; 10]);
+        }
+        assert_eq!(sound.next(), None);
+    }
 
     #[test]
     fn queued_change_fills_the_boundary_until_the_next_track_is_ready() {

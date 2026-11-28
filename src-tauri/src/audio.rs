@@ -14,6 +14,7 @@ pub use vinyl::Lead;
 pub enum Cmd {
     Play { path: String, duration: Option<Duration>, id: u64, lead: Option<Lead>, after: Option<u64>, last_track: bool, runout_seconds: u32, change: bool },
     Runout(u64, u32, bool),
+    VinylVolume(u8),
     Pause,
     Resume,
     Stop,
@@ -63,6 +64,7 @@ impl Player {
                 let mut meter = Meter::default();
                 let mut current_id = 0;
                 let mut groove_duration = Arc::new(AtomicU32::new(0));
+                let vinyl_volume = Arc::new(AtomicU32::new(100));
                 let mut groove_started = Arc::new(AtomicBool::new(false));
                 let mut change_armed = Arc::new(AtomicBool::new(false));
                 let mut change_started = Arc::new(AtomicBool::new(false));
@@ -98,7 +100,7 @@ impl Player {
                                     // Prepare the adjacent sources before starting the audio device queue.
                                     if !continuing {
                                         s.pause();
-                                        if let Some(sound) = lead { s.append(sound.sound()); }
+                                        if let Some(sound) = lead { s.append(vinyl::with_volume(sound.sound(), &vinyl_volume)); }
                                     }
                                     s.append(source);
                                     if last_track {
@@ -106,8 +108,10 @@ impl Player {
                                         s.append(rodio::source::EmptyCallback::<i16>::new(Box::new(move || {
                                             marker.store(true, Ordering::Relaxed);
                                         })));
-                                        s.append(vinyl::Groove::new(Arc::clone(&groove_duration)));
-                                        s.append(vinyl::Change::new(Arc::clone(&change_armed), Arc::clone(&change_started)));
+                                        let groove = vinyl::Groove::new(Arc::clone(&groove_duration));
+                                        let change = vinyl::Change::new(Arc::clone(&change_armed), Arc::clone(&change_started));
+                                        s.append(vinyl::with_volume(groove, &vinyl_volume));
+                                        s.append(vinyl::with_volume(change, &vinyl_volume));
                                     }
                                     s.play();
                                     if let Some(old) = outgoing {
@@ -135,6 +139,7 @@ impl Player {
                                 groove_duration.store(seconds, Ordering::Relaxed);
                             }
                         }
+                        Ok(Cmd::VinylVolume(percent)) => vinyl_volume.store(u32::from(percent), Ordering::Relaxed),
                         Ok(Cmd::Pause) => {
                             if let Some(s) = &sink {
                                 s.pause();

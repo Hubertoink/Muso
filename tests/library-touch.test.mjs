@@ -30,6 +30,7 @@ beforeEach(async () => {
     window.__TAURI__ = {
       core: { invoke: async (command, args) => {
         if (command.startsWith('heos_')) return window.testHeos(command,args);
+        if (command === 'set_vinyl_volume') { window.vinylPercent = args.percent; return; }
         if (command === 'local_volume') {
           if (args?.value != null) {
             window.localVolume = args.value;
@@ -764,6 +765,22 @@ test('the touch preference works immediately and survives a reload', async () =>
   assert.equal(await settled(), 18);
 });
 
+async function assertCenteredCross(selector) {
+  const {root} = await input.send('DOM.getDocument');
+  const {nodeId} = await input.send('DOM.querySelector', {nodeId:root.nodeId, selector});
+  const {node} = await input.send('DOM.describeNode', {nodeId});
+  const button = await page.locator(selector).boundingBox();
+  const strokes = node.pseudoElements.filter(el => ['before', 'after'].includes(el.pseudoType));
+  assert.equal(strokes.length, 2);
+  for (const {backendNodeId} of strokes) {
+    const {model} = await input.send('DOM.getBoxModel', {backendNodeId});
+    // Opposite corners of the rotated stroke have their midpoint at the centre.
+    const [x1, y1, , , x2, y2] = model.border;
+    assert.ok(Math.abs((x1 + x2) / 2 - button.x - button.width / 2) < 1);
+    assert.ok(Math.abs((y1 + y2) / 2 - button.y - button.height / 2) < 1);
+  }
+}
+
 for (const [id, title] of [['settings', 'Settings'], ['ai', 'AI Features']]) {
   test(title + ' keeps its header visible and its controls usable with touch and keyboard', async () => {
     await page.setViewportSize({width:820, height:560});
@@ -773,6 +790,7 @@ for (const [id, title] of [['settings', 'Settings'], ['ai', 'AI Features']]) {
     const close = dialog.getByRole('button', {name:'Close ' + title.toLowerCase()});
     await close.waitFor();
     assert.ok(await close.evaluate(el => el === document.activeElement));
+    await assertCenteredCross('#' + id + ' .settings-dismiss');
     const bounds = await close.boundingBox();
     const sizes = await dialog.evaluate(el => [...el.querySelectorAll('button, input, select, summary')].map(control => {
       const r = control.getBoundingClientRect();
@@ -1176,7 +1194,14 @@ test('vinyl settings persist and select a single drop, change or finite runout a
   await page.locator('#menuBtn').tap();
   await page.locator('[data-action=settings]').tap();
   assert.ok(await page.locator('#runoutLess').isDisabled());
+  const volume = page.getByRole('slider', {name:'Vinyl sound volume'});
+  assert.ok(await volume.isDisabled());
+  assert.equal(await volume.inputValue(), '100');
   await page.getByRole('switch', { name: 'Needle and groove sounds' }).tap();
+  await volume.press('Home');
+  assert.equal(await page.evaluate(() => window.vinylPercent), 0);
+  await volume.press('ArrowRight');
+  assert.equal(await page.locator('#vinylVolumeValue').textContent(), '1%');
   await page.locator('#runoutMore').tap();
   assert.equal(await page.evaluate(() => localStorage.getItem('muso.runoutSeconds')), '150');
   await page.locator('#runoutLess').tap();
@@ -1186,6 +1211,7 @@ test('vinyl settings persist and select a single drop, change or finite runout a
   await page.reload();
   await page.locator('#crate .sleeve[data-index="20"]').waitFor();
   assert.equal(await page.locator('#vinylSounds').isChecked(), true);
+  assert.equal(await page.evaluate(() => window.vinylPercent), 1);
   await page.evaluate(async () => {
     window.testTracks = ['a','b'].map(path => ({path, title:path}));
     await openAlbum(state.albums[20]);
@@ -1584,6 +1610,46 @@ test('delete in the player targets the confirmed painting across slides and prot
   assert.ok(await page.locator('#openImageFolder').isVisible());
 });
 
+test('opening a painting credit keeps its prompt available to copy across slide changes', async () => {
+  const first = 'Soft light\nacross the sill.';
+  await page.evaluate(first => {
+    HTMLImageElement.prototype.decode = async () => {};
+    window.testPaintings = ['atmos/one.jpg', 'atmos/two.jpg', 'atmos/legacy.jpg'];
+    window.testCredits = {
+      'atmos/one.jpg': {title:'Record 20 · 01', prompt:first},
+      'atmos/two.jpg': {title:'Record 20 · 02', prompt:'Evening sky.'},
+      'atmos/legacy.jpg': {title:'Record 20 · 03', prompt:null},
+    };
+  }, first);
+  await down(); await up();
+  await page.evaluate(() => emitPlayback('cover-intro-ended', state.playing.playbackId));
+  const credit = page.locator('#paintingCredit'), dialog = page.locator('#promptDialog');
+  await credit.click();
+  await assertCenteredCross('#promptClose');
+  assert.equal(await dialog.evaluate(el => getComputedStyle(el, '::backdrop').backdropFilter), 'blur(20px)');
+  for (const surface of [dialog, dialog.locator('header')]) {
+    assert.deepEqual(await surface.evaluate(el => {
+      const style = getComputedStyle(el);
+      return [style.backgroundColor, style.borderBottomWidth, style.boxShadow];
+    }), ['rgba(0, 0, 0, 0)', '0px', 'none']);
+  }
+  await page.evaluate(() => loadPainting(playlist, 'atmos/two.jpg'));
+  assert.equal(await dialog.locator('#promptPainting').textContent(), 'Record 20 · 01');
+  assert.equal(await dialog.locator('#promptText').textContent(), first);
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+  await dialog.getByRole('button', {name:'Copy prompt'}).click();
+  await page.waitForFunction(() => document.getElementById('promptCopyStatus').textContent === 'Copied');
+  assert.equal((await page.evaluate(() => navigator.clipboard.readText())).replaceAll('\r\n', '\n'), first);
+  await page.keyboard.press('Escape');
+  await dialog.waitFor({state:'hidden'});
+  await credit.press('Space');
+  await dialog.waitFor();
+  assert.equal(await dialog.locator('#promptText').textContent(), 'Evening sky.');
+  await dialog.getByRole('button', {name:'Close atmosphere prompt'}).click();
+  await page.evaluate(() => loadPainting(playlist, 'atmos/legacy.jpg'));
+  assert.ok(await credit.isDisabled());
+});
+
 test('the cover waits for a decoded atmosphere and fades back with every queued sleeve on the next track', async () => {
   // Use the HTTP form of Muso's image protocol so Playwright can serve a real image.
   await page.addInitScript(() => Object.defineProperty(navigator, 'userAgent', { value: 'Windows' }));
@@ -1932,6 +1998,14 @@ test('the player speaker shortcut stays reachable across the hover gap and on to
     return matrix.m41;
   }), right.x + right.width / 2 - left.x - left.width / 2);
   await volume.hover();
+  await page.locator('#audioDialog').evaluate(el => {
+    window.panelFades = [];
+    el.addEventListener('transitionrun', e => {
+      if (e.target === el && e.propertyName === 'opacity') {
+        window.panelFades.push([el.classList.contains('closing'), e.pseudoElement]);
+      }
+    });
+  });
   await speakers.click();
   const room = page.getByRole('button',{name:'Studio',exact:true});
   await room.waitFor();
@@ -1941,8 +2015,13 @@ test('the player speaker shortcut stays reachable across the hover gap and on to
   assert.ok(Math.abs(bounds.y + bounds.height + 12 - left.y) < 1);
   assert.equal(await panel.evaluate(el => getComputedStyle(el, '::backdrop').backdropFilter), 'blur(20px)');
   assert.equal(await panel.evaluate(el => getComputedStyle(el).backgroundColor), 'rgba(0, 0, 0, 0)');
+  await panel.evaluate(el => Promise.all(el.getAnimations().map(animation => animation.finished)));
   await page.mouse.click(100,100);
   await panel.waitFor({state:'hidden'});
+  for (const closing of [false, true]) {
+    const targets = await page.evaluate(closing => window.panelFades.filter(([out]) => out === closing).map(([,target]) => target), closing);
+    assert.deepEqual(targets.sort(), ['', '::backdrop'], closing ? 'Both fade out' : 'Both fade in');
+  }
 
   await page.touchscreen.tap(100,100);
   await speakers.waitFor({state:'hidden'});
@@ -1956,8 +2035,10 @@ test('the player speaker shortcut stays reachable across the hover gap and on to
   await page.waitForFunction(() => document.activeElement.id === 'volumeToggle');
   await volume.press('Tab');
   assert.equal(await page.evaluate(() => document.activeElement.id), 'speakerSelect');
+  await page.emulateMedia({reducedMotion:'reduce'});
   await speakers.press('Space');
   await room.waitFor();
+  assert.equal(await panel.evaluate(el => getComputedStyle(el).transitionDuration), '0s');
   await page.setViewportSize({width:820,height:560});
   const compact = await panel.boundingBox();
   assert.ok(compact.y >= 15 && compact.y + compact.height <= 560 - 80);

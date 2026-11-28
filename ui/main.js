@@ -1848,11 +1848,29 @@ $('imageClassify').onclick = async () => {
   }
 };
 $('imageDone').onclick = () => $('imagesDialog').close();
+function closeDialog(dialog) {
+  if (!dialog.matches('.card-picker, dialog.from-player')) {
+    dialog.close();
+    return;
+  }
+  if (!dialog.open || dialog.classList.contains('closing')) return;
+  dialog.classList.add('closing');
+  dialog.inert = true;
+  // Keep the native backdrop in the top layer until the fade finishes.
+  const fades = dialog.getAnimations().filter(animation => animation.transitionProperty === 'opacity');
+  const finish = () => {
+    dialog.close();
+    dialog.inert = false;
+    dialog.classList.remove('closing');
+  };
+  if (fades.length) Promise.allSettled(fades.map(animation => animation.finished)).then(finish);
+  else finish();
+}
 for (const dialog of document.querySelectorAll('.library-dialog')) {
   dialog.addEventListener('click', e => {
     if (e.target !== dialog) return;
     const box = dialog.getBoundingClientRect();
-    if (e.clientX < box.left || e.clientX > box.right || e.clientY < box.top || e.clientY > box.bottom) dialog.close();
+    if (e.clientX < box.left || e.clientX > box.right || e.clientY < box.top || e.clientY > box.bottom) closeDialog(dialog);
   });
 }
 
@@ -1986,6 +2004,19 @@ $('tvStart').onclick = async () => {
 let playbackId = 0;
 const albumQueue = [];
 const vinylSounds = $('vinylSounds'), runoutMinutes = $('runoutMinutes');
+const vinylVolume = $('vinylVolume');
+const savedVinylVolume = Number(localStorage.getItem('muso.vinylVolume') ?? 100);
+vinylVolume.value = Number.isInteger(savedVinylVolume) && savedVinylVolume >= 0 && savedVinylVolume <= 100 ? savedVinylVolume : 100;
+function applyVinylVolume() {
+  $('vinylVolumeValue').value = vinylVolume.value + '%';
+  vinylVolume.setAttribute('aria-valuetext', $('vinylVolumeValue').value);
+  invoke('set_vinyl_volume', {percent:vinylVolume.valueAsNumber}).catch(e => toast(String(e)));
+}
+vinylVolume.oninput = () => {
+  localStorage.setItem('muso.vinylVolume', vinylVolume.value);
+  applyVinylVolume();
+};
+applyVinylVolume();
 const runoutLess = $('runoutLess'), runoutMore = $('runoutMore');
 vinylSounds.checked = localStorage.getItem('muso.vinylSounds') === '1';
 function durationSetting(value) {
@@ -1995,6 +2026,7 @@ function durationSetting(value) {
 let runoutDuration = durationSetting(localStorage.getItem('muso.runoutSeconds'));
 const minuteFormat = new Intl.NumberFormat(undefined, { maximumFractionDigits: 2, useGrouping: false });
 function showRunoutDuration() {
+  vinylVolume.disabled = !vinylSounds.checked;
   runoutMinutes.value = minuteFormat.format(runoutDuration / 60);
   runoutMinutes.disabled = !vinylSounds.checked;
   runoutLess.disabled = !vinylSounds.checked || runoutDuration === 1;
@@ -2562,6 +2594,7 @@ function poke() {
   $('album').classList.remove('idle');
   clearTimeout(idleTimer);
   idleTimer = setTimeout(() => {
+    if (promptDialog.open || paintingCredit.matches(':focus-visible')) return;
     if (state.view === 'album' && !coverPull && !coverStack.querySelector('.dragging') && !$('playerVolume').classList.contains('open') && $('albumMenu').classList.contains('hidden')) {
       $('album').classList.add('idle');
       inspectingCover = false;
@@ -2715,6 +2748,32 @@ let atmosToken = 0;
 let readyAlbum = null;
 let playlist = null;
 let visiblePainting = null;
+const paintingCredit = $('paintingCredit'), promptDialog = $('promptDialog');
+paintingCredit.addEventListener('click', () => {
+  $('promptPainting').textContent = $('paintingTitle').textContent;
+  $('promptText').textContent = paintingCredit.value;
+  $('promptCopyStatus').textContent = '';
+  promptDialog.showModal();
+});
+$('promptClose').onclick = () => closeDialog(promptDialog);
+promptDialog.addEventListener('cancel', e => { e.preventDefault(); closeDialog(promptDialog); });
+promptDialog.addEventListener('close', () => { if (state.view === 'album') poke(); });
+$('copyPrompt').addEventListener('click', async () => {
+  const promptText = $('promptText');
+  try {
+    await navigator.clipboard.writeText(promptText.textContent);
+  } catch {
+    // Older webviews can still copy a selection inside the open dialog.
+    const selection = window.getSelection();
+    selection.selectAllChildren(promptText);
+    if (!document.execCommand('copy')) {
+      $('promptCopyStatus').textContent = 'Select and copy the prompt manually.';
+      return;
+    }
+    selection.removeAllRanges();
+  }
+  $('promptCopyStatus').textContent = 'Copied';
+});
 function updateAtmosView() {
   syncTv();
   const p = state.playing;
@@ -2791,12 +2850,15 @@ async function loadPainting(set, file) {
   set.pending = false;
   set.shown = file;
   set.since = performance.now();
-  $('paintingCredit').hidden = true;
+  paintingCredit.hidden = true;
   invoke('painting_credit', { albumId:set.albumId, style:set.style, file }).then(credit => {
     if (playlist !== set || set.shown !== file || !credit) return;
     $('paintingTitle').textContent = credit.title;
     $('paintingByline').textContent = [credit.style, credit.persona].filter(Boolean).join(' · ');
-    $('paintingCredit').hidden = false;
+    paintingCredit.value = credit.prompt ?? '';
+    paintingCredit.disabled = !paintingCredit.value.trim();
+    paintingCredit.title = paintingCredit.disabled ? '' : 'Show atmosphere prompt';
+    paintingCredit.hidden = false;
   }).catch(() => {});
   readyAlbum = set.albumId;
   $('album').dataset.preview = file.startsWith('personal/') || set.style === albumStyle(set.albumId) ? '' : albumStyle(set.albumId);
@@ -2813,7 +2875,7 @@ function stopAtmospheres() {
   clearTimeout(atmosTimer);
   atmosTimer = null;
   readyAlbum = null;
-  $('paintingCredit').hidden = true;
+  paintingCredit.hidden = true;
   updateAtmosView();
   $('showAtmosBtn').disabled = true;
   $('showAtmosBtn').setAttribute('aria-pressed', 'false');
@@ -2877,7 +2939,7 @@ listen('atmos-progress', ({ payload }) => {
 /* ---------------- keyboard ---------------- */
 
 window.addEventListener('keydown', (e) => {
-  if (['clearSearch', 'exitFullscreen'].includes(e.target.id) && (e.key === 'Enter' || e.key === ' ')) return;
+  if (['clearSearch', 'exitFullscreen', 'paintingCredit'].includes(e.target.id) && (e.key === 'Enter' || e.key === ' ')) return;
   const modalOpen = [...document.querySelectorAll('.modal')].some((m) => !m.classList.contains('hidden'));
   if (document.querySelector('.library-dialog[open]')) return;
   if (e.key === 'F11') {

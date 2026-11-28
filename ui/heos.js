@@ -159,7 +159,8 @@ function createHeosOutput(invoke, listen, toast, outputChanged) {
   el('heosDissolve').onclick = () => save(true);
   el('heosCancel').onclick = () => { endGroup(); status.textContent = ''; };
   el('heosCreate').onclick = () => beginGroup(null);
-  el('audioClose').onclick = () => dialog.close();
+  el('audioClose').onclick = () => closeDialog(dialog);
+  dialog.addEventListener('cancel', e => { e.preventDefault(); closeDialog(dialog); });
   el('heosRefresh').onclick = () => refresh();
   el('heosConnect').onsubmit = e => { e.preventDefault(); refresh(el('heosIp').value.trim()); };
   const volume = el('heosVolumeDialog'), levels = el('heosLevels'), volumeStatus = el('heosVolumeStatus');

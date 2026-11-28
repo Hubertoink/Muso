@@ -295,6 +295,11 @@ async fn play_track(app: AppHandle, state: State<'_, AppState>, path: String, du
 }
 
 #[tauri::command]
+fn set_vinyl_volume(state: State<'_, AppState>, percent: u8) {
+    state.player.send(audio::Cmd::VinylVolume(percent.min(100)));
+}
+
+#[tauri::command]
 fn set_runout(state: State<'_, AppState>, playback_id: u64, seconds: u32, change_at_end: bool) {
     state.player.send(audio::Cmd::Runout(playback_id, seconds, change_at_end));
 }
@@ -577,6 +582,7 @@ fn main() {
             get_tracks,
             play_track,
             set_runout,
+            set_vinyl_volume,
             set_spectrum_enabled,
             pause,
             resume,

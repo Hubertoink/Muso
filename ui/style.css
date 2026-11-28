@@ -31,6 +31,12 @@ body {
   cursor: default;
 }
 button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+.x-button:not([hidden]) { display: inline-grid; place-items: center; padding: 0; flex: none; }
+.x-button::before, .x-button::after {
+  content: ''; grid-area: 1 / 1; width: var(--x-size, 15px); height: 2px;
+  background: currentColor; border-radius: 1px; transform: rotate(45deg);
+}
+.x-button::after { transform: rotate(-45deg); }
 input { font: inherit; color: inherit; }
 .hidden:where(:not(.animated-overlay)) { display: none !important; }
 .animated-overlay.hidden { visibility: hidden; pointer-events: none; }
@@ -300,7 +306,7 @@ body:has(> .modal:not(.hidden, .from-player))::before { background-color: rgb(0 
 .search-field { position: relative; }
 #clearSearch {
   position: absolute; top: 50%; right: 4px; transform: translateY(-50%);
-  width: 44px; height: 44px; border-radius: 50%; font-size: 23px; color: var(--ink-dim);
+  width: 44px; height: 44px; border-radius: 50%; color: var(--ink-dim);
 }
 #clearSearch:focus-visible, :where(.can-hover) #clearSearch:hover { color: var(--ink); }
 #searchInput {
@@ -347,7 +353,7 @@ body:has(> .modal:not(.hidden, .from-player))::before { background-color: rgb(0 
 }
 .settings-header { flex: none; padding: 10px var(--card-pad-x); }
 .settings-header h2 { margin: 0; font-size: 21px; font-weight: 500; letter-spacing: -.025em; }
-.settings-dismiss { width: 44px; height: 44px; border-radius: 7px; font: 24px/1 var(--sans); color: var(--ink-dim); }
+.settings-dismiss { width: 44px; height: 44px; border-radius: 7px; color: var(--ink-dim); }
 :where(.can-hover) .settings-dismiss:hover { background: #292927; color: var(--ink); }
 .preferences .modal-scroll { padding-block: 0 8px; }
 .preferences section { padding: 20px 0; }
@@ -391,6 +397,8 @@ body:has(> .modal:not(.hidden, .from-player))::before { background-color: rgb(0 
 .pref-row select, .pref-row .style-trigger { max-width: 58%; text-overflow: ellipsis; }
 .pref-row select:disabled { opacity: .55; }
 .pref-row input[type=range] { width: min(42%, 192px); height: 44px; accent-color: var(--accent); cursor: pointer; }
+.vinyl-level label { flex: 1; }
+.vinyl-level output { min-width: 4ch; text-align: right; font-variant-numeric: tabular-nums; }
 .pref-row + p.muted { margin: -2px 0 8px; }
 .pref-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
 .pref-key { display: grid; gap: 6px; margin-block: 12px; font-size: 14px; }
@@ -823,22 +831,26 @@ body:has(#coverConfirm[open]) #coverSearchStatus { visibility: hidden; }
   color: var(--ink); color-scheme: dark; border: 0; background: transparent; overflow-x: hidden;
 }
 .card-picker[open] { display: flex; flex-direction: column; }
-.card-picker::backdrop, #audioDialog.from-player::backdrop {
+.card-picker::backdrop, dialog.from-player::backdrop {
   background: rgb(4 4 6 / .65);
   -webkit-backdrop-filter: blur(20px);
   backdrop-filter: blur(20px);
 }
-.card-picker[open], .card-picker[open]::backdrop { opacity: 1; transition: opacity .2s ease; }
+:is(.card-picker, dialog.from-player)[open],
+:is(.card-picker, dialog.from-player)[open]::backdrop { opacity: 1; transition: opacity .2s ease; }
 @starting-style {
-  .card-picker[open], .card-picker[open]::backdrop { opacity: 0; }
+  :is(.card-picker, dialog.from-player)[open],
+  :is(.card-picker, dialog.from-player)[open]::backdrop { opacity: 0; }
 }
-.card-picker.closing, .card-picker.closing::backdrop { opacity: 0; }
+:is(.card-picker, dialog.from-player).closing,
+:is(.card-picker, dialog.from-player).closing::backdrop { opacity: 0; }
 @media (prefers-reduced-motion: reduce) {
-  .card-picker[open], .card-picker[open]::backdrop { transition: none; }
+  :is(.card-picker, dialog.from-player)[open],
+  :is(.card-picker, dialog.from-player)[open]::backdrop { transition: none; }
 }
 .card-picker header { display: flex; align-items: center; justify-content: space-between; padding: 16px clamp(22px, 4vw, 72px) 12px; }
 .card-picker h2 { font-weight: 400; font-size: 20px; }
-:is(#closeStylePicker, #closePersona) { font-size: 24px; width: 36px; height: 36px; color: var(--ink-dim); }
+:is(#closeStylePicker, #closePersona) { width: 36px; height: 36px; color: var(--ink-dim); }
 .card-canvas {
   --size: min(43vh, 44vw, 380px); position: relative; height: calc(var(--size) + 50px); flex: none;
   perspective: 1500px; touch-action: none; cursor: grab;
@@ -860,11 +872,14 @@ body:has(#coverConfirm[open]) #coverSearchStatus { visibility: hidden; }
 #paintingCredit {
   position: absolute; bottom: max(20px, env(safe-area-inset-bottom)); left: max(20px, env(safe-area-inset-left));
   max-width: min(32vw, 32em); z-index: 4; pointer-events: none;
-  color: #f1eeea; text-shadow: 0 1px 6px #000; font-size: 14px; line-height: 1.4;
+  color: #f1eeea; text-shadow: 0 1px 6px #000; font-size: 14px; line-height: 1.4; text-align: left;
   opacity: var(--motion-opacity); --motion-opacity: 0; visibility: hidden;
   transition: --motion-opacity .45s, visibility 0s .45s;
 }
 #album.showing-atmos:not(.idle) #paintingCredit { --motion-opacity: 1; visibility: visible; transition-delay: 0s; }
+#album.showing-atmos:not(.idle) #paintingCredit:enabled { pointer-events: auto; }
+:where(.can-hover) #paintingCredit:enabled:hover #paintingTitle,
+#paintingCredit:focus-visible #paintingTitle { text-decoration: underline; text-underline-offset: 3px; }
 #paintingCredit span { display: block; overflow-wrap: anywhere; }
 #paintingByline:not(:empty) { margin-top: 3px; font-size: 12px; color: #c2bebb; }
 @media (prefers-reduced-motion: reduce) { #paintingCredit { transition: none; } }
@@ -916,7 +931,7 @@ body:has(#coverConfirm[open]) #coverSearchStatus { visibility: hidden; }
   font: 500 16px var(--sans); color: var(--ink-dim);
 }
 #libraryCrateName { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-#closeLibraryCrate { flex: none; width: 36px; height: 36px; font-size: 21px; color: var(--ink-dim); }
+#closeLibraryCrate { width: 36px; height: 36px; color: var(--ink-dim); }
 #crateDock { position: absolute; bottom: 0; width: 100%; z-index: 4; pointer-events: none; }
 #cratePeek {
   position: absolute; left: 50%; bottom: 0; transform: translateX(-50%); pointer-events: auto;
@@ -1289,6 +1304,7 @@ body:has(#crateTray.open) #crateDock { visibility: hidden; }
 #popTags li span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #popTags li small { font: 10px var(--mono); color: var(--ink-faint); }
 #popTags li button { width: 22px; height: 22px; border-radius: 50%; color: var(--ink-faint); }
+#popTags .x-button, .rno { --x-size: 10px; }
 :where(.can-hover) #popTags li button:hover { color: var(--accent); background: rgba(255,90,31,.1); }
 #popTags li.muted { font-size: 12px; line-height: 1.5; }
 #popDissolve { margin-top: 12px; font-size: 12px; }
@@ -1339,19 +1355,26 @@ body:has(#crateTray.open) #crateDock { visibility: hidden; }
 .persona-modes button[aria-pressed=true]::before { content: '\2713  '; color: var(--accent); }
 
 #audioDialog, #heosVolumeDialog { padding-top: 0; }
+#promptDialog { width: min(66ch, 90vw); --card-pad-x: 14px; }
+#promptHeading { margin: 0; }
+#promptPainting { margin-bottom: 12px; color: var(--ink-dim); }
+#promptText { font-size: 15px; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; -webkit-user-select: text; }
+#promptDialog .modal-actions { margin: 0; padding: 10px var(--card-pad-x); }
+#promptCopyStatus { color: var(--ink-dim); font-size: 13px; }
+#copyPrompt { flex: none; }
 #audioDialog.from-player {
   --card-pad-x: 14px;
   --panel-bottom: calc(var(--audio-bottom) + var(--audio-button) + 12px);
   position: fixed; inset: auto calc(var(--audio-right) + var(--speaker-offset)) var(--panel-bottom) auto;
   margin: 0; width: min(350px, calc(100vw - var(--audio-right) - var(--speaker-offset) - 12px));
   max-height: calc(100% - var(--panel-bottom) - 16px);
-  padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none;
 }
-#audioDialog.from-player .settings-header {
+dialog.from-player { padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+dialog.from-player .settings-header {
   padding: 0 var(--card-pad-x) 6px; border: 0; background: transparent;
   -webkit-backdrop-filter: none; backdrop-filter: none;
 }
-#audioDialog.from-player .modal-scroll { padding: 0 var(--card-pad-x) 8px; }
+dialog.from-player .modal-scroll { padding: 0 var(--card-pad-x) 8px; }
 #heosVolumeTitle { margin: 0; }
 #heosLevels { display: flex; gap: 24px; flex-wrap: wrap; }
 .heos-level { display: flex; flex-direction: column; align-items: center; gap: 8px; max-width: 140px; text-align: center; overflow-wrap: anywhere; }

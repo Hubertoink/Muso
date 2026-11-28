@@ -22,7 +22,7 @@
   <section id="library" class="screen hidden">
     <div id="crate" tabindex="-1"></div>
     <div id="libraryCrateHeading" class="hidden"><span id="libraryCrateName"></span>
-      <button type="button" id="closeLibraryCrate" aria-label="Close crate and return to the library">×</button>
+      <button type="button" id="closeLibraryCrate" aria-label="Close crate and return to the library" class="x-button"></button>
     </div>
     <nav id="libraryIndex" aria-label="Browse the library by initial">
       <button id="indexMode" type="button"><span id="indexModeLabel">Artist</span><span aria-hidden="true">⇄</span></button>
@@ -75,7 +75,7 @@
           <button id="fanPlay" aria-description="Play crate" aria-label="Play crate"><svg viewBox="0 0 24 24"><path d="M8 5l12 7-12 7z" class="fill" /></svg></button>
           <button id="fanRename" aria-description="Rename" aria-label="Rename crate"><svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z" /><path d="M13 7l4 4" /></svg></button>
           <button id="fanDelete" aria-description="Delete crate" aria-label="Delete crate"><svg viewBox="0 0 24 24"><path d="M5 7h14" /><path d="M10 7V4h4v3" /><path d="M7 7l1 13h8l1-13" /></svg></button>
-          <button id="fanClose" aria-description="Close" aria-label="Close crate"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" /></svg></button>
+          <button id="fanClose" aria-description="Close" aria-label="Close crate" class="x-button"></button>
         </div>
         <div id="fanHint" class="status"></div>
       </div>
@@ -186,7 +186,7 @@
   <dialog id="audioDialog" class="modal-card library-dialog" aria-labelledby="audioTitle">
     <header class="settings-header">
       <h2 id="audioTitle">Audio output</h2>
-      <button type="button" class="settings-dismiss" id="audioClose" aria-label="Close audio output">×</button>
+      <button type="button" class="x-button settings-dismiss" id="audioClose" aria-label="Close audio output"></button>
     </header>
     <div class="modal-scroll">
       <section id="outputChoices">
@@ -215,7 +215,7 @@
   <dialog id="heosVolumeDialog" class="modal-card library-dialog" aria-labelledby="heosVolumeTitle">
     <header class="settings-header">
       <h2 id="heosVolumeTitle">HEOS volume</h2>
-      <button type="button" class="settings-dismiss" id="heosVolumeClose" aria-label="Close HEOS volume">×</button>
+      <button type="button" class="x-button settings-dismiss" id="heosVolumeClose" aria-label="Close HEOS volume"></button>
     </header>
     <div class="modal-scroll">
       <div id="heosLevels"></div>
@@ -258,7 +258,7 @@
   <div id="search" class="sheet hidden">
     <div class="search-field">
       <input id="searchInput" type="text" placeholder="Search the crate" aria-label="Search the crate" spellcheck="false" autocomplete="off" />
-      <button id="clearSearch" type="button" aria-label="Clear search" hidden>×</button>
+      <button id="clearSearch" type="button" aria-label="Clear search" hidden class="x-button"></button>
     </div>
     <div id="searchResults"></div>
   </div>
@@ -268,7 +268,7 @@
     <div class="modal-card">
       <header class="settings-header">
         <h2 id="settingsTitle">Settings</h2>
-        <button class="close settings-dismiss" type="button" aria-label="Close settings">×</button>
+        <button class="x-button close settings-dismiss" type="button" aria-label="Close settings"></button>
       </header>
       <div class="modal-scroll">
         <section>
@@ -279,6 +279,11 @@
         <section>
           <h3>Vinyl playback</h3>
           <label class="pref-row"><span>Needle and groove sounds</span><input type="checkbox" role="switch" id="vinylSounds" /></label>
+          <div class="pref-row vinyl-level">
+            <label for="vinylVolume">Vinyl sound volume</label>
+            <input type="range" id="vinylVolume" min="0" max="100" value="100" disabled />
+            <output id="vinylVolumeValue" for="vinylVolume">100%</output>
+          </div>
           <div class="pref-row">
             <label for="runoutMinutes">End groove duration</label>
             <div class="groove-stepper">
@@ -369,6 +374,20 @@
     </div>
   </div>
 
+  <dialog id="promptDialog" class="modal-card library-dialog from-player" aria-labelledby="promptHeading promptPainting">
+    <header class="settings-header">
+      <h2 id="promptHeading">Atmosphere prompt</h2>
+      <button type="button" class="x-button settings-dismiss" id="promptClose" aria-label="Close atmosphere prompt"></button>
+    </header>
+    <div class="modal-scroll">
+      <p id="promptPainting"></p>
+      <p id="promptText"></p>
+    </div>
+    <footer class="modal-actions">
+      <span id="promptCopyStatus" role="status"></span>
+      <button type="button" class="pill" id="copyPrompt">Copy prompt</button>
+    </footer>
+  </dialog>
   <dialog id="deleteAtmosDialog" class="modal-card library-dialog" aria-labelledby="deleteAtmosTitle">
     <form method="dialog" class="modal-scroll">
       <h2 id="deleteAtmosTitle">Delete this atmosphere?</h2>
@@ -398,7 +417,7 @@
   </dialog>
 
   <dialog id="stylePicker" class="card-picker" aria-labelledby="stylePickerTitle">
-    <header><h2 id="stylePickerTitle">Atmosphere style</h2><button type="button" id="closeStylePicker" aria-label="Close style selection">×</button></header>
+    <header><h2 id="stylePickerTitle">Atmosphere style</h2><button type="button" id="closeStylePicker" aria-label="Close style selection" class="x-button"></button></header>
     <div id="styleCanvas" class="card-canvas" role="group" aria-label="Browse atmosphere styles" tabindex="0"></div>
     <div class="style-navigation">
       <button type="button" id="prevStyle" class="prev-card" aria-label="Previous style">‹</button>
@@ -412,7 +431,7 @@
   </dialog>
 
   <dialog id="personaPicker" class="card-picker" aria-labelledby="personaTitle">
-    <header><h2 id="personaTitle">Artist persona</h2><button type="button" id="closePersona" aria-label="Close persona selection">×</button></header>
+    <header><h2 id="personaTitle">Artist persona</h2><button type="button" id="closePersona" aria-label="Close persona selection" class="x-button"></button></header>
     <div id="personaCanvas" class="card-canvas" role="group" aria-label="Browse artist portraits" tabindex="0">
       <button class="sleeve" type="button" value="Documentary photographer">
         <img alt="" draggable="false" src="persona-portraits/photographer.webp" width="256" height="256" />
@@ -456,7 +475,7 @@
     <div class="modal-card">
       <header class="settings-header">
         <h2 id="aiTitle">AI Features</h2>
-        <button class="close settings-dismiss" type="button" aria-label="Close ai features">×</button>
+        <button class="x-button close settings-dismiss" type="button" aria-label="Close ai features"></button>
       </header>
       <div class="modal-scroll">
         <section>
@@ -606,7 +625,7 @@
         </button>
       </div>
     </div>
-    <div id="paintingCredit" hidden><span id="paintingTitle"></span><span id="paintingByline"></span></div>
+    <button type="button" id="paintingCredit" aria-haspopup="dialog" aria-controls="promptDialog" hidden disabled><span id="paintingTitle"></span><span id="paintingByline"></span></button>
     <div id="atmosStatus" class="status"></div>
   </section>
 
